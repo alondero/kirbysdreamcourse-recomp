@@ -12,7 +12,7 @@ $pin = '147b55e252dcb3e7680a99c7c2f50e7183891844'
 if (-not (Test-Path (Join-Path $source '.git'))) { throw 'Pinned source checkout is missing; see docs/framework-spike.md.' }
 if ((git -C $source rev-parse HEAD) -ne $pin -or $LASTEXITCODE -ne 0) { throw 'Source checkout does not match the framework pin.' }
 if (Test-Path -LiteralPath $destination) { throw "$destination already exists; choose a different -Name." }
-git clone --quiet --no-hardlinks --no-checkout $source $destination
+git clone -c core.autocrlf=false --quiet --no-hardlinks --no-checkout $source $destination
 if ($LASTEXITCODE -ne 0) { throw 'Framework clone failed.' }
 git -C $destination checkout --quiet --detach $pin
 if ($LASTEXITCODE -ne 0) { throw 'Pinned checkout failed.' }

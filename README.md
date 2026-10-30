@@ -6,7 +6,7 @@ The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe829
 
 ## Build and play on Windows
 
-Install Git, Python 3, CMake 3.20 or newer, Ninja, and a 64-bit MinGW GCC toolchain; put them on PATH. CMake downloads the pinned SDL 3.4.10 source if an SDL3 package is not installed. Setup also needs network access to fetch the pinned SNESRecomp revision.
+Install Git, Python 3.11 or newer, CMake 3.20 or newer, Ninja, and a 64-bit MinGW GCC toolchain; put them on PATH. CMake downloads the pinned SDL 3.4.10 source if an SDL3 package is not installed. Setup also needs network access to fetch the pinned SNESRecomp revision.
 
 Place your ROM at the project root as `Kirby's Dream Course (USA).sfc`, or pass its path with `-Rom`. In PowerShell, from the repository root:
 
@@ -22,7 +22,17 @@ To specify a ROM, CMake executable or existing SDL3 source tree:
 ./tools/play_experimental.ps1 -Rom 'C:/path/to/your-game.sfc'
 ```
 
-Setup creates `local/guarded-framework`, `local/guarded` and `local/guarded-build`; use a clean checkout to repeat setup. Generated files remain in ignored local directories. The launcher sets the timing options; use `-Fallback` to select the interpreter. Settings and saves are stored beside the local executable. Default player-one keyboard controls are arrows, X for A, Z for B, Return for Start and Right Shift for Select. Edit `keybinds.ini` beside the executable and restart to configure player two; both players default to the same keys. Controllers can also be configured in the host.
+Setup creates `local/guarded-framework`, `local/guarded` and `local/guarded-build`; use a clean checkout to repeat setup. Generated files remain in ignored local directories. The launcher sets the timing options; use `-Fallback` to select the interpreter. Settings and saves are stored beside the local executable. Default player-one keyboard controls are arrows, X for A, Z for B, Return for Start and Right Shift for Select.
+
+For two players on the keyboard, first run the game once to create its configuration. In `local/guarded-build/config.ini`, add the following section, then edit the `[player2]` bindings in `keybinds.ini` in the same directory to use different keys from player one. Restart the game to apply the changes.
+
+```ini
+[Controller]
+SourceP1 = 1
+SourceP2 = 1
+```
+
+Controller source values are `0` for none, `1` for keyboard and `2` for gamepad. For a gamepad seat, use `2` and connect the controller before starting the game. Each seat needs its own configured input source.
 
 The included ROM-free input and comparison tests can be run with `python -m unittest discover -s tests -p 'test_*.py' -v`. The headless and reference-capture tools support locally stored input recordings; keep recordings and captures out of the repository.
 
