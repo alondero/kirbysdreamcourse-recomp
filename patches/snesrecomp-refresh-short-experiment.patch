@@ -1,0 +1,30 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 141cfca..264e1d8 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -151,6 +151,8 @@ static void run_nmi_timed(uint64_t deadline) {
+ 
+ void snes_beam_frame_driver_run_frame(void) {
+   const bool booting = s_resume_pc == 0;
++  /* Diagnostic: this field crosses the progressive NTSC short line. */
++  const bool short_field = !booting && g_ppu->evenFrame && !g_ppu->frameInterlace;
+   int slices = 0;
+   uint64_t frame_end;
+ 
+@@ -280,6 +282,16 @@ void snes_beam_frame_driver_run_frame(void) {
+     }
+     cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
+   }
++  /* The current refresh accumulator assumes 1364 clocks per line. Restore
++   * the four clocks omitted by this field's short line. This frame-end
++   * correction is only a diagnostic; it is not event-accurate within the
++   * short line and assumes the field did not change interlace mid-frame. */
++  if (short_field && g_snes->beamMasterLast >= frame_end) {
++    uint64_t phase, watermark;
++    snes_refresh_state_get(&phase, &watermark);
++    if (watermark != UINT64_MAX)
++      snes_refresh_state_set((phase + 4u) % 1364u, watermark);
++  }
+ }
+ 
+ void snes_beam_frame_driver_draw_ppu_frame(void) {

@@ -1,0 +1,19 @@
+diff --git a/runner/src/common_cpu_infra.c b/runner/src/common_cpu_infra.c
+index c9314d9..52fff1c 100644
+--- a/runner/src/common_cpu_infra.c
++++ b/runner/src/common_cpu_infra.c
+@@ -901,9 +901,13 @@ void snes_refresh_charge(void) {
+     g_refresh_charged_upto = m;
+     return;
+   }
+-  if (lines) {
++  while (lines) {
+     s_refresh_phase -= lines * 1364u;
+     g_cpu.master_cycles += 40u * lines;
++    /* Refresh stalls consume beam time too; include them when scheduling
++     * subsequent refreshes, including any line crossed by a batched tax. */
++    s_refresh_phase += 40u * lines;
++    lines = s_refresh_phase / 1364u;
+   }
+   g_refresh_charged_upto = g_cpu.master_cycles;
+ }

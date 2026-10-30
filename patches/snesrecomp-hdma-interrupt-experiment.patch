@@ -1,0 +1,157 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index b9712b3..a25d57b 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -71,10 +71,34 @@ static void service_hdma_event(bool init, uint64_t event) {
+   if (clocks) {
+     g_cpu.master_cycles += clocks;
+     snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    /* An IRQ may latch during HDMA, but its handler cannot start until the
++     * bus transfer has finished. The beam walker stops at the latch; finish
++     * the already-owned DMA clocks before returning to the CPU scheduler. */
++    while (g_snes->beamMasterLast < g_cpu.master_cycles) {
++      uint64_t before = g_snes->beamMasterLast;
++      snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++      if (g_snes->beamMasterLast <= before) break;
++    }
+     cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
+   }
+ }
+ 
++static uint64_t s_handler_hdma_event;
++static bool s_handler_hdma_init;
++static void handler_hdma_boundary(void) {
++  if (g_cpu.master_cycles < s_handler_hdma_event) return;
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  if (g_snes->beamMasterLast < s_handler_hdma_event) return;
++  service_hdma_event(s_handler_hdma_init, s_handler_hdma_event);
++  s_handler_hdma_event = next_hdma_event(&s_handler_hdma_init);
++}
++static void run_handler_with_hdma(uint32_t vector) {
++  s_handler_hdma_event = next_hdma_event(&s_handler_hdma_init);
++  interp_bridge_set_interrupt_boundary_hook(handler_hdma_boundary);
++  (void)interp_bridge_run_interrupt(&g_cpu, vector);
++  interp_bridge_set_interrupt_boundary_hook(NULL);
++}
++
+ static uint32_t read_vector(uint32_t addr) {
+   /* Through the guest bus, so a mapper or coprocessor window resolves the
+    * vector the way the CPU sees it. */
+@@ -141,7 +165,7 @@ static void run_interrupt(uint32_t vector, uint64_t deadline) {
+    * already starts where the real CPU would take it. */
+   cpu_push_interrupt_frame_at(&g_cpu, s_resume_pc);
+   interp_bridge_set_master_deadline(deadline);
+-  (void)interp_bridge_run_interrupt(&g_cpu, vector);
++  run_handler_with_hdma(vector);
+   /* A deadline left armed stays true for every AOT block prologue afterwards
+    * and turns each compiled body into an immediate yield. */
+   interp_bridge_set_master_deadline(0);
+@@ -178,7 +202,7 @@ static void run_nmi_timed(uint64_t deadline) {
+   vector |= (uint16_t)cpu_read8_paced(&g_cpu, 0, vector_addr + 1) << 8;
+   snes_sync_master_clock(g_snes, g_cpu.master_cycles);
+   interp_bridge_set_master_deadline(deadline);
+-  (void)interp_bridge_run_interrupt(&g_cpu, vector);
++  run_handler_with_hdma(vector);
+   interp_bridge_set_master_deadline(0);
+   update_resume_pc();
+ }
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index c199dda..38be3d2 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -618,6 +618,8 @@ static int      s_interp_pctrace    = 0;
+ static int      s_lle_wai_yield     = 0;
+ static int      s_lle_quiescent_yield = 0;
+ static uint64_t s_lle_master_deadline = 0;
++static void (*s_interrupt_boundary_hook)(void);
++void interp_bridge_set_interrupt_boundary_hook(void (*hook)(void)) { s_interrupt_boundary_hook = hook; }
+ /* Depth of nested interpreter runs and the run that owns the current paired
+  * AOT bounce. A rewritten/non-local return from that AOT root must resume the
+  * owning interpreter's guest call chain. */
+@@ -1718,6 +1720,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+          * clocks early per owed line. A no-op when the previous step was
+          * interpreted. */
+         snes_refresh_charge();
++        if (stop_on_rti && s_interrupt_boundary_hook) s_interrupt_boundary_hook();
+ #ifdef SNESRECOMP_INTERP_PROFILE
+         g_interp_total_steps++;
+         interp_hist_init();
+@@ -2808,6 +2811,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+          * Do not continue interpreting at the placeholder return address. */
+         if (stop_on_rti && op == 0x40) {
+             sync_interp_to_cpu(&in, cpu);
++            if (s_interrupt_boundary_hook) s_interrupt_boundary_hook();
+             bridge_apu_flush(cpu);
+             return 1;
+         }
+@@ -2849,6 +2853,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+              * interpret-everything behavior (A/B differential lever). */
+             const int bounce_ok =
+                 (!yield_pc || lle_yield_bounce_enabled()) &&
++                !(stop_on_rti && s_interrupt_boundary_hook) &&
+                 !lle_bounce_target_excluded(target);
+             const int has_body  = cpu_dispatch_has_entry(cpu, target);
+             if (bounce_ok && has_body) {
+diff --git a/runner/src/snes/interp_bridge.h b/runner/src/snes/interp_bridge.h
+index c0e995e..2b978a4 100644
+--- a/runner/src/snes/interp_bridge.h
++++ b/runner/src/snes/interp_bridge.h
+@@ -317,4 +317,7 @@ void Tier2CoverageTestRecord(uint32_t site, uint32_t target, uint8_t mx,
+                              uint8_t kind, int clean);
+ #endif
+ 
++/* Experimental callback at interpreted interrupt-handler instruction boundaries. */
++void interp_bridge_set_interrupt_boundary_hook(void (*hook)(void));
++
+ #endif /* INTERP_BRIDGE_H */
+diff --git a/tests/interp816/bridge_test.c b/tests/interp816/bridge_test.c
+index 117adfe..4b9dbca 100644
+--- a/tests/interp816/bridge_test.c
++++ b/tests/interp816/bridge_test.c
+@@ -411,6 +411,16 @@ static void load(uint32 pc24, const uint8_t *code, int len) {
+     memcpy(&RAM[pc24 & 0xFFFFFF], code, (size_t)len);
+ }
+ 
++static unsigned g_irq_boundary_calls, g_irq_event_fired;
++static uint64_t g_irq_event_threshold;
++static void test_irq_boundary(void) {
++    ++g_irq_boundary_calls;
++    if (!g_irq_event_fired && g_c.master_cycles >= g_irq_event_threshold) {
++        g_irq_event_fired = 1;
++        RAM[0x0420] = 0x5a;
++        g_c.master_cycles += 34;
++    }
++}
+ static unsigned hook_order,hook_a,hook_b,hook_c,hook_dest;
+ static void observe_a(CpuState *cpu,uint32_t pc) {
+     (void)pc;++hook_a;hook_order=hook_order*10+1;cpu->X=0x23;
+@@ -555,6 +565,29 @@ int main(void) {
+     g_test_cart.type = CART_LOROM;
+     g_test_snes.cart = &g_test_cart;
+ 
++    printf("Interrupt instruction boundary and interpreted callee\n");
++    {
++      const uint8_t handler[] = {0x20,0x00,0x81,0xad,0x20,0x04,0x8d,0x21,0x04,0x40};
++      const uint8_t callee[] = {0xea,0xea,0xea,0x60};
++      memset(RAM, 0, MEMSZ); init_cpu(); g_aot_called = 0;
++      g_irq_boundary_calls = g_irq_event_fired = 0; g_irq_event_threshold = 20;
++      load(0x8000, handler, sizeof handler); load(0x8100, callee, sizeof callee);
++      cpu_push_interrupt_frame_at(&g_c, 0x008500);
++      interp_bridge_set_interrupt_boundary_hook(test_irq_boundary);
++      CHECK(interp_bridge_run_interrupt(&g_c, 0x008000) == 1, "handler returns");
++      interp_bridge_set_interrupt_boundary_hook(NULL);
++      CHECK(g_irq_boundary_calls >= 6 && g_irq_event_fired, "handler sampled instruction event");
++      CHECK(g_aot_called == 0, "interrupt callee must remain interpreted while hook active");
++      CHECK(RAM[0x421] == 0x5a, "handler must observe event before its load");
++      memset(RAM, 0, MEMSZ); init_cpu();
++      RAM[0x8000] = 0x40; g_irq_event_fired = 0; g_irq_event_threshold = 1;
++      cpu_push_interrupt_frame_at(&g_c, 0x008500);
++      interp_bridge_set_interrupt_boundary_hook(test_irq_boundary);
++      CHECK(interp_bridge_run_interrupt(&g_c, 0x008000) == 1, "RTI handler returns");
++      interp_bridge_set_interrupt_boundary_hook(NULL);
++      CHECK(g_irq_event_fired, "event crossed by RTI is serviced before return");
++    }
++
+     printf("S0 APU timeline policy remains cartridge-scoped\n");
+     {
+       double totals[2];

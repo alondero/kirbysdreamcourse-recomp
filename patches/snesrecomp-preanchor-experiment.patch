@@ -1,0 +1,18 @@
+--- a/runner/src/snes/apu.c
++++ b/runner/src/snes/apu.c
+@@ -154,11 +154,12 @@
+ 
+ bool apu_runToGuestCycle(Apu* apu, uint64_t guest_cycle,
+                          uint32_t max_cycles) {
+-  if (!apu->portTimeValid || guest_cycle < apu->portGuestAnchor)
++  if (apu->portTimeValid && guest_cycle < apu->portGuestAnchor)
+     return true;
+ 
+-  uint64_t target = apu->portTargetAnchor +
+-                    (guest_cycle - apu->portGuestAnchor);
++  uint64_t target = apu->portTimeValid
++      ? apu->portTargetAnchor + (guest_cycle - apu->portGuestAnchor)
++      : guest_cycle; /* Experimental: assumes matching reset origins. */
+   if (target < apu->portLastTarget)
+     target = apu->portLastTarget;
+ 

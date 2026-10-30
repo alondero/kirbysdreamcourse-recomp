@@ -1,0 +1,36 @@
+﻿# Local game inputs and derived content
+*.sfc
+*.smc
+*.fig
+*.bin
+*.sav
+*.srm
+*.state
+*.state[0-9]*
+/roms/
+/assets/extracted/
+/generated/
+/src/gen/
+/build/
+/recordings/
+/local/
+/recomp/funcs.h
+/saves/
+__pycache__/
+
+# Local development and generated content
+*.exe
+*.dll
+*.pdb
+*.zip
+*.7z
+*.png
+*.bmp
+*.ppm
+*.wav
+*.pcm
+*.log
+*.pyc
+/.claude/
+/.pytest_cache/
+/last_run_report.json

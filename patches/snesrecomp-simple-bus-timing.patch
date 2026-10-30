@@ -1,0 +1,419 @@
+diff --git a/recompiler/v2/emit_function.py b/recompiler/v2/emit_function.py
+index 45a8fcf..a808eb7 100644
+--- a/recompiler/v2/emit_function.py
++++ b/recompiler/v2/emit_function.py
+@@ -43,6 +43,8 @@ from snes_cycles import (  # noqa: E402
+     block_static_cycles, instr_runtime_charges,
+ )
+ from snes65816 import (  # noqa: E402
++    ABS as _MODE_ABS, LONG as _MODE_LONG, IMP as _MODE_IMP,
++    DP as _MODE_DP, REL as _MODE_REL,
+     ABS_X as _MODE_ABS_X, ABS_Y as _MODE_ABS_Y, IMM as _MODE_IMM,
+     get_rom_mapping, ROM_MAP_SA1, rom_offset,
+ )
+@@ -149,6 +151,54 @@ def _block_speed(bank: int, pc: int):
+     return runtime_code_speed(((bank & 0xFF) << 16) | (pc & 0xFFFF))
+ 
+ 
++def _simple_master_lines(pairs, cycles: int):
++    """Experimental native-mode bus pricing for a small, closed opcode set.
++
++    Return None for any block whose bus accesses or address state can change
++    in ways this routine does not model. This is not a general timing model.
++    """
++    if not pairs:
++        return None
++    insns = [pair[0] for pair in pairs]
++    data = []
++    direct = []
++    stack = 0
++    stack_reads = 0
++    fetch = []
++    for index, insn in enumerate(insns):
++        if insn.opcode in (0xc2, 0xe2, 0xa9, 0xa2, 0xa0) and insn.mode == _MODE_IMM:
++            pass
++        elif insn.opcode in (0x8d, 0x9c, 0x8e, 0x8c, 0xad) and insn.mode == _MODE_ABS:
++            width = 1 if (insn.x_flag if insn.opcode in (0x8e, 0x8c) else insn.m_flag) else 2
++            # The interpreter carries absolute word accesses into the next bank;
++            # the generated cpu_read16/cpu_write16 helpers wrap within the bank.
++            # Until that semantic seam is resolved, do not compile the crossing.
++            if width == 2 and insn.operand == 0xffff:
++                return None
++            data.extend((insn.operand + offset) & 0xffff for offset in range(width))
++        elif insn.opcode in (0xa6, 0xe4) and insn.mode == _MODE_DP:
++            direct.extend(insn.operand + offset for offset in range(1 if insn.x_flag else 2))
++        elif insn.opcode in (0x10, 0x30, 0x50, 0x70, 0x90, 0xb0, 0xd0, 0xf0) and insn.mode == _MODE_REL and index == len(insns) - 1:
++            pass
++        elif insn.opcode == 0x22 and insn.mode == _MODE_LONG and index == len(insns) - 1:
++            stack = 3
++        elif insn.opcode in (0x60, 0x6b) and insn.mode == _MODE_IMP and index == len(insns) - 1:
++            stack_reads = 3 if insn.opcode == 0x6b else 2
++        else:
++            return None
++        fetch.extend((insn.addr + offset) & 0xffff for offset in range(insn.length))
++    internal = cycles - len(fetch) - len(data) - len(direct) - stack - stack_reads
++    if internal < 0:
++        return None
++    lines = [f'    cpu->master_cycles += {internal * 6}u;'] if internal else []
++    lines += [f'    cpu->master_cycles += cpu_region_speed(((uint32)cpu->PB << 16) | 0x{addr:04x}u);' for addr in fetch]
++    lines += [f'    cpu->master_cycles += cpu_region_speed(((uint32)cpu->DB << 16) | 0x{addr:04x}u);' for addr in data]
++    lines += [f'    cpu->master_cycles += cpu_region_speed((uint16)(cpu->D + 0x{addr:04x}u));' for addr in direct]
++    lines += [f'    cpu->master_cycles += cpu_region_speed((uint16)(cpu->S - {offset}u));' for offset in range(stack)]
++    lines += [f'    cpu->master_cycles += cpu_region_speed((uint16)(cpu->S + {offset}u));' for offset in range(1, stack_reads + 1)]
++    return lines
++
++
+ def _dynamic_charge_lines(insn, speed_expr: str = "8") -> List[str]:
+     """Runtime-only per-instruction cycle charges (Axis-2 step C dynamics),
+     emitted as conditional `cpu->cycles += 1;` statements just before the
+@@ -1444,6 +1494,8 @@ def emit_function(rom: bytes, bank: int, start: int,
+         # The SKIP_N _pending_skip set is injected before the terminator
+         # insn so the eventual RTS picks it up.
+         pairs = block_per_insn_ir.get(key, [])
++        _simple_branch = (bool(os.environ.get('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING')) and
++                          _simple_master_lines(pairs, _block_cycle_const(pairs)) is not None)
+         skip_emit_idx = set()
+         for ji, (jdi, _jops) in enumerate(pairs):
+             if (jdi.mnem == 'JMP' and jdi.length == 4
+@@ -1591,7 +1643,7 @@ def emit_function(rom: bytes, bank: int, start: int,
+                         # code runs e=0).
+                         lines.append(
+                             f"if ({pred}) {{ cpu->cycles += 1; "
+-                            f"cpu->master_cycles += {_blk_spd_expr}; {target_stmt} }}")
++                            f"cpu->master_cycles += {'6' if _simple_branch else _blk_spd_expr}; {target_stmt} }}")
+                     if fall is not None:
+                         lines.append(_goto_or_return(fall, source_pc24=blk_pc24)
+                                      + " /* fall-through */")
+@@ -2258,10 +2310,36 @@ def emit_function(rom: bytes, bank: int, start: int,
+         # Axis-5: also charge the region-weighted MASTER clocks (CPU cycles x
+         # code-region speed) into cpu->master_cycles, which paces the SPC700.
+         _cyc_const = _block_cycle_const(block_per_insn_ir.get(key, []))
++        _simple_mode = bool(os.environ.get('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING'))
++        _precise = (_simple_master_lines(block_per_insn_ir.get(key, []), _cyc_const)
++                    if _simple_mode else None)
++        if _simple_mode:
++            _insns = [p[0] for p in block_per_insn_ir.get(key, [])]
++            _unsafe = ['cpu->emulation']
++            _direct = [i.operand + (0 if i.x_flag else 1) for i in _insns
++                       if i.opcode in (0xa6, 0xe4) and i.mode == _MODE_DP]
++            if _direct:
++                _unsafe.append('(cpu->D & 0xff)')
++                _unsafe.append(f'(cpu->D > 0x{0x1fff - max(_direct):04x})')
++            if any(i.opcode in (0x8d, 0x9c, 0x8e, 0x8c, 0xad) for i in _insns):
++                _unsafe.append('(cpu->DB != 0x7e && cpu->DB != 0x7f)')
++            if any(i.opcode == 0x22 for i in _insns):
++                _unsafe.append('(cpu->S < 2 || cpu->S > 0x1fff)')
++            if any(i.opcode == 0x60 for i in _insns):
++                _unsafe.append('(cpu->S > 0x1ffd)')
++            if any(i.opcode == 0x6b for i in _insns):
++                _unsafe.append('(cpu->S > 0x1ffc)')
++            _condition = '1' if _precise is None else ' || '.join(_unsafe)
++            src.append(
++                f'    if ({_condition}) {{ RecompStackPop(); '
++                f'return interp_tier_dispatch_tail_ex(cpu, {_transfer_target_expr(block_pc24, False)}, '
++                f'0x{block_pc24:06X}u, _entry_s, _hrv, false); }}')
+         if _cyc_const:
+             src.append(f'    cpu->cycles += {_cyc_const};')
+             _spd_expr, _spd_const = _block_speed(bank, key.pc)
+-            if _spd_const is not None:
++            if _precise is not None:
++                src.extend(_precise)
++            elif _spd_const is not None:
+                 src.append(f'    cpu->master_cycles += {_cyc_const * _spd_const};')
+             else:
+                 src.append(f'    cpu->master_cycles += {_cyc_const} * {_spd_expr};')
+diff --git a/tests/v2/test_simple_bus_timing.py b/tests/v2/test_simple_bus_timing.py
+new file mode 100644
+index 0000000..8b1b89e
+--- /dev/null
++++ b/tests/v2/test_simple_bus_timing.py
+@@ -0,0 +1,267 @@
++"""Synthetic bus-clock checks for the opt-in simple block model."""
++import os
++import shutil
++import subprocess
++from types import SimpleNamespace
++
++import pytest
++from snes65816 import ABS, IMM, LONG
++from _helpers import make_lorom_bank0
++from v2.emit_function import _simple_master_lines, emit_function
++
++
++def insn(pc, name, mode, length, opcode, operand=0, m=0):
++    return SimpleNamespace(addr=pc, mnem=name, mode=mode, length=length,
++                           opcode=opcode, operand=operand, m_flag=m, x_flag=0)
++
++
++def test_fastrom_mixed_bus_and_native_stack(tmp_path):
++    # REP, LDA #imm16, STA $1fff, JSL: 19 CPU cycles. The 16-bit store
++    # crosses WRAM -> I/O; native stack crosses from $0100 to $00ff.
++    pairs = [(i, []) for i in [
++        insn(0x808000, 'REP', IMM, 2, 0xc2, 0x20, 1),
++        insn(0x808002, 'LDA', IMM, 3, 0xa9, 0x1234),
++        insn(0x808005, 'STA', ABS, 3, 0x8d, 0x1fff),
++        insn(0x808008, 'JSL', LONG, 4, 0x22, 0x818000),
++    ]]
++    lines = _simple_master_lines(pairs, 19)
++    assert lines is not None
++    compiler = shutil.which('gcc')
++    if not compiler:
++        pytest.skip('C compiler unavailable')
++    source = r'''
++#include <stdint.h>
++#include <assert.h>
++typedef uint32_t uint32; typedef uint16_t uint16;
++typedef struct { uint64_t master_cycles; uint8_t PB, DB, emulation; uint16_t S; } Cpu;
++static unsigned stack100, stackff, stackfe;
++static unsigned cpu_region_speed(uint32 a) {
++    if (a == 0x000100) ++stack100;
++    if (a == 0x0000ff) ++stackff;
++    if (a == 0x0000fe) ++stackfe;
++    if ((a & 0xff0000) == 0x800000) return 6; /* fast code */
++    if (a == 0x002000) return 6; /* I/O */
++    return 8; /* WRAM and stack */
++}
++static void charge(Cpu *cpu) {
++''' + '\n'.join(lines) + r'''
++}
++int main(void) {
++    Cpu fast = {0, 0x80, 0, 0, 0x0100};
++    charge(&fast);
++    assert(fast.master_cycles == 122); /* 12 fetch*6 + 2 internal*6 + 8+6 + 3*8 */
++    assert(stack100 == 1 && stackff == 1 && stackfe == 1);
++    Cpu slow = {0, 0, 0x7e, 0, 0x1fff};
++    charge(&slow);
++    assert(slow.master_cycles == 148); /* 12 fetch*8 + 2 internal*6 + 2*8 + 3*8 */
++    return 0;
++}
++'''
++    cfile = tmp_path / 'timing.c'
++    cfile.write_text(source, encoding='utf-8')
++    exe = tmp_path / ('timing.exe' if os.name == 'nt' else 'timing')
++    subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(cfile), '-o', str(exe)], check=True, capture_output=True)
++    subprocess.run([str(exe)], check=True, capture_output=True)
++
++
++def test_unsupported_instruction_declines_precise_charge():
++    # Indirect indexed load has dynamic data and pointer accesses; do not guess.
++    unknown = insn(0x808000, 'LDA', 17, 2, 0xb7, 0x20)
++    assert _simple_master_lines([(unknown, [])], 6) is None
++
++
++def test_store_width_and_word_wrap_are_explicit():
++    byte_store = insn(0x808000, 'STA', ABS, 3, 0x8d, 0xffff, 1)
++    word_store = insn(0x808000, 'STA', ABS, 3, 0x8d, 0xffff, 0)
++    byte_lines = '\n'.join(_simple_master_lines([(byte_store, [])], 4))
++    assert _simple_master_lines([(word_store, [])], 5) is None
++    assert '0xffffu' in byte_lines and '0x0000u' not in byte_lines
++
++
++def test_opt_in_emits_bus_model_and_preserves_emulation_fallback(monkeypatch):
++    # REP #$20; LDA #$1234; STA $1fff; JSL $808100
++    rom = make_lorom_bank0({0x8000: bytes([0xc2, 0x20, 0xa9, 0x34, 0x12,
++                                           0x8d, 0xff, 0x1f, 0x22, 0x00, 0x81, 0x80]),
++                            0x800c: bytes([0x60]), 0x8100: bytes([0x6b])})
++    monkeypatch.delenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', raising=False)
++    old = emit_function(rom, bank=0, start=0x8000, entry_m=1, entry_x=0)
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    new = emit_function(rom, bank=0, start=0x8000, entry_m=1, entry_x=0)
++    assert 'cpu_region_speed(((uint32)cpu->DB << 16) | 0x1fffu)' not in old
++    assert 'cpu_region_speed(((uint32)cpu->DB << 16) | 0x1fffu)' in new
++    assert 'cpu_region_speed(((uint32)cpu->DB << 16) | 0x2000u)' in new
++    assert 'if (cpu->emulation' in new
++    assert 'cpu->DB != 0x7e && cpu->DB != 0x7f' in new
++    assert 'cpu->S < 2 || cpu->S > 0x1fff' in new
++
++
++def test_opt_in_tiers_unsupported_blocks_before_charging(monkeypatch):
++    # NOP is deliberately outside the model. It must execute in the interpreter.
++    rom = make_lorom_bank0({0x8000: bytes([0xea, 0x60])})
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    source = emit_function(rom, bank=0, start=0x8000, entry_m=1, entry_x=1)
++    marker = 'cpu_trace_block(cpu, 0x008000);'
++    block = source[source.index(marker):]
++    dispatch = block.index('return interp_tier_dispatch_tail_ex(')
++    charge = block.index('cpu->cycles +=')
++    assert dispatch < charge
++    assert '0x008000u' in block[:charge]
++
++
++def test_opt_in_tiers_unsafe_runtime_state_before_charging(monkeypatch):
++    rom = make_lorom_bank0({0x8000: bytes([0x8d, 0xff, 0x1f, 0x22, 0x00, 0x81, 0x80]),
++                            0x8007: bytes([0x60]), 0x8100: bytes([0x6b])})
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    source = emit_function(rom, bank=0, start=0x8000, entry_m=1, entry_x=1)
++    block = source[source.index('cpu_trace_block(cpu, 0x008000);'):]
++    dispatch = block.index('return interp_tier_dispatch_tail_ex(')
++    charge = block.index('cpu->cycles +=')
++    assert dispatch < charge
++    assert 'cpu->DB != 0x7e && cpu->DB != 0x7f' in block[:dispatch]
++
++
++def test_index_store_and_long_return_count_bus_accesses():
++    from snes65816 import IMP
++    pairs = [(i, []) for i in [
++        insn(0x808000, 'LDX', IMM, 3, 0xa2, 0x1234),
++        insn(0x808003, 'STX', ABS, 3, 0x8e, 0xfffe),
++        insn(0x808006, 'RTL', IMP, 1, 0x6b),
++    ]]
++    lines = _simple_master_lines(pairs, 14)
++    assert lines is not None
++    source = '\n'.join(lines)
++    assert '0xfffeu' in source and '0xffffu' in source
++    for offset in (1, 2, 3):
++        assert f'cpu->S + {offset}u' in source
++
++
++def test_index_store_width_uses_index_flag():
++    word = insn(0x808000, 'STX', ABS, 3, 0x8e, 0x1000, 1)
++    byte = insn(0x808000, 'STX', ABS, 3, 0x8e, 0x1000, 0)
++    word.x_flag = 0
++    byte.x_flag = 1
++    assert '0x1001u' in '\n'.join(_simple_master_lines([(word, [])], 5))
++    assert '0x1001u' not in '\n'.join(_simple_master_lines([(byte, [])], 4))
++
++
++def test_return_stack_range_and_store_bank_are_guarded(monkeypatch):
++    # LDX #$1234; STX $1234; RTL
++    rom = make_lorom_bank0({0x8000: bytes([0xa2, 0x34, 0x12,
++                                           0x8e, 0x34, 0x12, 0x6b])})
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    source = emit_function(rom, bank=0, start=0x8000, entry_m=0, entry_x=0)
++    block = source[source.index('cpu_trace_block(cpu, 0x008000);'):]
++    guard = block[:block.index('cpu->cycles +=')]
++    assert 'cpu->DB != 0x7e && cpu->DB != 0x7f' in guard
++    assert 'cpu->S > 0x1ffc' in guard
++    assert 'interp_tier_dispatch_tail_ex' in guard
++
++
++def test_short_return_has_two_stack_reads():
++    from snes65816 import IMP
++    lines = '\n'.join(_simple_master_lines([(insn(0x808000, 'RTS', IMP, 1, 0x60), [])], 6))
++    assert 'cpu->S + 1u' in lines
++    assert 'cpu->S + 2u' in lines
++    assert 'cpu->S + 3u' not in lines
++
++
++def test_direct_page_reads_and_branch_timing(monkeypatch):
++    # LDX $2c; CPX $32; BCC to an RTS; both branch paths exist.
++    rom = make_lorom_bank0({0x8000: bytes([0xa6, 0x2c, 0xe4, 0x32, 0x90, 0x01, 0x60, 0x60])})
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    source = emit_function(rom, bank=0, start=0x8000, entry_m=0, entry_x=0)
++    block = source[source.index('cpu_trace_block(cpu, 0x008000);'):]
++    guard = block[:block.index('cpu->cycles +=')]
++    assert 'cpu->D & 0xff' in guard
++    assert 'cpu->D > 0x1fcc' in guard
++    assert 'interp_tier_dispatch_tail_ex' in guard
++    assert 'cpu_region_speed((uint16)(cpu->D + 0x002cu))' in block
++    assert 'cpu_region_speed((uint16)(cpu->D + 0x0033u))' in block
++    assert 'cpu->cycles += 1; cpu->master_cycles += 6;' in block
++
++
++def test_direct_page_width_respects_index_flag():
++    from snes65816 import DP
++    i = insn(0x808000, 'LDX', DP, 2, 0xa6, 0xff, 1)
++    i.x_flag = 0
++    lines = _simple_master_lines([(i, [])], 4)
++    assert lines is not None
++    assert 'cpu->D + 0x0100u' in '\n'.join(lines)
++    i.x_flag = 1
++    lines = _simple_master_lines([(i, [])], 3)
++    assert 'cpu->D + 0x0100u' not in '\n'.join(lines)
++
++
++def test_direct_page_block_clock_arithmetic(tmp_path):
++    from snes65816 import DP, REL
++    pairs = [(i, []) for i in [
++        insn(0x808000, 'LDX', DP, 2, 0xa6, 0x2c),
++        insn(0x808002, 'CPX', DP, 2, 0xe4, 0x32),
++        insn(0x808004, 'BCC', REL, 2, 0x90, 0x04),
++    ]]
++    lines = _simple_master_lines(pairs, 10)
++    assert lines is not None
++    compiler = shutil.which('gcc')
++    if not compiler:
++        pytest.skip('C compiler unavailable')
++    source = r'''
++#include <stdint.h>
++#include <assert.h>
++typedef uint32_t uint32; typedef uint16_t uint16;
++typedef struct { uint64_t master_cycles; uint8_t PB, DB; uint16_t D, S; } Cpu;
++static unsigned cpu_region_speed(uint32 a) { return (a & 0xff0000) == 0x800000 ? 6 : 8; }
++int main(void) {
++    Cpu state = {0, 0x80, 0, 0x1f00, 0}; Cpu *cpu = &state;
++''' + '\n'.join(lines) + r'''
++    assert(state.master_cycles == 68); /* six fast fetches + four WRAM reads */
++    return 0;
++}
++'''
++    cfile = tmp_path / 'dp.c'
++    cfile.write_text(source, encoding='utf-8')
++    exe = tmp_path / ('dp.exe' if os.name == 'nt' else 'dp')
++    subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', str(cfile), '-o', str(exe)], check=True, capture_output=True)
++    subprocess.run([str(exe)], check=True, capture_output=True)
++
++
++def test_absolute_load_reads_accumulator_width_and_wrap():
++    byte = insn(0x808000, 'LDA', ABS, 3, 0xad, 0xffff, 1)
++    word = insn(0x808000, 'LDA', ABS, 3, 0xad, 0xffff, 0)
++    byte.x_flag = 0
++    word.x_flag = 1
++    b = _simple_master_lines([(byte, [])], 4)
++    w = _simple_master_lines([(word, [])], 5)
++    assert b is not None and w is None
++    assert '0x0000u' not in '\n'.join(b)
++
++
++def test_absolute_load_requires_wram_bank_and_native_mode(monkeypatch):
++    # LDA $2882; BMI +1; RTS; RTS
++    rom = make_lorom_bank0({0x8000: bytes([0xad, 0x82, 0x28, 0x30, 0x01, 0x60, 0x60])})
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    source = emit_function(rom, bank=0, start=0x8000, entry_m=0, entry_x=0)
++    block = source[source.index('cpu_trace_block(cpu, 0x008000);'):]
++    guard = block[:block.index('cpu->cycles +=')]
++    assert 'cpu->emulation' in guard
++    assert 'cpu->DB != 0x7e && cpu->DB != 0x7f' in guard
++    assert 'interp_tier_dispatch_tail_ex' in guard
++    assert 'cpu_region_speed(((uint32)cpu->DB << 16) | 0x2882u)' in block
++    assert 'cpu_region_speed(((uint32)cpu->DB << 16) | 0x2883u)' in block
++    assert 'cpu->cycles += 1; cpu->master_cycles += 6;' in block
++
++
++def test_all_word_absolute_bank_crossings_fall_back():
++    for opcode in (0xad, 0x8d, 0x9c, 0x8e, 0x8c):
++        i = insn(0x808000, 'op', ABS, 3, opcode, 0xffff, 0)
++        i.x_flag = 0
++        assert _simple_master_lines([(i, [])], 5) is None
++
++
++def test_absolute_word_bank_crossing_tiers_to_interpreter(monkeypatch):
++    rom = make_lorom_bank0({0x8000: bytes([0xad, 0xff, 0xff, 0x6b])})
++    monkeypatch.setenv('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', '1')
++    source = emit_function(rom, bank=0, start=0x8000, entry_m=0, entry_x=0)
++    block = source[source.index('cpu_trace_block(cpu, 0x008000);'):]
++    guard = block[:block.index('cpu->cycles +=')]
++    assert 'if (1)' in guard
++    assert 'interp_tier_dispatch_tail_ex' in guard
+diff --git a/tools/v2_emit.py b/tools/v2_emit.py
+index d719320..b99fecc 100644
+--- a/tools/v2_emit.py
++++ b/tools/v2_emit.py
+@@ -51,13 +51,16 @@ from sync_symbols import sync_symbols  # noqa: E402
+ # Any non-empty value counts as enabled, matching the codegen guards.
+ EMIT_SWITCHES = {
+     "SNESRECOMP_EMIT_AOT_DENY_GATE": "aot_deny_gate",
++    "SNESRECOMP_EMIT_SIMPLE_BUS_TIMING": "simple_bus_timing",
+ }
+ 
+ 
+ def _emit_switch_digest() -> str:
++    # Keep the historical key unchanged when the new opt-in is disabled.
+     return "\0".join(
+         f"{label}={int(bool(os.environ.get(name)))}"
+-        for name, label in EMIT_SWITCHES.items())
++        for name, label in EMIT_SWITCHES.items()
++        if name != "SNESRECOMP_EMIT_SIMPLE_BUS_TIMING" or os.environ.get(name))
+ 
+ 
+ def _tree_digest(paths) -> str:

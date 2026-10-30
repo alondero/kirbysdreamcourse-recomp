@@ -1,0 +1,88 @@
+diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
+index e101618..aa98603 100644
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -1336,6 +1336,23 @@ void RtlSaveExecutionState(SaveLoadInfo *sli) {
+   cx4_saveload_clock(g_snes->cart->cx4, sli);
+ }
+ 
++size_t RtlValidateExecutionState(const void *data, size_t size) {
++  const size_t clock_size = g_snes && g_snes->cart && g_snes->cart->cx4
++                                ? sizeof(uint64_t) : 0;
++  const size_t needed = sizeof(uint32) + sizeof(RtlRollbackResidue) + clock_size;
++  if (!data || size < needed) return 0;
++  const uint8 *bytes = (const uint8 *)data;
++  uint32 header[3];
++  memcpy(header, bytes, sizeof(header));
++  if (header[0] != sizeof(RtlRollbackResidue) ||
++      header[1] != RTL_RB_RESIDUE_MAGIC || header[2] != RTL_RB_RESIDUE_VERSION)
++    return 0;
++  if (!interp_bridge_rb_state_valid(bytes + sizeof(uint32) +
++                                    offsetof(RtlRollbackResidue, interp)))
++    return 0;
++  return needed;
++}
++
+ bool RtlLoadExecutionState(SaveLoadInfo *sli) {
+   uint32 size = 0;
+   s_loaded_execution_valid = false;
+@@ -1522,10 +1539,13 @@ void RtlSaveLoad(int cmd, int slot) {
+    * needs to distinguish them without the user remembering. */
+   host_report_breadcrumb("savestate %s: %s",
+       cmd == kSaveLoad_Save ? "save" : "load", name);
+-  if (cmd == kSaveLoad_Save)
+-    RtlSaveSnapshot(name);
+-  else
+-    RtlLoadSnapshot(name);
++  if (cmd == kSaveLoad_Save) {
++    if (!RtlSaveSnapshot(name))
++      fprintf(stderr, "Failed to save state: %s\n", name);
++  } else {
++    if (!RtlLoadSnapshot(name))
++      fprintf(stderr, "Failed to load state: %s\n", name);
++  }
+ }
+ 
+ 
+diff --git a/runner/src/common_rtl.h b/runner/src/common_rtl.h
+index d63161e..10be561 100644
+--- a/runner/src/common_rtl.h
++++ b/runner/src/common_rtl.h
+@@ -353,6 +353,8 @@ bool RtlLoadSnapshot(const char *filename);
+ struct SaveLoadInfo;
+ void RtlSaveExecutionState(struct SaveLoadInfo *sli);
+ bool RtlLoadExecutionState(struct SaveLoadInfo *sli);
++/* Validate an execution-state prefix without mutating the live machine. */
++size_t RtlValidateExecutionState(const void *data, size_t size);
+ /* Unread bytes in a snapshot stream, or SIZE_MAX for an unknown stream.
+  * Lets game chunks distinguish historical layouts without probing past EOF. */
+ size_t RtlStateBytesRemaining(struct SaveLoadInfo *sli);
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index 98fb3b6..50aa73e 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -907,6 +907,12 @@ typedef struct {
+ #define INTERP_BRIDGE_RB_MAGIC 0x49425253u /* 'IBRS' */
+ 
+ size_t interp_bridge_rb_state_size(void) { return sizeof(InterpBridgeRbState); }
++int interp_bridge_rb_state_valid(const void *data) {
++    uint32_t magic = 0;
++    if (!data) return 0;
++    memcpy(&magic, data, sizeof(magic));
++    return magic == INTERP_BRIDGE_RB_MAGIC;
++}
+ 
+ void interp_bridge_rb_state_save(void *out) {
+     InterpBridgeRbState *s = (InterpBridgeRbState *)out;
+diff --git a/runner/src/snes/interp_bridge.h b/runner/src/snes/interp_bridge.h
+index 537202c..c0e995e 100644
+--- a/runner/src/snes/interp_bridge.h
++++ b/runner/src/snes/interp_bridge.h
+@@ -208,6 +208,7 @@ void interp_bridge_set_lle_resume_pc(uint32_t pc);
+  * bridge's business, and the caller only has to store and hand it back.
+  */
+ size_t interp_bridge_rb_state_size(void);
++int    interp_bridge_rb_state_valid(const void *data);
+ void   interp_bridge_rb_state_save(void *out);
+ void   interp_bridge_rb_state_load(const void *in);
+ 

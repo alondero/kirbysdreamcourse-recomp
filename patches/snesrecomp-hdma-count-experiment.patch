@@ -1,0 +1,76 @@
+diff --git a/runner/src/snes/dma.c b/runner/src/snes/dma.c
+index 9fb6639..cbc3a86 100644
+--- a/runner/src/snes/dma.c
++++ b/runner/src/snes/dma.c
+@@ -400,10 +400,19 @@ void dma_primeHdmaFirstLine(Dma* dma) {
+   }
+ }
+ 
+-void dma_doHdma(Dma* dma) {
++uint32_t dma_doHdmaCounted(Dma* dma) {
++  uint32_t clocks = 0;
++  unsigned active = 0;
++  for (int i = 0; i < 8; i++) {
++    DmaChannel *ch = &dma->channel[i];
++    if (ch->hdmaActive && (!ch->terminated || (dma->hdmaPendingInit & (1u << i))))
++      active |= 1u << i;
++  }
++  if (active) clocks = 18u;
+   for (int i = 0; i < 8; i++) {
+     DmaChannel* ch = &dma->channel[i];
+-    if (!ch->hdmaActive) continue;
++    if (!(active & (1u << i))) continue;
++    clocks += 8u;
+     /* A channel switched on part-way through a frame spends its first HDMA
+      * slot loading the table header, and only transfers from the slot after.
+      * Measured against Mesen on Gundam Wing's pre-fight screen, which enables
+@@ -412,6 +421,8 @@ void dma_doHdma(Dma* dma) {
+       dma->hdmaPendingInit &= (uint8_t)~(1u << i);
+       ch->tableAdr = ch->aAdr;
+       dma_hdmaLoadDescriptor(dma, ch);
++      if (ch->indirect)
++        clocks += ch->terminated ? ((active & (0xfeu << i)) ? 16u : 8u) : 16u;
+       ch->offIndex = 0;
+       continue;
+     }
+@@ -419,6 +430,7 @@ void dma_doHdma(Dma* dma) {
+ 
+     if (ch->doTransfer) {
+       int len = transferLength[ch->mode & 7];
++      clocks += 8u * (unsigned)len;
+       for (int j = 0; j < len; j++) {
+         uint8_t bAdr = (uint8_t)(ch->bAdr + bAdrOffsets[ch->mode & 7][j]);
+         g_ppu_wlog_src = kPpuWlogHdma;
+@@ -432,9 +444,17 @@ void dma_doHdma(Dma* dma) {
+ 
+     ch->repCount--;
+     ch->doTransfer = (ch->repCount & 0x80) != 0;
+-    if ((ch->repCount & 0x7f) == 0)
++    if ((ch->repCount & 0x7f) == 0) {
+       dma_hdmaLoadDescriptor(dma, ch);
++      if (ch->indirect)
++        clocks += ch->terminated ? ((active & (0xfeu << i)) ? 16u : 8u) : 16u;
++    }
+   }
++  return clocks;
++}
++
++void dma_doHdma(Dma* dma) {
++  (void)dma_doHdmaCounted(dma);
+ }
+ 
+ /* ── HDMA ────────────────────────────────────────────────────────────────
+diff --git a/runner/src/snes/dma.h b/runner/src/snes/dma.h
+index f55baf8..ad6abec 100644
+--- a/runner/src/snes/dma.h
++++ b/runner/src/snes/dma.h
+@@ -76,6 +76,9 @@ void dma_write(Dma* dma, uint16_t adr, uint8_t val); // 43x0-43xf
+ void dma_doDma(Dma* dma);
+ void dma_initHdma(Dma* dma);
+ void dma_doHdma(Dma* dma);
++/* Experimental Snes9x-style slot accounting. Performs the same transfers and
++ * returns modeled master clocks; the caller owns CPU/beam synchronization. */
++uint32_t dma_doHdmaCounted(Dma* dma);
+ void dma_primeHdmaFirstLine(Dma* dma);
+ uint64_t dma_hdmaMasterEstimate(Dma* dma);
+ /* Per-scanline HDMA. A frame-model host owns these edges: call dma_initHdma()

@@ -1,0 +1,12 @@
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -1681,6 +1681,9 @@
+     RtlApuWrite(reg, value);
+   } else if (reg >= 0x2180 && reg < 0x2184) {
+     snes_writeBBus(g_snes, reg & 0xff, value);
++  } else if (reg == 0x4016) {
++    /* Route manual controller latch writes through the shared hardware bus. */
++    snes_writeReg(g_snes, reg, value);
+   } else if (reg >= 0x4200 && reg < 0x4220) {
+     if (reg == 0x420C) {
+       /* The raster journal records it in snes_writeReg. */

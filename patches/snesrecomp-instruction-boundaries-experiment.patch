@@ -1,0 +1,36 @@
+--- a/recompiler/v2/emit_function.py
++++ b/recompiler/v2/emit_function.py
+@@ -735,8 +735,23 @@
+     hook_by_pc24 = {pc24 & 0xFFFFFF: name
+                     for pc24, name in (entry_hooks or {}).items()
+                     if ((pc24 >> 16) & 0xFF) == bank}
+-    cfg = build_cfg(graph, instruction_blocks=get_rom_mapping() == ROM_MAP_SA1,
++    # Experimental: keep stack-sensitive rewrites on the original CFG,
++    # and force the LLE scheduler to interpret them until they can be split safely.
++    ordinary_cfg = build_cfg(graph, instruction_blocks=False,
+                     extra_leader_pcs={pc24 & 0xFFFF for pc24 in hook_by_pc24})
++    unsafe_stack = any(di.insn.mnem in {'PHK', 'PEA', 'PEI', 'PER', 'PLA'}
++                       for di in graph.insns.values())
++    ordinary_poll = any(
++        key in blk.successors and len(blk.insns) > 1 and
++        blk.insns[-1].insn.mnem in {'BCC','BCS','BEQ','BNE','BMI','BPL','BVC','BVS'} and
++        len(blk.insns) <= 3 and
++        all(di.insn.mnem in {'LDA','LDX','LDY','BIT','CMP','CPX','CPY'} and
++            di.insn.mode != _MODE_IMM for di in blk.insns[:-1])
++        for key, blk in ordinary_cfg.blocks.items())
++    local_force_lle = unsafe_stack or ordinary_poll
++    cfg = ordinary_cfg if local_force_lle else build_cfg(
++        graph, instruction_blocks=True,
++        extra_leader_pcs={pc24 & 0xFFFF for pc24 in hook_by_pc24})
+ 
+     # A tight, side-effect-free memory poll cannot execute atomically under
+     # the LLE frame scheduler: the value it observes is commonly changed by
+@@ -755,7 +770,7 @@
+     _cond_branches = {
+         'BCC', 'BCS', 'BEQ', 'BNE', 'BMI', 'BPL', 'BVC', 'BVS',
+     }
+-    has_lle_memory_poll = False
++    has_lle_memory_poll = local_force_lle
+     for poll_key, poll_blk in cfg.blocks.items():
+         if poll_key not in poll_blk.successors or not poll_blk.insns:
+             continue

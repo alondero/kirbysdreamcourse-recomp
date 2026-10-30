@@ -1,0 +1,44 @@
+diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
+index 3e62070..f193b19 100644
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -1720,7 +1720,7 @@ uint8 ReadRegOpenBus(uint16 reg, uint8 open_bus) {
+     return msu1_enabled() ? msu1_read(reg) : open_bus;
+   }
+   if (reg == 0x2137)
+-    snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    snes_sync_master_clock(g_snes, interp_bridge_bus_sample_master(&g_cpu, reg));
+   if (reg >= 0x3000 && reg < 0x3300 && g_snes->cart->type == CART_SUPERFX) {
+     cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
+     return cart_read(g_snes->cart, 0, reg);
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index e5de145..17e027a 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -207,6 +207,14 @@ uint64_t interp_bridge_bus_master(const CpuState *cpu) {
+     return cpu->master_cycles + (s_interp_bus_timing_active ? s_interp_bus_master : 0);
+ }
+ 
++/* Start of the current read's bus access. Snes9x samples the register
++ * before charging the access; outside the interpreter use the owning clock. */
++uint64_t interp_bridge_bus_sample_master(const CpuState *cpu, uint32_t address) {
++    if (!s_interp_bus_timing_active) return cpu->master_cycles;
++    uint32_t speed = bridge_region_speed(address);
++    return cpu->master_cycles + (s_interp_bus_master >= speed ? s_interp_bus_master - speed : 0);
++}
++
+ static void bridge_timing_bus(uint32_t adr) {
+     if (!s_interp_bus_timing_active) return;
+     s_interp_bus_cycles++;
+diff --git a/runner/src/snes/interp_bridge.h b/runner/src/snes/interp_bridge.h
+index a15ac92..58497b8 100644
+--- a/runner/src/snes/interp_bridge.h
++++ b/runner/src/snes/interp_bridge.h
+@@ -320,5 +320,7 @@ void Tier2CoverageTestRecord(uint32_t site, uint32_t target, uint8_t mx,
+ /* Experimental callback at interpreted interrupt-handler instruction boundaries. */
+ void interp_bridge_set_interrupt_boundary_hook(void (*hook)(void));
+ void interp_bridge_set_interrupt_event_hook(void (*hook)(CpuState *, uint32_t));
++uint64_t interp_bridge_bus_master(const CpuState *cpu);
++uint64_t interp_bridge_bus_sample_master(const CpuState *cpu, uint32_t address);
+ 
+ #endif /* INTERP_BRIDGE_H */

@@ -1,0 +1,19 @@
+diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
+index 4ccb6dc..3e62070 100644
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -1742,7 +1742,13 @@ uint8 ReadRegOpenBus(uint16 reg, uint8 open_bus) {
+      * ArePluggedIn detection. */
+     return snes_readReg(g_snes, reg);
+   } else if (reg >= 0x4200 && reg < 0x4220) {
+-    return recomp_read_internal_reg(reg);
++    uint8 value = recomp_read_internal_reg(reg);
++    /* Un-driven bits retain the incoming CPU bus latch. The underlying
++     * register read still owns read-clear and timing side effects. */
++    if (reg == 0x4210) value |= open_bus & 0x70;
++    else if (reg == 0x4211) value |= open_bus & 0x7f;
++    else if (reg == 0x4212) value |= open_bus & 0x3e;
++    return value;
+   } else if (reg >= 0x4300 && reg < 0x4380) {
+     return dma_read(g_dma, reg);
+   } else if (reg >= 0x4800 && reg < 0x4808 &&

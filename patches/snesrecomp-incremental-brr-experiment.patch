@@ -1,0 +1,329 @@
+diff --git a/runner/src/snes/dsp.c b/runner/src/snes/dsp.c
+index 62f11be..9c23836 100644
+--- a/runner/src/snes/dsp.c
++++ b/runner/src/snes/dsp.c
+@@ -18,6 +18,11 @@ static const int rateValues[32] = {
+   10, 8, 6, 5, 4, 3, 2, 1
+ };
+ 
++static const uint16_t envelopeOffsets[32] = {
++  1,0,1040,536,0,1040,536,0,1040,536,0,1040,536,0,1040,536,
++  0,1040,536,0,1040,536,0,1040,536,0,1040,536,0,1040,0,0
++};
++
+ /* Non-static: the dev faithful reference (dsp_shadow) reuses this canonical
+  * Gaussian table (verified byte-identical to blargg's snes9x/bsnes gauss[512])
+  * with blargg's exact integer algorithm, to isolate the canon-vs-reference
+@@ -159,13 +164,22 @@ void dsp_reset(Dsp* dsp) {
+     dsp->channel[i].useNoise = false;
+     memset(dsp->channel[i].adsrRates, 0, sizeof(dsp->channel[i].adsrRates));
+     dsp->channel[i].rateCounter = 0;
+-    dsp->channel[i].adsrState = 0;
++    dsp->channel[i].adsrState = 4;
+     dsp->channel[i].sustainLevel = 0;
+     dsp->channel[i].useGain = false;
+     dsp->channel[i].gainMode = 0;
+     dsp->channel[i].directGain = false;
+     dsp->channel[i].gainValue = 0;
++    dsp->channel[i].gainWritePending = false;
++    dsp->channel[i].gainWriteValue = 0;
+     dsp->channel[i].gain = 0;
++    memset(dsp->channel[i].brrRing, 0, sizeof(dsp->channel[i].brrRing));
++    dsp->channel[i].brrRingPos = 0;
++    dsp->channel[i].brrByteOffset = 1;
++    dsp->channel[i].brrAddress = 0;
++    dsp->channel[i].keyOnDelay = 0;
++    dsp->channel[i].keyOnResume = false;
++    dsp->channel[i].keyOnRestart = false;
+     dsp->channel[i].keyOn = false;
+     dsp->channel[i].keyOff = false;
+     dsp->channel[i].sampleOut = 0;
+@@ -173,6 +187,7 @@ void dsp_reset(Dsp* dsp) {
+     dsp->channel[i].volumeR = 0;
+     dsp->channel[i].echoEnable = false;
+   }
++  dsp->envelopeCounter = 0;
+   dsp->dirPage = 0;
+   dsp->evenCycle = false;
+   dsp->mute = true;
+@@ -235,6 +250,7 @@ void dsp_set_output_suppressed(Dsp *dsp, bool suppressed) {
+ }
+ 
+ void dsp_cycle(Dsp* dsp) {
++  dsp->envelopeCounter = dsp->envelopeCounter ? dsp->envelopeCounter - 1 : 30719;
+   int totalL = 0;
+   int totalR = 0;
+   for(int i = 0; i < 8; i++) {
+@@ -285,6 +301,17 @@ void dsp_cycle(Dsp* dsp) {
+     audio_trace_on_sample((int16_t)totalL, (int16_t)totalR, dropped,
+                           dropped ? fill : fill + 1);
+   }
++  for (int i = 0; i < 8; ++i) {
++    DspChannel *v = &dsp->channel[i];
++    if (!v->gainWritePending) continue;
++    if (--v->gainWritePending) continue;
++    uint8_t val = v->gainWriteValue;
++    v->directGain = (val & 0x80) == 0;
++    if (val & 0x80) {
++      v->gainMode = (val & 0x60) >> 5;
++      v->adsrRates[3] = rateValues[val & 0x1f];
++    } else v->gainValue = (val & 0x7f) * 16;
++  }
+   dsp->evenCycle = !dsp->evenCycle;
+ }
+ 
+@@ -360,7 +387,92 @@ static void dsp_handleEcho(Dsp* dsp, int* outputL, int* outputR, bool audit) {
+   }
+ }
+ 
++/* Experimental four-sample BRR decoding in playback order. */
++static void dsp_decodeFour(Dsp *dsp, int ch) {
++  DspChannel *v = &dsp->channel[ch];
++  uint8_t header = dsp->apu_ram[v->brrAddress];
++  int shift = header >> 4, filter = (header >> 2) & 3;
++  int older = v->brrRing[(v->brrRingPos + 10) % 12];
++  int old = v->brrRing[(v->brrRingPos + 11) % 12];
++  for (int i = 0; i < 4; ++i) {
++    uint8_t b = dsp->apu_ram[(v->brrAddress + v->brrByteOffset + i / 2) & 0xffff];
++    int x = (i & 1) ? (b & 15) : (b >> 4);
++    if (x > 7) x -= 16;
++    if (shift <= 12) x = (x * (1 << shift)) >> 1;
++    else x &= ~0x7ff;
++    if (filter == 1) x += old + (-old >> 4);
++    if (filter == 2) x += 2 * old + ((3 * -old) >> 5) - older + (older >> 4);
++    if (filter == 3) x += 2 * old + ((13 * -old) >> 6) - older + ((3 * older) >> 4);
++    x = x < -32768 ? -32768 : x > 32767 ? 32767 : x;
++    x = ((int16_t)((x & 0x7fff) << 1)) >> 1;
++    older = old; old = x;
++    v->brrRing[(v->brrRingPos + i) % 12] = x;
++  }
++  v->brrRingPos = (v->brrRingPos + 4) % 12;
++  v->brrByteOffset += 2;
++  if (v->brrByteOffset >= 9) {
++    v->brrByteOffset = 1;
++    if (header & 1) {
++      uint16_t ptr = dsp->dirPage + 4 * v->srcn;
++      v->brrAddress = dsp->apu_ram[(ptr + 2) & 0xffff] | (dsp->apu_ram[(ptr + 3) & 0xffff] << 8);
++      dsp->ram[0x7c] |= 1 << ch;
++    } else v->brrAddress += 9;
++  }
++}
++
+ static void dsp_cycleChannel(Dsp* dsp, int ch) {
++  bool clearEndx = dsp->channel[ch].keyOnDelay == 6;
++  if (clearEndx) {
++    --dsp->channel[ch].keyOnDelay;
++  }
++  else if (dsp->channel[ch].keyOnDelay) {
++    bool restartPending = dsp->channel[ch].keyOnRestart;
++    if (dsp->evenCycle && dsp->channel[ch].keyOff) dsp->channel[ch].adsrState = 4;
++    if (dsp->channel[ch].keyOnDelay == 5) {
++      dsp->channel[ch].adsrState = 0;
++      uint16_t ptr = dsp->dirPage + 4 * dsp->channel[ch].srcn;
++      dsp->channel[ch].brrAddress = dsp->apu_ram[ptr] | (dsp->apu_ram[(ptr + 1) & 0xffff] << 8);
++      dsp->channel[ch].brrByteOffset = 1;
++      dsp->channel[ch].brrRingPos = 0;
++      dsp->channel[ch].pitchCounter = 0;
++    }
++    if (dsp->channel[ch].keyOnDelay < 5 && (dsp->apu_ram[dsp->channel[ch].brrAddress] & 3) == 1)
++      dsp->channel[ch].adsrState = 4;
++    if (dsp->channel[ch].keyOnDelay >= 2 && dsp->channel[ch].keyOnDelay <= 4)
++      dsp_decodeFour(dsp, ch);
++    dsp->channel[ch].gain = 0;
++    dsp->channel[ch].sampleOut = 0;
++    dsp->ram[(ch << 4) | 8] = 0;
++    dsp->ram[(ch << 4) | 9] = 0;
++    --dsp->channel[ch].keyOnDelay;
++    if (dsp->evenCycle && dsp->channel[ch].keyOn) {
++      dsp->channel[ch].keyOn = false;
++      dsp->channel[ch].keyOnRestart = true;
++      if (!dsp->channel[ch].keyOnDelay) {
++        if (dsp->channel[ch].adsrState != 4 && dsp->channel[ch].useGain && dsp->channel[ch].directGain)
++          dsp->channel[ch].gain = dsp->channel[ch].gainValue;
++        dsp->channel[ch].keyOnDelay = 6;
++        dsp->channel[ch].keyOnRestart = false;
++      }
++    }
++    if (restartPending) {
++      dsp->channel[ch].keyOnDelay = 5;
++      dsp->channel[ch].keyOnRestart = false;
++      dsp->ram[0x7c] &= ~(1 << ch);
++    }
++    if (!dsp->channel[ch].keyOnDelay) dsp->channel[ch].keyOnResume = true;
++    if (!dsp->channel[ch].keyOnDelay && dsp->channel[ch].adsrState != 4 && dsp->channel[ch].useGain && dsp->channel[ch].directGain)
++      dsp->channel[ch].gain = dsp->channel[ch].gainValue;
++    else if (!dsp->channel[ch].keyOnDelay && dsp->channel[ch].adsrState == 0) {
++      bool liveGain = dsp->channel[ch].useGain;
++      int rate = dsp->channel[ch].adsrRates[liveGain ? 3 : 0];
++      int index = 0;
++      for (int i = 1; i < 32; ++i) if (rateValues[i] == rate) { index = i; break; }
++      if (index && (((dsp->envelopeCounter + 1) % 30720) + envelopeOffsets[index]) % rate == 0)
++        dsp_handleGain(dsp, ch, liveGain);
++    }
++    return;
++  }
+   // handle pitch counter
+   uint16_t pitch = dsp->channel[ch].pitch;
+   if(ch > 0 && dsp->channel[ch].pitchModulation) {
+@@ -368,45 +480,32 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+     pitch = (pitch * factor) >> 10;
+     if(pitch > 0x3fff) pitch = 0x3fff;
+   }
+-  int newCounter = dsp->channel[ch].pitchCounter + pitch;
+-  if(newCounter > 0xffff) {
+-    // next sample
+-    dsp_decodeBrr(dsp, ch);
+-  }
+-  dsp->channel[ch].pitchCounter = newCounter;
++  DspChannel *v = &dsp->channel[ch];
++  bool envelopeResume = v->keyOnResume;
++  bool endWithoutLoop = (dsp->apu_ram[v->brrAddress] & 3) == 1;
+   int16_t sample = 0;
+-  if(dsp->channel[ch].useNoise) {
+-    sample = dsp->noiseSample;
+-  } else {
+-    sample = dsp_getSample(dsp, ch, dsp->channel[ch].pitchCounter >> 12, (dsp->channel[ch].pitchCounter >> 4) & 0xff);
+-  }
+-  // Key-on/off is LATCHED and polled every other sample, KOF taking
+-  // priority — hardware behavior (and what the snes9x oracle does).
+-  // The inherited port code (`MY_CHANGES`) instead applied KON/KOF
+-  // immediately inside dsp_write, a hardware deviation kept here since
+-  // the initial import with no recorded rationale; issue #4 made it a
+-  // suspect for note-level divergence, so it was removed in favor of
+-  // this latched path. A pending keyOn survives while keyOff is held
+-  // (engine clears $5C later -> voice starts at the next poll), exactly
+-  // as on hardware.
++  if (v->useNoise) sample = dsp->noiseSample;
++  else {
++    unsigned index = v->pitchCounter >> 12;
++    for (int i = 0; i < 4; ++i)
++      v->decodeBuffer[i] = v->brrRing[(v->brrRingPos + index + i) % 12];
++    sample = dsp_getSample(dsp, ch, 0, (v->pitchCounter >> 4) & 0xff);
++  }
++  if (v->pitchCounter >= 0x4000) dsp_decodeFour(dsp, ch);
++  if (clearEndx) dsp->ram[0x7c] &= ~(1 << ch);
++  v->pitchCounter = (v->pitchCounter & 0x3fff) + pitch;
++  v->keyOnResume = false;
++  // Experimental event polling: both KOFF and KON can be observed in one poll.
++  // Phase behavior and interaction with writes between polls need more tests.
+   if(dsp->evenCycle) {
+     // handle keyon/off (every other cycle)
+     if(dsp->channel[ch].keyOff) {
+       // go to release
+       dsp->channel[ch].adsrState = 4;
+-    } else if(dsp->channel[ch].keyOn) {
++    }
++    if(dsp->channel[ch].keyOn) {
+       dsp->channel[ch].keyOn = false;
+-      // restart current sample
+-      dsp->channel[ch].previousFlags = 0;
+-      uint16_t samplePointer = dsp->dirPage + 4 * dsp->channel[ch].srcn;
+-      dsp->channel[ch].decodeOffset = dsp->apu_ram[samplePointer];
+-      dsp->channel[ch].decodeOffset |= dsp->apu_ram[(samplePointer + 1) & 0xffff] << 8;
+-      memset(dsp->channel[ch].decodeBuffer, 0, sizeof(dsp->channel[ch].decodeBuffer));
+-      dsp->channel[ch].gain = 0;
+-      // Key-on always enters the ATTACK stage; whether the envelope VALUE
+-      // follows ADSR or the GAIN program is decided live per tick (the
+-      // stage machine is source-independent — see dsp_handleGain).
+-      dsp->channel[ch].adsrState = 0;
++      dsp->channel[ch].keyOnDelay = 6;
+     }
+   }
+   // handle reset
+@@ -439,19 +538,30 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+     if(stage > 2) stage = 2;
+     rate = dsp->channel[ch].adsrRates[stage];
+   }
+-  if(!releasing && !doingDirectGain && rate != 0) {
+-    dsp->channel[ch].rateCounter++;
+-  }
+-  if(releasing || (!doingDirectGain && dsp->channel[ch].rateCounter >= rate && rate != 0)) {
+-    if(!releasing) dsp->channel[ch].rateCounter = 0;
++  /* Experimental reference-aligned shared envelope counter. */
++  int rateIndex = 0;
++  for (int i = 1; i < 32; ++i) if (rateValues[i] == rate) { rateIndex = i; break; }
++  unsigned phaseCounter = (dsp->envelopeCounter + 2) % 30720;
++  if (!envelopeResume && (releasing || (!doingDirectGain && rateIndex && (phaseCounter + envelopeOffsets[rateIndex]) % rate == 0)))
+     dsp_handleGain(dsp, ch, liveGain);
+-  }
+   if(doingDirectGain) dsp->channel[ch].gain = dsp->channel[ch].gainValue;
++  /* The next exponential decay value determines the stage even if the
++     envelope rate has not yet committed that value. */
++  if (!liveGain && dsp->channel[ch].adsrState == 1 && dsp->channel[ch].gain) {
++    int candidate = dsp->channel[ch].gain - 1;
++    candidate -= candidate >> 8;
++    if ((candidate >> 8) == ((dsp->channel[ch].sustainLevel >> 8) - 1))
++      dsp->channel[ch].adsrState = 2;
++  }
+   // set outputs
+   dsp->ram[(ch << 4) | 8] = dsp->channel[ch].gain >> 4;
+   sample = (sample * dsp->channel[ch].gain) >> 11;
+   dsp->ram[(ch << 4) | 9] = sample >> 7;
+   dsp->channel[ch].sampleOut = sample;
++  if (endWithoutLoop) {
++    v->adsrState = 4;
++    v->gain = 0;
++  }
+ }
+ 
+ static void dsp_handleGain(Dsp* dsp, int ch, bool liveGain) {
+@@ -650,13 +760,8 @@ void dsp_write(Dsp* dsp, uint8_t adr, uint8_t val) {
+       break;
+     }
+     case 0x07: case 0x17: case 0x27: case 0x37: case 0x47: case 0x57: case 0x67: case 0x77: {
+-      dsp->channel[ch].directGain = (val & 0x80) == 0;
+-      if(val & 0x80) {
+-        dsp->channel[ch].gainMode = (val & 0x60) >> 5;
+-        dsp->channel[ch].adsrRates[3] = rateValues[val & 0x1f];
+-      } else {
+-        dsp->channel[ch].gainValue = (val & 0x7f) * 16;
+-      }
++      dsp->channel[ch].gainWritePending = ch == 0 ? 2 : 1;
++      dsp->channel[ch].gainWriteValue = val;
+       break;
+     }
+     case 0x0c: {
+diff --git a/runner/src/snes/dsp.h b/runner/src/snes/dsp.h
+index c93840e..025df62 100644
+--- a/runner/src/snes/dsp.h
++++ b/runner/src/snes/dsp.h
+@@ -43,8 +43,17 @@ typedef struct DspChannel {
+   uint8_t gainMode;
+   bool directGain;
+   uint16_t gainValue; // for direct gain
++  uint8_t gainWritePending;
++  uint8_t gainWriteValue;
+   uint16_t gain;
+   // keyon/off
++  int16_t brrRing[12];
++  uint8_t brrRingPos;
++  uint8_t brrByteOffset;
++  uint16_t brrAddress;
++  uint8_t keyOnDelay;
++  bool keyOnResume;
++  bool keyOnRestart;
+   bool keyOn;
+   bool keyOff;
+   // output
+@@ -71,6 +80,7 @@ struct Dsp {
+   // 8 channels
+   DspChannel channel[8];
+   // overarching
++  uint16_t envelopeCounter;
+   uint16_t dirPage;
+   bool evenCycle;
+   bool mute;
+diff --git a/tests/audio/dsp_trace_gate_test.c b/tests/audio/dsp_trace_gate_test.c
+index 1523151..165ea59 100644
+--- a/tests/audio/dsp_trace_gate_test.c
++++ b/tests/audio/dsp_trace_gate_test.c
+@@ -57,6 +57,9 @@ static void seed_dsp(Dsp *dsp) {
+   ch->useNoise = false;
+   for (int i = 0; i < 19; i++)
+     ch->decodeBuffer[i] = (int16_t)(-12000 + i * 1500);
++  /* Incremental decoder stores its current interpolation window in the ring. */
++  for (int i = 0; i < 12; i++)
++    ch->brrRing[i] = (int16_t)(-12000 + i * 1500);
+ }
+ 
+ static void test_disabled_shadow_allocation(void) {

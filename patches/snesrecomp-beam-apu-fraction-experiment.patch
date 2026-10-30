@@ -1,0 +1,34 @@
+--- a/runner/src/apu_frame_clock.h
++++ b/runner/src/apu_frame_clock.h
+@@ -8,18 +8,20 @@
+  * frames. Keep its elapsed time when beginning the following iteration. */
+ typedef struct RtlApuFrameClock {
+   uint64_t start_master, start_guest, next_guest, last_duration;
++  uint64_t start_fraction, next_fraction;
+ } RtlApuFrameClock;
+ 
+ static inline void rtl_apu_clock_begin(RtlApuFrameClock *clock, uint64_t master) {
+   clock->start_master = master;
+   clock->start_guest = clock->next_guest;
++  clock->start_fraction = clock->next_fraction;
+ }
+ 
+ static inline uint64_t rtl_apu_clock_now(const RtlApuFrameClock *clock,
+                                         uint64_t master) {
+   /* RESET may initialize CPU state inside the first host iteration. */
+   uint64_t within = master >= clock->start_master ? master - clock->start_master : 0;
+-  return clock->start_guest + within * RTL_APU_CYCLES_PER_FRAME /
++  return clock->start_guest + (within * RTL_APU_CYCLES_PER_FRAME + clock->start_fraction) /
+                                RTL_MASTER_CYCLES_PER_FRAME;
+ }
+ 
+@@ -39,6 +41,9 @@
+ static inline uint64_t rtl_apu_clock_finish_elapsed(RtlApuFrameClock *clock,
+                                                    uint64_t master) {
+   uint64_t end = rtl_apu_clock_now(clock, master);
++  uint64_t within = master >= clock->start_master ? master - clock->start_master : 0;
++  clock->next_fraction = (within * RTL_APU_CYCLES_PER_FRAME + clock->start_fraction) %
++                         RTL_MASTER_CYCLES_PER_FRAME;
+   clock->last_duration = end - clock->start_guest;
+   clock->next_guest = end;
+   return end;

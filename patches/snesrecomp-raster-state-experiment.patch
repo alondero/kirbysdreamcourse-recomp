@@ -1,0 +1,110 @@
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -618,6 +618,24 @@
+ /* Disarm, for a machine rebuild (session reset). */
+ void ppu_rasterReset(void);
+ 
++/* Experimental fixed-size snapshot of the two raster journals. Captures only
++ * at a render boundary; rendering cursors and host pointers are not stored. */
++#define PPU_RASTER_SNAPSHOT_MAX 4096u
++typedef struct { uint16_t key, reg; uint8_t val; } PpuRasterSnapshotEntry;
++typedef struct {
++  uint8_t regs[PPU_SAVESTATE_REGS_SIZE];
++  uint8_t scroll_prev, scroll_prev2, m7_prev, hdmaen;
++  uint32_t count, dropped;
++  PpuRasterSnapshotEntry entries[PPU_RASTER_SNAPSHOT_MAX];
++} PpuRasterSnapshotField;
++typedef struct {
++  uint32_t magic, version, armed, current, completed;
++  PpuRasterSnapshotField fields[2];
++} PpuRasterSnapshot;
++bool ppu_rasterSnapshotCapture(PpuRasterSnapshot *out);
++bool ppu_rasterSnapshotValidate(const PpuRasterSnapshot *in);
++void ppu_rasterSnapshotRestore(const PpuRasterSnapshot *in);
++
+ /* Scanout latch bypass — set by the debug server around render_inject so an
+  * injected OAM/CGRAM state is rendered as given. A frame-model host that
+  * latches OAM/CGRAM at the frame's start (hardware scans out the state as of
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -3303,6 +3303,78 @@
+   s_raster_hdmaen_pending = 0;
+ }
+ 
++/* Versioned raster history for the optional game save-state extension. */
++bool ppu_rasterSnapshotCapture(PpuRasterSnapshot *out) {
++  if (!out || s_raster_rendering) return false;
++  memset(out, 0, sizeof(*out));
++  out->magic = 0x52535050u; /* PPSR */
++  out->version = 1;
++  out->armed = (uint32_t)s_raster_armed;
++  out->current = (uint32_t)s_raster_cur;
++  out->completed = (uint32_t)s_raster_have_completed;
++  if (!s_raster_armed) return true;
++  for (unsigned i = 0; i < 2; i++) {
++    const PpuRasterField *src = &s_field[i];
++    PpuRasterSnapshotField *dst = &out->fields[i];
++    memcpy(dst->regs, src->regs, sizeof(dst->regs));
++    dst->scroll_prev = src->scrollPrev;
++    dst->scroll_prev2 = src->scrollPrev2;
++    dst->m7_prev = src->m7prev;
++    dst->hdmaen = src->hdmaen;
++    if (src->count < 0 || src->count > PPU_RASTER_MAX) return false;
++    dst->count = (uint32_t)src->count;
++    dst->dropped = src->dropped;
++    for (unsigned j = 0; j < dst->count; j++) {
++      dst->entries[j].key = src->e[j].key;
++      dst->entries[j].reg = src->e[j].reg;
++      dst->entries[j].val = src->e[j].val;
++    }
++  }
++  return true;
++}
++
++bool ppu_rasterSnapshotValidate(const PpuRasterSnapshot *in) {
++  if (!in || in->magic != 0x52535050u || in->version != 1 ||
++      in->armed > 1 || in->current > 1 || in->completed > 1 ||
++      (!in->armed && in->completed)) return false;
++  for (unsigned i = 0; i < 2; i++) {
++    const PpuRasterSnapshotField *f = &in->fields[i];
++    if (f->count > PPU_RASTER_SNAPSHOT_MAX) return false;
++    for (unsigned j = 0; j < f->count; j++)
++      if (f->entries[j].key >= 262 || !raster_reg_journaled(f->entries[j].reg))
++        return false;
++  }
++  return true;
++}
++
++void ppu_rasterSnapshotRestore(const PpuRasterSnapshot *in) {
++  if (!ppu_rasterSnapshotValidate(in)) return;
++  for (unsigned i = 0; i < 2; i++) {
++    PpuRasterField *dst = &s_field[i];
++    const PpuRasterSnapshotField *src = &in->fields[i];
++    memset(dst, 0, sizeof(*dst));
++    memcpy(dst->regs, src->regs, sizeof(dst->regs));
++    dst->scrollPrev = src->scroll_prev;
++    dst->scrollPrev2 = src->scroll_prev2;
++    dst->m7prev = src->m7_prev;
++    dst->hdmaen = src->hdmaen;
++    dst->count = (int)src->count;
++    dst->dropped = src->dropped;
++    for (unsigned j = 0; j < src->count; j++) {
++      dst->e[j].key = src->entries[j].key;
++      dst->e[j].reg = src->entries[j].reg;
++      dst->e[j].val = src->entries[j].val;
++    }
++  }
++  s_raster_armed = (int)in->armed;
++  s_raster_cur = (int)in->current;
++  s_raster_have_completed = (int)in->completed;
++  s_raster_rendering = 0;
++  s_raster_render = NULL;
++  s_raster_next = 0;
++  s_raster_hdmaen_pending = 0;
++}
++
+ void ppu_rasterRecord(uint16_t reg, uint16_t line, uint8_t val) {
+   PpuRasterField *f;
+   if (!s_raster_armed || s_raster_rendering || !raster_reg_journaled(reg))

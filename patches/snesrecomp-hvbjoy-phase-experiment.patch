@@ -1,0 +1,37 @@
+diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
+index f193b19..0f7aed5 100644
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -1719,7 +1719,7 @@ uint8 ReadRegOpenBus(uint16 reg, uint8 open_bus) {
+   if (reg >= 0x2000 && reg < 0x2008) {
+     return msu1_enabled() ? msu1_read(reg) : open_bus;
+   }
+-  if (reg == 0x2137)
++  if (reg == 0x2137 || reg == 0x4212)
+     snes_sync_master_clock(g_snes, interp_bridge_bus_sample_master(&g_cpu, reg));
+   if (reg >= 0x3000 && reg < 0x3300 && g_snes->cart->type == CART_SUPERFX) {
+     cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
+diff --git a/runner/src/snes/snes.c b/runner/src/snes/snes.c
+index ba52885..98c85f6 100644
+--- a/runner/src/snes/snes.c
++++ b/runner/src/snes/snes.c
+@@ -634,8 +634,8 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
+       // Static-recomp h/v-counter model: real hardware updates hPos every
+       // dot-clock; recomp has no dot-clock, so each $4212 read advances
+       // hPos by a fixed step. Calibrated so a typical busy-wait crosses
+-      // both edges in ~10-20 reads. Bit 6 = hblank (dots ~1024..1364 of
+-      // a 1364-dot scanline). See docs/VIRTUAL_HW_CONTRACT.md.
++      // both edges in ~10-20 reads. The HBlank flag uses Snes9x's tested
++      // scanline window: clocks [1096, end) and [0, 4).
+       /* Whole-program interpreter runs already advance the beam from every
+        * opcode's measured master clocks. Applying the legacy static-recomp
+        * polling tick as well doubles time in $4212 wait loops (SMRPG's boot
+@@ -653,7 +653,7 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
+       // The synthetic advance shares the live beam helper, so IRQ and
+       // auto-joypad edges remain coherent with the reported counters.
+       uint8_t val = (snes->autoJoyTimer > 0);
+-      val |= (snes->hPos >= 1024) << 6;
++      val |= (snes->hPos < 4 || snes->hPos >= 1096) << 6;
+       val |= (snes->inVblank || snes->vPos >= 225) << 7;
+       return val;
+     }

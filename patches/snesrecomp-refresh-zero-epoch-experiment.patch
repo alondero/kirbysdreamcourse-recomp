@@ -1,0 +1,61 @@
+diff --git a/runner/src/common_cpu_infra.c b/runner/src/common_cpu_infra.c
+index 7c67599..61762d4 100644
+--- a/runner/src/common_cpu_infra.c
++++ b/runner/src/common_cpu_infra.c
+@@ -886,17 +886,21 @@ void WatchdogFrameStart(void) {
+  * exempted rather than charged. */
+ uint64_t g_refresh_charged_upto;
+ static uint64_t s_refresh_phase;
++/* Zero is a valid reset epoch, not an uninitialized watermark. */
++static bool s_refresh_valid;
+ void snes_refresh_exempt(void) {
+   uint64_t m = g_cpu.master_cycles;
+-  if (g_refresh_charged_upto && m >= g_refresh_charged_upto) {
++  if (s_refresh_valid && m >= g_refresh_charged_upto) {
+     uint64_t elapsed = m - g_refresh_charged_upto;
+     s_refresh_phase = ((s_refresh_phase % 1364u) + (elapsed % 1364u)) % 1364u;
+   }
+   g_refresh_charged_upto = m;
++  s_refresh_valid = true;
+ }
+ void snes_refresh_charge(void) {
+   uint64_t m = g_cpu.master_cycles;
+-  if (g_refresh_charged_upto == 0 || m < g_refresh_charged_upto) {
++  if (!s_refresh_valid || m < g_refresh_charged_upto) {
++    s_refresh_valid = true;
+     g_refresh_charged_upto = m;
+     return;
+   }
+@@ -930,14 +934,16 @@ void snes_refresh_charge(void) {
+  * guest memory byte-identical, both offline and across a real Linux/Windows
+  * match (RB POST FORK on episode #1, same digests every run).
+  */
++/* UINT64_MAX encodes the otherwise unanchored state in existing snapshots. */
+ void snes_refresh_state_get(uint64_t *phase, uint64_t *charged_upto) {
+   if (phase) *phase = s_refresh_phase;
+-  if (charged_upto) *charged_upto = g_refresh_charged_upto;
++  if (charged_upto) *charged_upto = s_refresh_valid ? g_refresh_charged_upto : UINT64_MAX;
+ }
+ 
+ void snes_refresh_state_set(uint64_t phase, uint64_t charged_upto) {
+   s_refresh_phase = phase;
+-  g_refresh_charged_upto = charged_upto;
++  s_refresh_valid = charged_upto != UINT64_MAX;
++  g_refresh_charged_upto = s_refresh_valid ? charged_upto : 0;
+ }
+ 
+ // Called at loop headers in generated code — detect infinite loops
+diff --git a/runner/src/common_cpu_infra.h b/runner/src/common_cpu_infra.h
+index 64eab4d..94b66bc 100644
+--- a/runner/src/common_cpu_infra.h
++++ b/runner/src/common_cpu_infra.h
+@@ -52,7 +52,8 @@ void snes_refresh_exempt(void);   /* mark a master-clock teleport (park, load) *
+ /* Rollback: the refresh tax carries a sub-scanline remainder and a high-water
+  * mark across frames, and both decide how many cycles the NEXT block is
+  * charged. A rewind that leaves them on the discarded timeline replays the
+- * same code for a different number of master cycles. See common_cpu_infra.c. */
++ * same code for a different number of master cycles. See common_cpu_infra.c.
++ * The watermark UINT64_MAX represents an uninitialized anchor; zero is valid. */
+ void snes_refresh_state_get(uint64_t *phase, uint64_t *charged_upto);
+ void snes_refresh_state_set(uint64_t phase, uint64_t charged_upto);
+ void WatchdogFrameStart(void);

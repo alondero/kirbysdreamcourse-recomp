@@ -1,0 +1,21 @@
+diff --git a/runner/src/snes/snes.c b/runner/src/snes/snes.c
+--- a/runner/src/snes/snes.c
++++ b/runner/src/snes/snes.c
+@@ -853,7 +853,7 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
+        * gundamwing-parity-root-cause. HDMA stays uncharged here (per-line,
+        * far smaller; out of scope for this fix). */
+       {
+-        uint64_t dma_master = 12;
++        uint64_t dma_master = val ? 12 : 0;
+         for (int ch = 0; ch < 8; ch++) {
+           if (val & (1 << ch)) {
+             uint32_t n = snes->dma->channel[ch].size;
+@@ -867,7 +867,7 @@
+          * the beam itself installs its own (see snes.h). With no hook the
+          * device layer advances its own beam, so snes.c needs no CpuState. */
+         if (s_master_clock_charge_hook) {
+-          s_master_clock_charge_hook(snes, dma_master);
++          if (dma_master) s_master_clock_charge_hook(snes, dma_master);
+         } else {
+           while (dma_master) {
+             uint32_t chunk = dma_master > 0xffffffffull

@@ -1,0 +1,14 @@
+diff --git a/runner/src/snes/interp816.c b/runner/src/snes/interp816.c
+index 729fcd9..a57e378 100644
+--- a/runner/src/snes/interp816.c
++++ b/runner/src/snes/interp816.c
+@@ -2291,6 +2291,9 @@ static void interp816_doOpcode(Interp816* cpu, uint8_t opcode) {
+       break;
+     }
+     case 0xcb: { // wai imp
++      /* Experimental Snes9x timing split: one internal WAI cycle is
++       * accounted for on interrupt wake rather than before the halt. */
++      cpu->cyclesUsed--;
+       cpu->waiting = true;
+       break;
+     }

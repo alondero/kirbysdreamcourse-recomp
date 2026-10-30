@@ -1,0 +1,36 @@
+diff --git a/runner/src/snes/interp816.c b/runner/src/snes/interp816.c
+index 525adea..729fcd9 100644
+--- a/runner/src/snes/interp816.c
++++ b/runner/src/snes/interp816.c
+@@ -1185,7 +1185,7 @@ static void interp816_doOpcode(Interp816* cpu, uint8_t opcode) {
+       break;
+     }
+     case 0x1b: { // tcs imp
+-      cpu->sp = cpu->a;
++      cpu->sp = cpu->e ? (uint16_t)(0x100u | (cpu->a & 0xffu)) : cpu->a;
+       break;
+     }
+     case 0x1c: { // trb abs
+@@ -1412,9 +1412,11 @@ static void interp816_doOpcode(Interp816* cpu, uint8_t opcode) {
+     }
+     case 0x40: { // rti imp
+       interp816_setFlags(cpu, interp816_pullByte(cpu));
+-      cpu->cyclesUsed++; // native mode: 1 extra cycle
+       cpu->pc = interp816_pullWord(cpu);
+-      cpu->k = interp816_pullByte(cpu);
++      if (!cpu->e) {
++        cpu->cyclesUsed++; // native mode pulls the program bank
++        cpu->k = interp816_pullByte(cpu);
++      }
+       break;
+     }
+     case 0x41: { // eor idx
+@@ -1983,7 +1985,7 @@ static void interp816_doOpcode(Interp816* cpu, uint8_t opcode) {
+       break;
+     }
+     case 0x9a: { // txs imp
+-      cpu->sp = cpu->x;
++      cpu->sp = cpu->e ? (uint16_t)(0x100u | (cpu->x & 0xffu)) : cpu->x;
+       break;
+     }
+     case 0x9b: { // txy imp

@@ -1,0 +1,13 @@
+diff --git a/runner/src/apu_frame_clock.h b/runner/src/apu_frame_clock.h
+index f00c233..2c2d254 100644
+--- a/runner/src/apu_frame_clock.h
++++ b/runner/src/apu_frame_clock.h
+@@ -2,7 +2,7 @@
+ #include <stdint.h>
+ 
+ #define RTL_MASTER_CYCLES_PER_FRAME 357368ull
+-#define RTL_APU_CYCLES_PER_FRAME 17088ull
++#define RTL_APU_CYCLES_PER_FRAME 17060ull
+ 
+ /* A host iteration can include an NMI-disabled loader spanning many hardware
+  * frames. Keep its elapsed time when beginning the following iteration. */

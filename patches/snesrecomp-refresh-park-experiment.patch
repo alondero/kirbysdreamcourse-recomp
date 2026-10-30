@@ -1,0 +1,18 @@
+--- a/runner/src/common_cpu_infra.c
++++ b/runner/src/common_cpu_infra.c
+@@ -886,7 +886,14 @@
+  * exempted rather than charged. */
+ uint64_t g_refresh_charged_upto;
+ static uint64_t s_refresh_phase;
+-void snes_refresh_exempt(void) { g_refresh_charged_upto = g_cpu.master_cycles; }
++void snes_refresh_exempt(void) {
++  uint64_t m = g_cpu.master_cycles;
++  if (g_refresh_charged_upto && m >= g_refresh_charged_upto) {
++    uint64_t elapsed = m - g_refresh_charged_upto;
++    s_refresh_phase = ((s_refresh_phase % 1364u) + (elapsed % 1364u)) % 1364u;
++  }
++  g_refresh_charged_upto = m;
++}
+ void snes_refresh_charge(void) {
+   uint64_t m = g_cpu.master_cycles;
+   if (g_refresh_charged_upto == 0 || m < g_refresh_charged_upto) {

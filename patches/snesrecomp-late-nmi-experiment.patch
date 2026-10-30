@@ -1,0 +1,181 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index a25d57b..f962b51 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -172,35 +172,51 @@ static void run_interrupt(uint32_t vector, uint64_t deadline) {
+   update_resume_pc();
+ }
+ 
++/* Complete each paced NMI entry access before interrupt dispatch, while
++ * retaining an HDMA deadline crossed by that access. IRQ may latch during
++ * entry; it does not preempt the NMI entry sequence. */
++static void sync_nmi_entry_hdma(uint64_t *event, bool *init) {
++  while (g_snes->beamMasterLast < g_cpu.master_cycles) {
++    uint64_t before = g_snes->beamMasterLast;
++    snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    if (g_snes->beamMasterLast <= before) break;
++  }
++  if (g_cpu.master_cycles >= *event && g_snes->beamMasterLast >= *event)
++    service_hdma_event(*init, *event);
++  *event = next_hdma_event(init);
++}
++
+ /* Experimental NMI-entry bus sequence. The vblank trigger and completion of
+  * an interrupted instruction are not modeled here and remain separate work. */
+ static void run_nmi_timed(uint64_t deadline) {
+   uint16_t vector_addr = g_cpu.emulation ? 0xfffa : 0xffea;
+   uint16_t vector;
++  bool entry_hdma_init;
++  uint64_t entry_hdma_event = next_hdma_event(&entry_hdma_init);
+   g_cpu.master_cycles += cpu_region_speed(s_resume_pc) + 6u;
+-  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   cpu_mirrors_to_p(&g_cpu);
+   if (!g_cpu.emulation) {
+     cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)(s_resume_pc >> 16));
+-    snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+     --g_cpu.S;
+   }
+   cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)(s_resume_pc >> 8));
+-  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
+   cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)s_resume_pc);
+-  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
+   cpu_write8_paced(&g_cpu, 0, g_cpu.S, g_cpu.P);
+-  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
+   g_cpu._flag_I = true;
+   g_cpu._flag_D = false;
+   cpu_mirrors_to_p(&g_cpu);
+   vector = cpu_read8_paced(&g_cpu, 0, vector_addr);
+-  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   vector |= (uint16_t)cpu_read8_paced(&g_cpu, 0, vector_addr + 1) << 8;
+-  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   interp_bridge_set_master_deadline(deadline);
+   run_handler_with_hdma(vector);
+   interp_bridge_set_master_deadline(0);
+@@ -274,6 +290,22 @@ void snes_beam_frame_driver_run_frame(void) {
+     uint64_t cpu_deadline = hdma_event < frame_end ? hdma_event : frame_end;
+     uint32_t to_irq;
+ 
++    /* A latched late-enable NMI remains pending even if $4210 is read or
++     * NMITIMEN is disabled. HDMA that was due earlier retains ownership. */
++    if (g_snes->lateNmiQueued && g_snes->lateNmiDue < frame_end &&
++        g_cpu.master_cycles >= g_snes->lateNmiDue &&
++        g_snes->lateNmiDue <= hdma_event) {
++      g_snes->lateNmiQueued = false;
++      g_snes->lateNmiDue = 0;
++      s_wai_halted = false;
++      g_snes->inNmi = true;
++      run_nmi_timed(frame_end);
++      g_snes->inNmi = false;
++      continue;
++    }
++    if (g_snes->lateNmiQueued && g_snes->lateNmiDue < cpu_deadline)
++      cpu_deadline = g_snes->lateNmiDue;
++
+     /* WAI halts the CPU until an interrupt line asserts -- NMI (next field),
+      * a raster match or a coprocessor IRQ. With I set the IRQ wakes it
+      * without taking the vector. Resuming it after a park step instead made
+@@ -290,6 +322,9 @@ void snes_beam_frame_driver_run_frame(void) {
+       if (interp_bridge_lle_took_wai())
+         s_wai_halted = true;
+     }
++    if (g_snes->lateNmiQueued && g_cpu.master_cycles >= g_snes->lateNmiDue &&
++        g_snes->lateNmiDue <= hdma_event && g_snes->lateNmiDue < frame_end)
++      continue;
+     /* AOT execution may return at a deadline with beam work still owed. Pay
+      * that debt before deciding whether the slot was reached, or deriving the
+      * next slot from the caught-up beam would silently skip this one. */
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index 38be3d2..a2134a8 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -203,6 +203,10 @@ static inline unsigned bridge_ctz64(uint64_t v) {
+ #endif
+ }
+ 
++uint64_t interp_bridge_bus_master(const CpuState *cpu) {
++    return cpu->master_cycles + (s_interp_bus_timing_active ? s_interp_bus_master : 0);
++}
++
+ static void bridge_timing_bus(uint32_t adr) {
+     if (!s_interp_bus_timing_active) return;
+     s_interp_bus_cycles++;
+@@ -1011,8 +1015,8 @@ int interp_bridge_lle_master_deadline_reached(const CpuState *cpu) {
+     }
+     const int reached =
+         cpu && s_lle_sched_depth > 0 && s_interp_bounce_owner_depth > 0 &&
+-        s_lle_master_deadline != 0 &&
+-        cpu->master_cycles >= s_lle_master_deadline;
++        ((s_lle_master_deadline != 0 && cpu->master_cycles >= s_lle_master_deadline) ||
++         (g_snes && g_snes->lateNmiQueued && cpu->master_cycles >= g_snes->lateNmiDue));
+     if (reached) {
+         s_lle_next_unwind_is_deadline = 1;
+         static int fired = -1;
+@@ -1774,6 +1778,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+          * the CPU H/V comparator or a coprocessor asserts IRQ; otherwise a
+          * perfectly live hardware-poll loop can monopolize the bridge and
+          * starve the handler forever. */
++        if (auto_quiescent && steps && g_snes && g_snes->lateNmiQueued && cpu->master_cycles >= g_snes->lateNmiDue) {
++            lle_resume_set(pc_before, INTERP_RESUME_SITE_IRQ_PENDING, in.sp);
++            sync_interp_to_cpu(&in, cpu);
++            bridge_apu_flush(cpu);
++            return 1;
++        }
+         if (auto_quiescent && steps && !in.i && g_snes &&
+             (g_snes->inIrq ||
+              (g_snes->cart && g_snes->cart->superfx &&
+diff --git a/runner/src/snes/snes.c b/runner/src/snes/snes.c
+index c368674..ba52885 100644
+--- a/runner/src/snes/snes.c
++++ b/runner/src/snes/snes.c
+@@ -23,6 +23,8 @@
+ #include "sdd1.h"
+ #include "../ppu_dma_trace.h"
+ 
++extern uint64_t interp_bridge_bus_master(const CpuState *cpu);
++extern CpuState g_cpu;
+ int snes_frame_counter;
+ static const double apuCyclesPerMaster = (32040 * 32) / (1364 * 262 * 60.0);
+ 
+@@ -245,6 +247,8 @@ void snes_reset(Snes* snes, bool hard) {
+   snes->hIrqEnabled = false;
+   snes->vIrqEnabled = false;
+   snes->nmiEnabled = false;
++  snes->lateNmiQueued = false;
++  snes->lateNmiDue = 0;
+   snes->hTimer = 0x1ff;
+   snes->vTimer = 0x1ff;
+   snes->inNmi = false;
+@@ -726,6 +730,8 @@ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
+           nmi_log++;
+         }
+       }
++      if (snes->beamNmiLatchOnly && !snes->nmiEnabled && (val & 0x80) && snes->rdnmiPending && snes->vPos >= 225)
++        { snes->lateNmiQueued = true; snes->lateNmiDue = interp_bridge_bus_master(&g_cpu) + 6u; }
+       snes->nmiEnabled = val & 0x80;
+       if(!snes->hIrqEnabled && !snes->vIrqEnabled) {
+         snes->inIrq = false;
+diff --git a/runner/src/snes/snes.h b/runner/src/snes/snes.h
+index 9cd83ac..a42655a 100644
+--- a/runner/src/snes/snes.h
++++ b/runner/src/snes/snes.h
+@@ -46,6 +46,10 @@ struct Snes {
+   // Beam host uses the real read-clear latch instead of the legacy NMI surrogate.
+   bool beamNmiLatchOnly;
+ 
++  /* Local prototype only: not serialized or cycle-calibrated. */
++  bool lateNmiQueued;
++  uint64_t lateNmiDue;
++
+   // Host timing anchor; excluded from savestates and reconciled after load.
+   uint64_t beamMasterLast;
+ 

@@ -1,0 +1,68 @@
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index 9b53c5f..db48c9a 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -384,7 +384,7 @@ struct Ppu {
+   uint16_t vram[0x8000];
+   // -- END OF SNAPSHOT
+ 
+-
++  uint8_t ppu2OpenBus; /* experimental second PPU chip read latch */
+ };
+ 
+ #define SPRITE_PRIO_TO_PRIO(prio, level6) (((prio) * 4 + 2) * 16 + 4 + (level6 ? 2 : 0))
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index 76b7556..8ec10ee 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -3114,29 +3114,32 @@ uint8_t ppu_read(Ppu* ppu, uint8_t adr) {
+       if(!ppu->cgramSecondWrite) {
+         ret = ppu->cgram[ppu->cgramPointer] & 0xff;
+       } else {
+-        ret = ((ppu->cgram[ppu->cgramPointer++] >> 8) & 0x7f);
++        ret = (ppu->ppu2OpenBus & 0x80) | ((ppu->cgram[ppu->cgramPointer++] >> 8) & 0x7f);
+       }
+       ppu->cgramSecondWrite = !ppu->cgramSecondWrite;
++      ppu->ppu2OpenBus = ret;
+       return ret;
+     }
+     case 0x3c: {
+       uint8_t val = 0;
+       if(ppu->hCountSecond) {
+-        val = ((ppu->hCount >> 8) & 1);
++        val = (ppu->ppu2OpenBus & 0xfe) | ((ppu->hCount >> 8) & 1);
+       } else {
+         val = ppu->hCount & 0xff;
+       }
+       ppu->hCountSecond = !ppu->hCountSecond;
++      ppu->ppu2OpenBus = val;
+       return val;
+     }
+     case 0x3d: {
+       uint8_t val = 0;
+       if(ppu->vCountSecond) {
+-        val = ((ppu->vCount >> 8) & 1);
++        val = (ppu->ppu2OpenBus & 0xfe) | ((ppu->vCount >> 8) & 1);
+       } else {
+         val = ppu->vCount & 0xff;
+       }
+       ppu->vCountSecond = !ppu->vCountSecond;
++      ppu->ppu2OpenBus = val;
+       return val;
+     }
+     case 0x3e: {
+@@ -3146,12 +3149,13 @@ uint8_t ppu_read(Ppu* ppu, uint8_t adr) {
+       return val;
+     }
+     case 0x3f: {
+-      uint8_t val = 0x3; // ppu2 version (4 bit), bit 4: ntsc/pal
++      uint8_t val = 0x3 | (ppu->ppu2OpenBus & 0x20); // ppu2 version and open bus
+       val |= ppu->countersLatched << 6;
+       val |= ppu->evenFrame << 7;
+       ppu->countersLatched = false; // TODO: only when ppulatch is set
+       ppu->hCountSecond = false;
+       ppu->vCountSecond = false;
++      ppu->ppu2OpenBus = val;
+       return val;
+     }
+     default: {

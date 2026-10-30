@@ -1,0 +1,44 @@
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index dc5fe69..c199dda 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -267,6 +267,9 @@ static int bridge_idle_replay_allowed(const Interp816 *in, long period) {
+ 
+ static int bridge_continuous_read(uint32_t adr) {
+     uint8_t bank=(uint8_t)(adr>>16); uint16_t a=(uint16_t)adr;
++    /* Full WRAM banks are as live as their system-bank mirrors: a polling
++     * CPU must retain its instruction phase until an interrupt or deadline. */
++    if (bank == 0x7e || bank == 0x7f) return 1;
+     if (!(bank<=0x3f || (bank>=0x80 && bank<=0xbf))) {
+         /* Banks $C0-$FF in S-DD1 carts: the MMC window returns data that
+          * changes as the decompression engine advances its source pointer.
+diff --git a/tests/interp816/bridge_test.c b/tests/interp816/bridge_test.c
+index 0a61a5f..117adfe 100644
+--- a/tests/interp816/bridge_test.c
++++ b/tests/interp816/bridge_test.c
+@@ -1522,6 +1522,16 @@ int main(void) {
+      * the wait's cycle instead -- and must stop at the same clock, cycle
+      * count, PC and registers, with the same APU flushes, as spinning. */
+     printf("[S18] declared idle poll: replayed to the deadline, same as spinning\n");
++    {
++      static const uint8_t wait7e[] = {0xAF,0x4D,0x00,0x7E,0xF0,0xFA};
++      static const uint8_t wait7f[] = {0xAF,0x4D,0x00,0x7F,0xF0,0xFA};
++      const S18Run a = s18_run(wait7e, sizeof wait7e, 0, 1);
++      const S18Run b = s18_run(wait7f, sizeof wait7f, 0, 1);
++      CHECK(a.site == INTERP_RESUME_SITE_DEADLINE && a.master >= 51000 && a.interpreted > 1000,
++            "bank 7E polling stopped early: site=%d master=%llu steps=%u", a.site, (unsigned long long)a.master, a.interpreted);
++      CHECK(b.site == INTERP_RESUME_SITE_DEADLINE && b.master >= 51000 && b.interpreted > 1000,
++            "bank 7F polling stopped early: site=%d master=%llu steps=%u", b.site, (unsigned long long)b.master, b.interpreted);
++    }
+     { static const uint8_t wait[] = {0xA9,0xFF, 0x85,0x01,   /* LDA #$FF / STA $01 */
+                                      0xA5,0x01, 0xD0,0xFC};  /* LDA $01 / BNE -4   */
+       const S18Run spin = s18_run(wait, sizeof wait, 0, 1);
+@@ -1686,7 +1696,7 @@ int main(void) {
+         {"EOR #$01 / BRA alternates A", alt, (int)sizeof alt, 0, 1, 68u},
+         {"alternating over 31 PCs", alt_long, (int)sizeof alt_long, 0, 1, 125u},
+         {"A cycles through four values", cyc4, (int)sizeof cyc4, 0, 1, 73u},
+-        {"stable WRAM wait", wait, (int)sizeof wait, 0, 1, 66u},
++        {"live WRAM wait runs to deadline", wait, (int)sizeof wait, 0, 0, 12903u},
+         {"counting loop is never stable", count, (int)sizeof count, 1, 0, 22223u},
+       };
+       for (unsigned k = 0; k < sizeof cases / sizeof cases[0]; k++) {

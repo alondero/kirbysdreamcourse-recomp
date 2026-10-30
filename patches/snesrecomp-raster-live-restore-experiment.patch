@@ -1,0 +1,66 @@
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -3206,9 +3206,8 @@
+  *   ppu_rasterRenderBegin(ppu)      before the render loop: restore the last
+  *                                   completed field's baseline
+  *   ppu_rasterApplyLine(ppu, line)  in the render loop, before ppu_runLine
+- *   ppu_rasterRenderEnd(ppu)        after it: reapply the writes made since
+- *                                   the field ended, so the guest resumes
+- *                                   with the register file it last wrote */
++ *   ppu_rasterRenderEnd(ppu)        after it: restore the guest's register
++ *                                   file and write latches saved at entry */
+ int g_ppu_scanout_latch_bypass = 0;
+ 
+ static PpuVramWriteLogHook s_vram_write_log_hook;
+@@ -3239,6 +3238,8 @@
+ static uint8_t s_raster_hdmaen;
+ static int s_raster_hdmaen_pending;
+ static struct {
++  uint8_t regs[PPU_SAVESTATE_REGS_SIZE];
++  uint8_t scrollPrev, scrollPrev2, m7prev, mosaicStartLine;
+   uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
+ } s_raster_port;
+ 
+@@ -3414,6 +3415,11 @@
+    * all there is. */
+   f = s_raster_have_completed ? &s_field[s_raster_cur ^ 1]
+                               : &s_field[s_raster_cur];
++  memcpy(s_raster_port.regs, &ppu->inidisp, PPU_SAVESTATE_REGS_SIZE);
++  s_raster_port.scrollPrev = ppu->scrollPrev;
++  s_raster_port.scrollPrev2 = ppu->scrollPrev2;
++  s_raster_port.m7prev = ppu->m7prev;
++  s_raster_port.mosaicStartLine = ppu->mosaicStartLine;
+   s_raster_port.oamAdr = ppu->oamAdr;
+   s_raster_port.oamInHigh = ppu->oamInHigh;
+   s_raster_port.oamSecondWrite = ppu->oamSecondWrite;
+@@ -3461,22 +3467,17 @@
+   }
+ }
+ 
+-/* The render reconstructed the completed field. Writes the guest has made
+- * since that field ended -- a CPU half that ran past V=225 -- are still in
+- * the recording journal: put them back, so the guest resumes with the
+- * register file it last wrote. The OAM port is the guest's, not display
+- * state: an OAMADD replay must not move it. */
++/* Rendering replays historical register writes on this PPU. Restore the
++ * exact live guest state captured at entry, including writes after the last
++ * rendered scanline and the shared write latches. */
+ void ppu_rasterRenderEnd(Ppu *ppu) {
+-  const PpuRasterField *f;
+-  int i;
+   if (!s_raster_armed || !s_raster_rendering) return;
+   s_raster_rendering = 0;
+-  if (s_raster_have_completed) {
+-    f = &s_field[s_raster_cur];
+-    for (i = 0; i < f->count; i++)
+-      if (f->e[i].reg != 0x420C)
+-        raster_replay(ppu, f->e[i].reg, f->e[i].val);
+-  }
++  memcpy(&ppu->inidisp, s_raster_port.regs, PPU_SAVESTATE_REGS_SIZE);
++  ppu->scrollPrev = s_raster_port.scrollPrev;
++  ppu->scrollPrev2 = s_raster_port.scrollPrev2;
++  ppu->m7prev = s_raster_port.m7prev;
++  ppu->mosaicStartLine = s_raster_port.mosaicStartLine;
+   ppu->oamAdr = s_raster_port.oamAdr;
+   ppu->oamInHigh = s_raster_port.oamInHigh;
+   ppu->oamSecondWrite = s_raster_port.oamSecondWrite;

@@ -1,0 +1,21 @@
+--- a/runner/src/snes/dsp.c
++++ b/runner/src/snes/dsp.c
+@@ -709,14 +709,12 @@
+ }
+ 
+ static void dsp_handleNoise(Dsp* dsp) {
+-  if(dsp->noiseRate != 0) {
+-    dsp->noiseCounter++;
+-  }
+-  if(dsp->noiseCounter >= dsp->noiseRate && dsp->noiseRate != 0) {
++  /* Experimental: noise shares the running DSP counter with envelopes. */
++  unsigned index = dsp->ram[0x6c] & 31u;
++  if (index && (dsp->envelopeCounter + envelopeOffsets[index]) % rateValues[index] == 0) {
+     int bit = (dsp->noiseSample & 1) ^ ((dsp->noiseSample >> 1) & 1);
+     dsp->noiseSample = ((dsp->noiseSample >> 1) & 0x3fff) | (bit << 14);
+-    dsp->noiseSample = ((int16_t) ((dsp->noiseSample & 0x7fff) << 1)) >> 1;
+-    dsp->noiseCounter = 0;
++    dsp->noiseSample = ((int16_t)((dsp->noiseSample & 0x7fff) << 1)) >> 1;
+   }
+ }
+ 

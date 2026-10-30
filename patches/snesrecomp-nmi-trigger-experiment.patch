@@ -1,0 +1,25 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 8243fa4..141cfca 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -184,6 +184,20 @@ void snes_beam_frame_driver_run_frame(void) {
+   /* NMITIMEN gates NMI; nothing is delivered before reset has run, since
+    * there is no instruction stream to interrupt yet. */
+   if (!booting && g_snes->nmiEnabled) {
++    /* Diagnostic Snes9x-style vblank trigger: the pending event becomes
++     * eligible twelve clocks after the edge, sampled between instructions.
++     * This deliberately does not model late enable, WAI wake-up or DMA. */
++    uint64_t trigger = g_snes->beamMasterLast + 12u;
++    if (!s_wai_halted && g_cpu.master_cycles < trigger) {
++      interp_bridge_set_master_deadline(trigger);
++      (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
++      interp_bridge_set_master_deadline(0);
++      update_resume_pc();
++      if (interp_bridge_lle_took_wai())
++        s_wai_halted = true;
++    }
++    if (g_cpu.master_cycles < trigger)
++      advance_parked(trigger);
+     g_snes->inNmi = true;
+     s_wai_halted = false;
+     run_nmi_timed(frame_end);

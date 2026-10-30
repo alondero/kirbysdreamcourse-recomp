@@ -1,0 +1,189 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 264e1d8..b9712b3 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -40,6 +40,40 @@ static uint32_t s_resume_pc;
+ 
+ /* The CPU executed WAI and is halted until an interrupt line asserts. */
+ static bool s_wai_halted;
++/* Experimental scheduler-only HDMA event watermark. Not serialized. */
++static uint64_t s_last_hdma_event = UINT64_MAX;
++
++/* Next reference-style HDMA initialization or scanline slot. The returned
++ * clock is on the beam timeline; callbacks happen only at CPU boundaries. */
++static uint64_t next_hdma_event(bool *init) {
++  uint32_t h = g_snes->hPos, v = g_snes->vPos;
++  uint64_t base = g_snes->beamMasterLast;
++  if (v == 0 && h <= 20 && base + (20u - h) != s_last_hdma_event) {
++    *init = true;
++    return base + 20u - h;
++  }
++  if (v <= 224 && h <= 1106 && base + (1106u - h) != s_last_hdma_event) {
++    *init = false;
++    return base + 1106u - h;
++  }
++  if (v < 224) {
++    *init = false;
++    return base + 1364u - h + 1106u;
++  }
++  *init = true;
++  return base + snes_master_clocks_until_line(g_snes, 0) + 20u;
++}
++
++static void service_hdma_event(bool init, uint64_t event) {
++  uint32_t clocks = init ? dma_initHdmaCounted(g_snes->dma)
++                         : dma_doHdmaCounted(g_snes->dma);
++  s_last_hdma_event = event;
++  if (clocks) {
++    g_cpu.master_cycles += clocks;
++    snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
++  }
++}
+ 
+ static uint32_t read_vector(uint32_t addr) {
+   /* Through the guest bus, so a mapper or coprocessor window resolves the
+@@ -211,6 +245,9 @@ void snes_beam_frame_driver_run_frame(void) {
+    * V=225 and a handler that reads OPVCT sees the wrong line. */
+   while (g_cpu.master_cycles < frame_end && slices++ < BFD_MAX_SLICES_PER_FIELD) {
+     uint64_t next;
++    bool hdma_init;
++    uint64_t hdma_event = next_hdma_event(&hdma_init);
++    uint64_t cpu_deadline = hdma_event < frame_end ? hdma_event : frame_end;
+     uint32_t to_irq;
+ 
+     /* WAI halts the CPU until an interrupt line asserts -- NMI (next field),
+@@ -222,13 +259,24 @@ void snes_beam_frame_driver_run_frame(void) {
+     if (s_wai_halted && irq_line_asserted())
+       s_wai_halted = false;
+     if (!s_wai_halted && !irq_wanted()) {
+-      interp_bridge_set_master_deadline(frame_end);
++      interp_bridge_set_master_deadline(cpu_deadline);
+       (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
+       interp_bridge_set_master_deadline(0);
+       update_resume_pc();
+       if (interp_bridge_lle_took_wai())
+         s_wai_halted = true;
+     }
++    /* AOT execution may return at a deadline with beam work still owed. Pay
++     * that debt before deciding whether the slot was reached, or deriving the
++     * next slot from the caught-up beam would silently skip this one. */
++    if (hdma_event < frame_end && g_cpu.master_cycles >= hdma_event &&
++        g_snes->beamMasterLast < hdma_event && !irq_wanted())
++      snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    if (hdma_event < frame_end && g_cpu.master_cycles >= hdma_event &&
++        g_snes->beamMasterLast >= hdma_event && !irq_wanted()) {
++      service_hdma_event(hdma_init, hdma_event);
++      continue;
++    }
+     /* Past the boundary, an interrupt belongs to the next frame. Delivering
+      * one with the deadline already spent made the handler yield on its first
+      * instruction, and the next delivery stacked a second interrupt frame on
+@@ -261,8 +309,8 @@ void snes_beam_frame_driver_run_frame(void) {
+     if (to_irq == 0 || to_irq > BFD_MASTER_CYCLES_PER_LINE)
+       to_irq = BFD_MASTER_CYCLES_PER_LINE;
+     next = g_cpu.master_cycles + to_irq;
+-    if (next > frame_end)
+-      next = frame_end;
++    if (next > cpu_deadline)
++      next = cpu_deadline;
+     advance_parked(next);
+   }
+ 
+@@ -307,22 +355,16 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+    * the beam must not also step it from inside guest register writes. */
+   snes_set_hdma_beam_enabled(g_snes, false);
+   ppu_rasterRenderBegin(g_ppu);
+-  dma_initHdma(g_snes->dma);
+-  /* Hardware's V=0 init also performs each channel's first transfer before
+-   * any visible pixel. */
+-  dma_doHdma(g_snes->dma); /* experimental: consume first line */
+   for (line = 1; line <= 224; line++) {
+     uint8_t hdmaen;
+     /* A split is written in H-blank after its line is drawn, so the previous
+      * line's entries take effect on this one. */
+     ppu_rasterApplyLine(g_ppu, line - 1);
+-    if (ppu_rasterTakeHdmaen(&hdmaen))
+-      dma_startDma(g_snes->dma, hdmaen, true);
++    (void)ppu_rasterTakeHdmaen(&hdmaen);
+     ppu_runLine(g_ppu, line);
+     if (observer)
+       observer(g_ppu, (unsigned)line, context);
+     /* HDMA runs in the H-blank after this line; it lands on the next. */
+-    dma_doHdma(g_snes->dma);
+   }
+   ppu_rasterRenderEnd(g_ppu);
+ }
+@@ -330,6 +372,7 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+ void snes_beam_frame_driver_reset(void) {
+   s_resume_pc = 0;
+   s_wai_halted = false;
++  s_last_hdma_event = UINT64_MAX;
+ }
+ 
+ void snes_beam_frame_driver_get_state(uint32_t *pc, bool *wai) {
+@@ -341,3 +384,6 @@ void snes_beam_frame_driver_set_state(uint32_t pc, bool wai) {
+   s_resume_pc = pc;
+   s_wai_halted = wai;
+ }
++
++uint64_t snes_beam_frame_driver_get_hdma_event(void) { return s_last_hdma_event; }
++void snes_beam_frame_driver_set_hdma_event(uint64_t event) { s_last_hdma_event = event; }
+diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
+index 5a0b60d..dd327d3 100644
+--- a/runner/src/beam_frame_driver.h
++++ b/runner/src/beam_frame_driver.h
+@@ -33,5 +33,8 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+ void snes_beam_frame_driver_reset(void);
+ void snes_beam_frame_driver_get_state(uint32_t *pc, bool *wai);
+ void snes_beam_frame_driver_set_state(uint32_t pc, bool wai);
++/* Experimental: last handled HDMA event on the absolute master timeline. */
++uint64_t snes_beam_frame_driver_get_hdma_event(void);
++void snes_beam_frame_driver_set_hdma_event(uint64_t event);
+ 
+ #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */
+diff --git a/runner/src/snes/dma.c b/runner/src/snes/dma.c
+index cbc3a86..d18b527 100644
+--- a/runner/src/snes/dma.c
++++ b/runner/src/snes/dma.c
+@@ -370,15 +370,27 @@ static void dma_hdmaLoadDescriptor(Dma* dma, DmaChannel* ch) {
+   ch->doTransfer = !ch->terminated;
+ }
+ 
+-void dma_initHdma(Dma* dma) {
++uint32_t dma_initHdmaCounted(Dma* dma) {
++  unsigned active = 0;
++  uint32_t clocks = 0;
++  for (int i = 0; i < 8; i++) if (dma->channel[i].hdmaActive) active |= 1u << i;
++  if (active) clocks = 18u;
+   for (int i = 0; i < 8; i++) {
+     DmaChannel* ch = &dma->channel[i];
+     if (!ch->hdmaActive) continue;
+     dma->hdmaPendingInit &= (uint8_t)~(1u << i);
+     ch->tableAdr = ch->aAdr;
+     dma_hdmaLoadDescriptor(dma, ch);
++    clocks += 8u;
++    if (ch->indirect)
++      clocks += ch->terminated ? ((active & (0xfeu << i)) ? 16u : 8u) : 16u;
+     ch->offIndex = 0;
+   }
++  return clocks;
++}
++
++void dma_initHdma(Dma* dma) {
++  (void)dma_initHdmaCounted(dma);
+ }
+ 
+ void dma_primeHdmaFirstLine(Dma* dma) {
+diff --git a/runner/src/snes/dma.h b/runner/src/snes/dma.h
+index ad6abec..5342c9f 100644
+--- a/runner/src/snes/dma.h
++++ b/runner/src/snes/dma.h
+@@ -75,6 +75,7 @@ uint8_t dma_read(Dma* dma, uint16_t adr); // 43x0-43xf
+ void dma_write(Dma* dma, uint16_t adr, uint8_t val); // 43x0-43xf
+ void dma_doDma(Dma* dma);
+ void dma_initHdma(Dma* dma);
++uint32_t dma_initHdmaCounted(Dma* dma);
+ void dma_doHdma(Dma* dma);
+ /* Experimental Snes9x-style slot accounting. Performs the same transfers and
+  * returns modeled master clocks; the caller owns CPU/beam synchronization. */

@@ -1,0 +1,28 @@
+--- a/runner/src/apu_frame_clock.h
++++ b/runner/src/apu_frame_clock.h
+@@ -34,3 +34,12 @@
+    * between the completed game iteration and the next clock_begin. */
+   return end;
+ }
++
++/* Opt-in beam hosts advance parked time themselves, including partial fields. */
++static inline uint64_t rtl_apu_clock_finish_elapsed(RtlApuFrameClock *clock,
++                                                   uint64_t master) {
++  uint64_t end = rtl_apu_clock_now(clock, master);
++  clock->last_duration = end - clock->start_guest;
++  clock->next_guest = end;
++  return end;
++}
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -2207,7 +2207,9 @@
+    * boundary after the completed frame; adding its stale within-frame master
+    * offset here would count the frame body twice. */
+   uint64_t boundary = g_extended_frame_timing
+-      ? rtl_apu_clock_finish(&g_apu_frame_clock, g_cpu.master_cycles)
++      ? (getenv("SNESRECOMP_APU_BEAM_ELAPSED")
++         ? rtl_apu_clock_finish_elapsed(&g_apu_frame_clock, g_cpu.master_cycles)
++         : rtl_apu_clock_finish(&g_apu_frame_clock, g_cpu.master_cycles))
+       : (uint64_t)snes_frame_counter * RTL_APU_CYCLES_PER_FRAME;
+   /* An NMI-disabled loader can consume many video periods in one host
+    * iteration (SM's unpause restoration takes 42-44 on the original ROM).

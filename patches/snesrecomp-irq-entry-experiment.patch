@@ -1,0 +1,118 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index f962b51..1a276c7 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -109,7 +109,6 @@ static uint32_t read_vector(uint32_t addr) {
+ 
+ static uint32_t reset_vector(void) { return read_vector(0x00FFFCu); }
+ static uint32_t nmi_vector(void) { return read_vector(0x00FFEAu); }
+-static uint32_t irq_vector(void) { return read_vector(0x00FFEEu); }
+ 
+ static void update_resume_pc(void) {
+   uint32_t resume = interp_bridge_lle_resume_pc();
+@@ -157,25 +156,11 @@ static void advance_parked(uint64_t until) {
+   cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
+ }
+ 
+-static void run_interrupt(uint32_t vector, uint64_t deadline) {
+-  /* The beam keeps running through the handler, as on hardware. A held beam
+-   * cannot satisfy a handler that polls it -- Doom's reads OPVCT to choose its
+-   * split, then waits for H-blank -- and the handler spins to the step cap.
+-   * The bridge yields at the instruction that latched the IRQ, so the handler
+-   * already starts where the real CPU would take it. */
+-  cpu_push_interrupt_frame_at(&g_cpu, s_resume_pc);
+-  interp_bridge_set_master_deadline(deadline);
+-  run_handler_with_hdma(vector);
+-  /* A deadline left armed stays true for every AOT block prologue afterwards
+-   * and turns each compiled body into an immediate yield. */
+-  interp_bridge_set_master_deadline(0);
+-  update_resume_pc();
+-}
+ 
+-/* Complete each paced NMI entry access before interrupt dispatch, while
++/* Complete each paced interrupt entry access before interrupt dispatch, while
+  * retaining an HDMA deadline crossed by that access. IRQ may latch during
+- * entry; it does not preempt the NMI entry sequence. */
+-static void sync_nmi_entry_hdma(uint64_t *event, bool *init) {
++ * entry; it does not preempt the entry sequence. */
++static void sync_interrupt_entry_hdma(uint64_t *event, bool *init) {
+   while (g_snes->beamMasterLast < g_cpu.master_cycles) {
+     uint64_t before = g_snes->beamMasterLast;
+     snes_sync_master_clock(g_snes, g_cpu.master_cycles);
+@@ -186,37 +171,38 @@ static void sync_nmi_entry_hdma(uint64_t *event, bool *init) {
+   *event = next_hdma_event(init);
+ }
+ 
+-/* Experimental NMI-entry bus sequence. The vblank trigger and completion of
+- * an interrupted instruction are not modeled here and remain separate work. */
+-static void run_nmi_timed(uint64_t deadline) {
+-  uint16_t vector_addr = g_cpu.emulation ? 0xfffa : 0xffea;
++/* Experimental NMI/IRQ entry; interrupt sampling and individual bus-event
++ * timing are separate from this paced entry sequence. */
++static void run_interrupt_timed(bool nmi, uint64_t deadline) {
++  uint16_t vector_addr = nmi ? (g_cpu.emulation ? 0xfffa : 0xffea)
++                             : (g_cpu.emulation ? 0xfffe : 0xffee);
+   uint16_t vector;
+   bool entry_hdma_init;
+   uint64_t entry_hdma_event = next_hdma_event(&entry_hdma_init);
+   g_cpu.master_cycles += cpu_region_speed(s_resume_pc) + 6u;
+-  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++  sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   cpu_mirrors_to_p(&g_cpu);
+   if (!g_cpu.emulation) {
+     cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)(s_resume_pc >> 16));
+-    sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++    sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+     --g_cpu.S;
+   }
+   cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)(s_resume_pc >> 8));
+-  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++  sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
+   cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)s_resume_pc);
+-  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++  sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
+   cpu_write8_paced(&g_cpu, 0, g_cpu.S, g_cpu.P);
+-  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++  sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
+   g_cpu._flag_I = true;
+   g_cpu._flag_D = false;
+   cpu_mirrors_to_p(&g_cpu);
+   vector = cpu_read8_paced(&g_cpu, 0, vector_addr);
+-  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++  sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   vector |= (uint16_t)cpu_read8_paced(&g_cpu, 0, vector_addr + 1) << 8;
+-  sync_nmi_entry_hdma(&entry_hdma_event, &entry_hdma_init);
++  sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   interp_bridge_set_master_deadline(deadline);
+   run_handler_with_hdma(vector);
+   interp_bridge_set_master_deadline(0);
+@@ -276,7 +262,7 @@ void snes_beam_frame_driver_run_frame(void) {
+       advance_parked(trigger);
+     g_snes->inNmi = true;
+     s_wai_halted = false;
+-    run_nmi_timed(frame_end);
++    run_interrupt_timed(true, frame_end);
+     g_snes->inNmi = false;
+   }
+ 
+@@ -299,7 +285,7 @@ void snes_beam_frame_driver_run_frame(void) {
+       g_snes->lateNmiDue = 0;
+       s_wai_halted = false;
+       g_snes->inNmi = true;
+-      run_nmi_timed(frame_end);
++      run_interrupt_timed(true, frame_end);
+       g_snes->inNmi = false;
+       continue;
+     }
+@@ -345,7 +331,7 @@ void snes_beam_frame_driver_run_frame(void) {
+       break;
+     if (irq_wanted()) {
+       s_wai_halted = false;
+-      run_interrupt(irq_vector(), frame_end);
++      run_interrupt_timed(false, frame_end);
+       continue;
+     }
+     /* Pay the beam what it owes first: those clocks can latch the next

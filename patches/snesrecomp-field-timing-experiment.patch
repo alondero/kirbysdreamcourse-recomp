@@ -1,0 +1,184 @@
+--- a/runner/src/snes/snes.c
++++ b/runner/src/snes/snes.c
+@@ -26,29 +26,37 @@
+ int snes_frame_counter;
+ static const double apuCyclesPerMaster = (32040 * 32) / (1364 * 262 * 60.0);
+ 
++/* [EXPERIMENT-field-beam] Progressive NTSC beam geometry; interlaced
++ * field length, savestate and non-beam render ownership remain unimplemented. */
++static uint32_t beam_line_clocks(uint32_t line, bool field, bool interlace) {
++  return line == 240 && field && !interlace ? 1360u : 1364u;
++}
++static bool beam_next_irq(const Snes *snes, bool include_now, uint64_t *out) {
++  if (!snes || !out || (!snes->hIrqEnabled && !snes->vIrqEnabled)) return false;
++  uint32_t target = snes->hIrqEnabled ? (uint32_t)snes->hTimer * 4u : 0u;
++  if (target >= 1364u || (snes->vIrqEnabled && snes->vTimer >= 262u)) return false;
++  uint32_t h = snes->hPos, v = snes->vPos;
++  bool field = snes->ppu && snes->ppu->evenFrame;
++  bool interlace = snes->ppu && snes->ppu->frameInterlace;
++  uint64_t delta = 0;
++  for (uint32_t scanned = 0; scanned <= 524u; scanned++) {
++    uint32_t length = beam_line_clocks(v, field, interlace);
++    if ((!snes->vIrqEnabled || v == snes->vTimer) && target < length &&
++        (target > h || (include_now && target == h))) {
++      *out = delta + target - h;
++      return true;
++    }
++    delta += length - h; h = 0;
++    if (++v == 262u) { v = 0; field = !field; }
++    include_now = true;
++  }
++  return false;
++}
+ bool snes_next_irq_master(const Snes *snes, uint64_t now, uint64_t *out) {
+-  if (!snes || !out) return false;
+-  if (!snes->hIrqEnabled && !snes->vIrqEnabled) return false;
+-  /* Mirrors the match test in snes_advance_beam(): the comparator fires when
+-   * the beam crosses target_h on a line the V comparator accepts. */
+-  const uint32_t target_h =
+-      snes->hIrqEnabled ? (uint32_t)snes->hTimer * 4u : 0u;
+-  if (target_h >= 1364u) return false;
+-
+-  uint32_t h = snes->hPos;
+-  uint32_t v = snes->vPos;
+-  uint64_t delta = 0;
+-  for (uint32_t scanned = 0; scanned <= 262u; scanned++) {
+-    const bool line_matches = !snes->vIrqEnabled || v == snes->vTimer;
+-    if (line_matches && target_h >= h) {
+-      *out = now + delta + (uint64_t)(target_h - h);
+-      return true;
+-    }
+-    delta += 1364u - h;
+-    h = 0;
+-    v = (v + 1u) % 262u;
+-  }
+-  return false;
++  uint64_t delta;
++  if (!out || !beam_next_irq(snes, true, &delta)) return false;
++  *out = now + delta;
++  return true;
+ }
+ 
+ uint8_t snes_readReg(Snes* snes, uint16_t adr);
+@@ -406,7 +414,8 @@
+   uint32_t v = snes->vPos;
+   uint32_t consumed = 0;
+   while (clocks) {
+-    uint32_t span = 1364u - h;
++    uint32_t line_clocks = beam_line_clocks(v, snes->ppu && snes->ppu->evenFrame, snes->ppu && snes->ppu->frameInterlace);
++    uint32_t span = line_clocks - h;
+     /* Stop at HBlank so the HDMA transfer occurs at its hardware edge rather
+      * than after the rest of the scanline has already been consumed. */
+     if (check_irq && v < 225u && h < 1024u && span > 1024u - h)
+@@ -443,7 +452,7 @@
+        *
+        * Deduplicated per (field, target): the span loop can visit one line in
+        * several iterations, and a repeat is the same miss, not a new one. */
+-      if (line_matches && target < 1364u && target < h &&
++      if (line_matches && target < line_clocks && target < h &&
+           !snes->dbgLatchedThisField &&
+           snes->dbgMissDedupe != (uint32_t)((v << 16) | target)) {
+         snes->dbgMissDedupe = (uint32_t)((v << 16) | target);
+@@ -451,15 +460,15 @@
+         snes->dbgLastOvershotLine = (uint16_t)v;
+         snes->dbgLastOvershotBy = (uint16_t)(h - target);
+       }
+-      if (line_matches && target < 1364u && target >= h && target < h + span) {
++      if (line_matches && target < line_clocks && target >= h && target < h + span) {
+         uint32_t upto = target - h + 1u;   /* stop one clock past the match */
+         snes->inIrq = true;
+         snes->dbgIrqLatches++;
+         snes->dbgLatchedThisField = 1;
+         h += upto;
+         consumed += upto;
+-        if (h >= 1364u) {
+-          h = 0; v++; if (v >= 262u) v = 0;
++        if (h >= line_clocks) {
++          h = 0; v++; if (v >= 262u) { v = 0; if (snes->ppu) snes->ppu->evenFrame = !snes->ppu->evenFrame; }
+           if (v == 225u) { snes->rdnmiPending = true; ppu_rasterFieldBoundary(); }
+           if (v == 0u) snes->rdnmiPending = false;
+         }
+@@ -489,12 +498,13 @@
+      * master clock and the beam advance runs HDMA. One call, gated. */
+     if (check_irq && !snes->hdmaBeamOff && v < 225u && h == 1024u)
+       dma_doHdma(snes->dma);
+-    if (h >= 1364u) {
++    if (h >= line_clocks) {
+       h = 0;
+       v++;
+       if (v == 225u) { snes->rdnmiPending = true; ppu_rasterFieldBoundary(); }
+       if (v >= 262u) {
+         v = 0;
++        if (snes->ppu) snes->ppu->evenFrame = !snes->ppu->evenFrame;
+         snes->rdnmiPending = false;
+         if (check_irq && !snes->hdmaBeamOff)
+           dma_initHdma(snes->dma);
+@@ -535,44 +545,21 @@
+  * 30/34 on later ones, and from the moment it passed line 21 the raster chain
+  * lost its first link on every single frame. */
+ uint32_t snes_master_clocks_until_line(const Snes *snes, uint32_t line) {
+-  uint32_t h, v, lines;
+   if (!snes || line >= 262u) return 0;
+-  h = snes->hPos;
+-  v = snes->vPos;
+-  if (v == line && h == 0u) return 0;
+-  lines = (line > v) ? (line - v) : (262u - v + line);
+-  return lines * 1364u - h;
+-}
+-
++  uint32_t h=snes->hPos, v=snes->vPos, d=0;
++  bool field=snes->ppu && snes->ppu->evenFrame;
++  bool interlace=snes->ppu && snes->ppu->frameInterlace;
++  if (v == line && h == 0) return 0;
++  do {
++    d += beam_line_clocks(v, field, interlace) - h; h=0;
++    if (++v == 262u) { v=0; field=!field; }
++  } while (v != line);
++  return d;
++}
+ uint32_t snes_master_clocks_until_irq(const Snes *snes) {
+-  if (!snes) return 0;
+-  if (snes->inIrq) return 0;                       /* already pending */
+-  if (!snes->hIrqEnabled && !snes->vIrqEnabled) return 0;
+-
+-  uint32_t h = snes->hPos;
+-  uint32_t v = snes->vPos;
+-  uint32_t target_h = snes->hIrqEnabled ? (uint32_t)snes->hTimer * 4u : 0u;
+-  if (target_h >= 1364u) return 0;                 /* unreachable H target */
+-
+-  if (!snes->vIrqEnabled) {
+-    /* H-only: fires every line — later this line, or on the next. */
+-    return target_h > h ? (target_h - h) : (1364u - h + target_h);
+-  }
+-
+-  {
+-    /* V (with or without H): one match per field, at (vTimer, target_h). */
+-    uint32_t target_v = snes->vTimer;
+-    uint32_t lines;
+-    uint64_t d;
+-    if (target_v >= 262u) return 0;
+-    if (target_v > v)      lines = target_v - v;
+-    else if (target_v < v) lines = 262u - v + target_v;
+-    else                   lines = (target_h > h) ? 0u : 262u;
+-    /* lines==0 implies target_h>h, so this stays positive; every other branch
+-       adds at least a whole line, so the subtraction cannot underflow. */
+-    d = (uint64_t)lines * 1364u + (uint64_t)target_h - (uint64_t)h;
+-    return d > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)d;
+-  }
++  uint64_t delta;
++  if (!snes || snes->inIrq || !beam_next_irq(snes, false, &delta)) return 0;
++  return delta > UINT32_MAX ? UINT32_MAX : (uint32_t)delta;
+ }
+ 
+ /* ── beam hold ─────────────────────────────────────────────────────────────
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -129,7 +129,7 @@
+   {
+     uint32_t to_vblank = snes_master_clocks_until_line(g_snes, BFD_VBLANK_LINE);
+     frame_end = g_snes->beamMasterLast +
+-                (to_vblank ? to_vblank : BFD_MASTER_CYCLES_PER_FIELD);
++                (to_vblank ? to_vblank : (BFD_MASTER_CYCLES_PER_FIELD - ((g_ppu->evenFrame && !g_ppu->frameInterlace) ? 4u : 0u)));
+   }
+ 
+   if (booting) {

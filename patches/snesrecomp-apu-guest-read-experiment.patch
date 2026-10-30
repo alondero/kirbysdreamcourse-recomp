@@ -1,0 +1,14 @@
+diff --git a/runner/src/snes/apu.c b/runner/src/snes/apu.c
+index abbe61a..811d6c8 100644
+--- a/runner/src/snes/apu.c
++++ b/runner/src/snes/apu.c
+@@ -160,8 +160,7 @@ bool apu_runToGuestCycle(Apu* apu, uint64_t guest_cycle,
+   uint64_t target = apu->portTimeValid
+       ? apu->portTargetAnchor + (guest_cycle - apu->portGuestAnchor)
+       : guest_cycle; /* Experimental: assumes matching reset origins. */
+-  if (target < apu->portLastTarget)
+-    target = apu->portLastTarget;
++  /* A later queued write must not advance an earlier guest-time read. */
+ 
+   for (;;) {
+     bool due_event = false;

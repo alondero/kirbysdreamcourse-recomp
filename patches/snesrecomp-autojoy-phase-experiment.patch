@@ -1,0 +1,38 @@
+--- a/runner/src/snes/snes.c
++++ b/runner/src/snes/snes.c
+@@ -436,8 +436,15 @@
+        * multitap that is load-bearing: it leaves the selected bank's shift
+        * counter on the 17th (connection) bit, which is where the documented
+        * five-player sequence reads it from. */
++#ifndef KDC_EXPERIMENTAL_AUTOJOY_STATE
+       joypad_auto_read(snes);
+-    }
++#endif
++    }
++#ifdef KDC_EXPERIMENTAL_AUTOJOY_STATE
++    /* EXPERIMENT-autojoy-phase: Snes9x's line-227 model, not silicon timing. */
++    if (snes->autoJoyRead && v == 227u && h == 0u)
++      joypad_auto_read(snes);
++#endif
+     if (snes->autoJoyTimer) {
+       snes->autoJoyTimer = span >= snes->autoJoyTimer
+                          ? 0 : (uint16_t)(snes->autoJoyTimer - span);
+--- a/runner/src/snes/joypad.c
++++ b/runner/src/snes/joypad.c
+@@ -357,6 +357,7 @@
+      * (a game that reads $4218 without enabling automatic read used to get
+      * live data and would otherwise start getting zeroes).
+      */
++#ifndef KDC_EXPERIMENTAL_AUTOJOY_STATE
+     if (!g_jp.tap[0] && !g_jp.tap[1]) {
+         switch (slot) {
+         case 0:
+@@ -370,6 +371,8 @@
+         }
+     }
+ 
++#endif
++    /* EXPERIMENT-autojoy-latch: register results persist until the next poll. */
+     if (!g_jp.auto_valid)
+         return 0;
+     return (uint8_t)((reg & 1u) ? (g_jp.auto_word[slot] >> 8)

@@ -1,0 +1,128 @@
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index 98fb3b6..76b17d2 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -2871,8 +2871,16 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                  * time is dropped — only deferred to the next real flush. (No-op
+                  * under SNES_COSIM_APU_SHARED: pending never accumulates there, so
+                  * the co-sim gates are unaffected.) */
+-                if (s_apu_pending_master >= bridge_bounce_flush_thresh())
++                const char *_handoff_opt = getenv("SNESRECOMP_APU_HANDOFF");
++                int _handoff = _handoff_opt && _handoff_opt[0] && _handoff_opt[0] != '0';
++#ifdef SNES_COSIM
++                if (cosim_apu_shared_clock()) _handoff = 0;
++#endif
++                if (_handoff || s_apu_pending_master >= bridge_bounce_flush_thresh())
+                     bridge_apu_flush(cpu);
++                const uint64_t _handoff_start = cpu->master_cycles;
++                const uint64_t _handoff_sync = g_apu_last_sync_master;
++                const uint64_t _handoff_touches = g_apu_pace_cycles_estimate;
+                 int _apu_drv = g_interp_apu_driving;
+                 g_interp_apu_driving = 0;
+                 int _saved_bounce_base = s_interp_bounce_recomp_base;
+@@ -2889,6 +2897,15 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                                  (uint16_t)_sp_pre);
+                 g_interp_wlog_pc24 = 0;
+                 RecompReturn _air = cpu_dispatch_pc_paired(cpu, target, _fs);
++                /* Only credit an interval whose time was not already consumed
++                 * by a port touch or a nested interpreter flush. Other cases
++                 * retain the old policy until their clocks are qualified. */
++                if (_handoff && _handoff_sync == _handoff_start &&
++                    g_apu_last_sync_master == _handoff_sync &&
++                    g_apu_pace_cycles_estimate == _handoff_touches &&
++                    cpu->master_cycles >= _handoff_start &&
++                    cpu->master_cycles - _handoff_start >= s_apu_pending_master)
++                    s_apu_pending_master = cpu->master_cycles - _handoff_start;
+                 s_interp_bounce_owner_depth = _saved_bounce_owner;
+                 s_interp_bounce_recomp_base = _saved_bounce_base;
+                 g_interp_apu_driving = _apu_drv;
+diff --git a/tests/interp816/bridge_test.c b/tests/interp816/bridge_test.c
+index 710649e..0a61a5f 100644
+--- a/tests/interp816/bridge_test.c
++++ b/tests/interp816/bridge_test.c
+@@ -21,6 +21,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <math.h>
+ #include "interp_bridge.h"   /* -> cpu_state.h (types, inline frame helpers) */
+ #include "tier2_capture.h"
+ #include "snes.h"            /* Snes storage for the bridge's APU clock hook */
+@@ -33,6 +34,10 @@ CpuState g_cpu;
+ #define MEMSZ 0x1000000u
+ static uint8_t *RAM;
+ static int      g_aot_called;
++static uint64_t g_aot_test_master;
++static int g_aot_test_apu_touch;
++static int g_aot_test_sync;
++uint64_t g_apu_pace_cycles_estimate;
+ static int      g_aot_rewrites_return;
+ static int      g_aot_nested_rewrite;
+ static int      g_aot_interp_nlr;
+@@ -207,6 +212,9 @@ RecompReturn cpu_unresolved_abandon_balanced(CpuState *cpu, uint32 site_pc24,
+ RecompReturn cpu_dispatch_pc(CpuState *cpu, uint32 pc24, uint16 miss_restore) {
+     if ((pc24 & 0xFFFFFF) == FAKE_AOT) {
+         g_aot_called++;
++        cpu->master_cycles += g_aot_test_master;
++        if (g_aot_test_apu_touch) g_apu_pace_cycles_estimate += 256;
++        if (g_aot_test_sync) g_apu_last_sync_master = cpu->master_cycles;
+         g_aot_saw_site_pc24 = g_interp_wlog_pc24;
+         cpu->A = (uint16)(cpu->A + 0x0100);     /* observable "compiled" work */
+         cpu->S = (uint16)(cpu->S + 2);          /* models RTS popping its frame */
+@@ -548,6 +556,56 @@ int main(void) {
+     g_test_snes.cart = &g_test_cart;
+ 
+     printf("S0 APU timeline policy remains cartridge-scoped\n");
++    {
++      double totals[2];
++      const uint8_t code[] = {0x20,0x00,0x81,0x60};
++#ifdef _WIN32
++      _putenv_s("SNESRECOMP_APU_HANDOFF", "1");
++#else
++      setenv("SNESRECOMP_APU_HANDOFF", "1", 1);
++#endif
++      for (int i = 0; i < 2; ++i) {
++        memset(RAM, 0, MEMSZ); init_cpu(); load(0x8000, code, sizeof code);
++        g_test_snes.apuCatchupCycles = 0;
++        g_apu_last_sync_master = 0;
++        g_aot_test_master = i ? 296 : 0;
++        cpu_push_jsr_return_frame(&g_c);
++        CHECK(interp_bridge_run(&g_c, 0x008000) == 1, "bounce timing run returns");
++        totals[i] = g_test_snes.apuCatchupCycles;
++      }
++      g_aot_test_master = 0;
++      const double expected = 296.0 * (32040.0 * 32.0) / (1364.0 * 262.0 * 60.0);
++      CHECK(fabs((totals[1] - totals[0]) - expected) < 0.00001,
++            "compiled time should reach APU: delta=%f expected=%f", totals[1] - totals[0], expected);
++      memset(RAM, 0, MEMSZ); init_cpu(); load(0x8000, code, sizeof code);
++      g_test_snes.apuCatchupCycles = 0; g_apu_last_sync_master = 0;
++      g_aot_test_master = 296; g_aot_test_apu_touch = 1;
++      cpu_push_jsr_return_frame(&g_c);
++      CHECK(interp_bridge_run(&g_c, 0x008000) == 1, "port-touch run returns");
++      CHECK(fabs(g_test_snes.apuCatchupCycles - totals[0]) < 0.00001,
++            "port-touch path must not receive unverified credit");
++      g_aot_test_apu_touch = 0;
++      memset(RAM, 0, MEMSZ); init_cpu(); load(0x8000, code, sizeof code);
++      g_test_snes.apuCatchupCycles = 0; g_apu_last_sync_master = 0;
++      g_aot_test_sync = 1;
++      cpu_push_jsr_return_frame(&g_c);
++      CHECK(interp_bridge_run(&g_c, 0x008000) == 1, "already-synced run returns");
++      CHECK(fabs(g_test_snes.apuCatchupCycles - totals[0]) < 0.00001,
++            "already-synced path must not receive duplicate credit");
++      g_aot_test_sync = 0;
++#ifdef _WIN32
++      _putenv_s("SNESRECOMP_APU_HANDOFF", "");
++#else
++      unsetenv("SNESRECOMP_APU_HANDOFF");
++#endif
++      memset(RAM, 0, MEMSZ); init_cpu(); load(0x8000, code, sizeof code);
++      g_test_snes.apuCatchupCycles = 0; g_apu_last_sync_master = 0;
++      cpu_push_jsr_return_frame(&g_c);
++      CHECK(interp_bridge_run(&g_c, 0x008000) == 1, "disabled run returns");
++      CHECK(fabs(g_test_snes.apuCatchupCycles - totals[0]) < 0.00001,
++            "disabled handoff must preserve existing accounting");
++      g_aot_test_master = 0;
++    }
+     CHECK(!interp_bridge_use_absolute_apu_timeline(false, false, false),
+           "inactive non-SA1 timeline must use legacy catch-up");
+     CHECK(!interp_bridge_use_absolute_apu_timeline(true, false, false),

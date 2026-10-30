@@ -1,0 +1,84 @@
+/*
+ * Kirby Dream Course — desktop host shim.
+ *
+ * Identity and hooks, nothing else. The host itself is the framework's
+ * (snesrecomp/runner/src/desktop/host_main.h): the pre-boot launcher, ROM
+ * resolution and digest checks, config.ini and keybinds.ini, the window and
+ * the SDL / OpenGL presenters, audio, gamepads, the in-game save-state
+ * browser and rewind filmstrip, the OSD, the pacing clock, crash handlers and
+ * the post-mortem report, mod packages, Generate & rebuild, and the netplay
+ * barrier when the project is built with it. A fix there reaches this
+ * project on a submodule pull; nothing in this file needs to change for it.
+ *
+ * This file used to BE the host -- a ~700-line copy made at scaffold time --
+ * so every project scaffolded before a fix kept the bug. Two ports of the
+ * same game, a week apart, had different hosts.
+ *
+ * Nothing here ever ships a ROM. The player supplies one; the host makes
+ * that easy (launcher, then positional argument, then a copy beside the
+ * executable, then the rom.cfg cache, then a file picker) and checks what it
+ * is handed against the digests in rom_identity.txt.
+ *
+ * Grow this file only with what is specific to THIS title: a custom
+ * presenter (prepare_frame / draw_frame), an SPC player, a pacing rule
+ * (keep_pacing_debt), a Mods provider. See SnesDesktopHostGame for the
+ * complete list of hooks and what each is for.
+ */
+
+#include "host_main.h"
+#include "game_rtl.h"
+#include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
+
+#ifndef __ANDROID__
+#define SDL_MAIN_HANDLED 1
+#endif
+#include "desktop/sdl_compat.h"
+#ifdef __ANDROID__
+/* SDLActivity loads libmain.so and dlsyms its SDL_main. */
+#define main SDL_main
+#endif
+
+#ifndef SNES_GAME_VERSION
+#define SNES_GAME_VERSION "dev"
+#endif
+
+static const SnesDesktopHostGame kGameHost = {
+    .display_name        = "Kirby Dream Course",
+    .window_title        = "Kirby Dream Course",
+    .region              = SNESRECOMP_ROM_REGION,
+    .rom_file            = SNESRECOMP_ROM_FILE,
+    .expected_sha256_hex = SNESRECOMP_ROM_EXPECTED_SHA256,
+    .expected_crc32_hex  = SNESRECOMP_ROM_EXPECTED_CRC32,
+    .game_id             = SNESRECOMP_ROM_GAME_ID,
+    .build_version       = SNES_GAME_VERSION,
+    .game_info           = &kGameInfo,
+    .num_players         = 2,
+    /* Match SNES sprite evaluation by default; users may override this in
+     * their existing config.ini. Other values mirror the framework template. */
+    .default_config_ini =
+        "[General]\nAutosave = 0\nDisableFrameDelay = 0\n"
+        "[Graphics]\nWindowSize = Auto\nFullscreen = 0\nWindowScale = 3\n"
+        "NewRenderer = 1\nIgnoreAspectRatio = 0\nNoSpriteLimits = 0\n"
+        "[Sound]\nEnableAudio = 1\nVolume = 100\nAudioFreq = 32000\n"
+        "AudioChannels = 2\nAudioSamples = 512\n"
+        "[KeyMap]\nFullscreen = Alt+Return\nReset = Ctrl+r\nPause = Shift+p\n"
+        "PauseDimmed = p\nTurbo = Tab\nWindowBigger = Ctrl+Up\n"
+        "WindowSmaller = Ctrl+Down\nVolumeUp = Keypad +\nVolumeDown = Keypad -\n"
+        "DisplayPerf = f\nToggleRenderer = r\nSaveStateMenu = F11\nRewind = F12\n"
+        "Load = F1,F2,F3,F4,F5,F6,F7,F8,F9,F10\n"
+        "Save = Shift+F1,Shift+F2,Shift+F3,Shift+F4,Shift+F5,Shift+F6,Shift+F7,Shift+F8,Shift+F9,Shift+F10\n"
+        "[GamepadMap]\nEnableGamepad1 = true\nEnableGamepad2 = true\n"
+        "Controls = DpadUp,DpadDown,DpadLeft,DpadRight,Back,Start,B,A,Y,X,Lb,Rb\n"
+        "ControlsP2 = DpadUp,DpadDown,DpadLeft,DpadRight,Back,Start,B,A,Y,X,Lb,Rb\n",
+    /* Battery-backed SRAM shows the launcher's SAVES panel. Leave NULL for a
+     * title without one. The path is exe-relative. */
+    .sram_path           = "saves/save.srm",
+};
+
+#ifndef __ANDROID__
+#undef main   /* desktop: keep plain main() even if SDL_main.h remapped it */
+#endif
+int main(int argc, char **argv)
+{
+    return snesrecomp_desktop_main(&kGameHost, argc, argv);
+}

@@ -1,0 +1,25 @@
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -76,6 +76,12 @@
+ uint64_t bridgeq_prof_calls = 0;
+ double bridgeq_prof_ms = 0.0;
+ #endif
++/* Optional investigation of the reset-origin assumption in apu_runToGuestCycle. */
++static bool bridge_absolute_preanchor_enabled(void) {
++    const char *value = getenv("SNESRECOMP_APU_ABSOLUTE_PREANCHOR");
++    return value && value[0] && value[0] != '0';
++}
++
+ static void bridge_apu_flush(CpuState *cpu) {
+     /* SNESRECOMP_INTERP_NOAPU=1: skip the bridge's APU catch-up entirely.
+      * Bisection aid for hosts that drive the SPC themselves -- if a run that
+@@ -94,7 +100,7 @@
+             rtl_apu_frame_timeline_active(),
+             g_snes && cart_has_sa1(g_snes->cart),
+             rtl_apu_extended_frame_timing() &&
+-            g_snes && g_snes->apu && g_snes->apu->portTimeValid)) {
++            g_snes && g_snes->apu && (g_snes->apu->portTimeValid || bridge_absolute_preanchor_enabled()))) {
+         /* Skip snes_catchupApu (legacy relative catch-up) to avoid
+          * double-counting with the absolute guest-clock sync below.
+          * But we MUST still call rtl_sync_apu_to_cpu_locked() to advance

@@ -1,0 +1,16 @@
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -504,10 +504,11 @@
+    * 0 hashed to a different WRAM and APU state. Two peers that had stopped at
+    * different phases could not agree on a boot they had both just performed.
+    *
+-   * Anchored to now and zeroed, which is the state a first boot starts from.
++   * Anchored to now with the experimental scanline phase used at reset.
+    * This same carry has bitten before: it was the rollback replay divergence
+    * that had to be found by diffing .data and .bss. */
+-  snes_refresh_state_set(0u, g_cpu.master_cycles);
++  /* Diagnostic model: V2 reference refresh at H=538 on a 1364-clock line. */
++  snes_refresh_state_set(1364u - 538u, g_cpu.master_cycles);
+ }
+ 
+ static uint64_t s_state_generation;

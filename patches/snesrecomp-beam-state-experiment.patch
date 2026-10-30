@@ -1,0 +1,40 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index d6086b3..8a79074 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -269,3 +269,13 @@ void snes_beam_frame_driver_reset(void) {
+   s_resume_pc = 0;
+   s_wai_halted = false;
+ }
++
++void snes_beam_frame_driver_get_state(uint32_t *pc, bool *wai) {
++  *pc = s_resume_pc;
++  *wai = s_wai_halted;
++}
++
++void snes_beam_frame_driver_set_state(uint32_t pc, bool wai) {
++  s_resume_pc = pc;
++  s_wai_halted = wai;
++}
+diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
+index 60804fc..5a0b60d 100644
+--- a/runner/src/beam_frame_driver.h
++++ b/runner/src/beam_frame_driver.h
+@@ -1,6 +1,9 @@
+ #ifndef SNESRECOMP_BEAM_FRAME_DRIVER_H
+ #define SNESRECOMP_BEAM_FRAME_DRIVER_H
+ 
++#include <stdint.h>
++#include <stdbool.h>
++
+ /* Beam-aligned frame driver for whole-program LLE ports.
+  *
+  * One host frame is one PPU field, cut where hardware raises NMI: the beam's
+@@ -28,5 +31,7 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+     SnesBeamRasterObserver *observer, void *context);
+ /* Forget the booted machine: the next frame starts from the reset vector. */
+ void snes_beam_frame_driver_reset(void);
++void snes_beam_frame_driver_get_state(uint32_t *pc, bool *wai);
++void snes_beam_frame_driver_set_state(uint32_t pc, bool wai);
+ 
+ #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */

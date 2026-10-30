@@ -1,0 +1,49 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 9dc8435..90ee35e 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -198,6 +198,16 @@ static void sync_interrupt_entry_hdma(uint64_t *event, bool *init) {
+   *event = next_hdma_event(init);
+ }
+ 
++/* Snes9x charges 14 master clocks when an interrupt releases WAI. Preserve
++ * a crossed HDMA deadline while the CPU is unavailable during this wake. */
++static void snes_wai_wake(void) {
++  bool init;
++  uint64_t event = next_hdma_event(&init);
++  g_cpu.master_cycles += 14u;
++  sync_interrupt_entry_hdma(&event, &init);
++  cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
++}
++
+ /* Experimental NMI/IRQ entry; interrupt sampling and individual bus-event
+  * timing are separate from this paced entry sequence. */
+ static void run_interrupt_timed(bool nmi, uint64_t deadline) {
+@@ -288,6 +298,7 @@ void snes_beam_frame_driver_run_frame(void) {
+     if (g_cpu.master_cycles < trigger)
+       advance_parked(trigger);
+     g_snes->inNmi = true;
++    if (s_wai_halted) snes_wai_wake();
+     s_wai_halted = false;
+     run_interrupt_timed(true, frame_end);
+     g_snes->inNmi = false;
+@@ -310,6 +321,7 @@ void snes_beam_frame_driver_run_frame(void) {
+         g_snes->lateNmiDue <= hdma_event) {
+       g_snes->lateNmiQueued = false;
+       g_snes->lateNmiDue = 0;
++      if (s_wai_halted) snes_wai_wake();
+       s_wai_halted = false;
+       g_snes->inNmi = true;
+       run_interrupt_timed(true, frame_end);
+@@ -325,8 +337,10 @@ void snes_beam_frame_driver_run_frame(void) {
+      * every WAI last one scanline: Doom times its title hold as a countdown
+      * of WAIs (`WAI / DEX / BPL`), which then ran out within the first field
+      * and skipped the title. */
+-    if (s_wai_halted && irq_line_asserted())
++    if (s_wai_halted && irq_line_asserted()) {
++      snes_wai_wake();
+       s_wai_halted = false;
++    }
+     if (!s_wai_halted && !irq_wanted()) {
+       interp_bridge_set_master_deadline(cpu_deadline);
+       (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);

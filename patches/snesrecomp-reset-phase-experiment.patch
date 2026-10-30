@@ -1,0 +1,14 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 90ee35e..df0962b 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -268,6 +268,9 @@ void snes_beam_frame_driver_run_frame(void) {
+ 
+   if (booting) {
+     s_resume_pc = reset_vector();
++    /* Experimental Snes9x reset epoch: 182 clocks plus two slow vector
++     * reads. This is a reference-model observation, not a hardware proof. */
++    advance_parked(g_cpu.master_cycles + 198u);
+   } else {
+     /* Vblank-edge PPU work a frame-model host owns: OAMADDR re-latches. */
+     ppu_checkOverscan(g_ppu);

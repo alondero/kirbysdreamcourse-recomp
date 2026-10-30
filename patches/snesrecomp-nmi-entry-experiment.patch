@@ -1,0 +1,55 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 43817e1..8243fa4 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -114,6 +114,41 @@ static void run_interrupt(uint32_t vector, uint64_t deadline) {
+   update_resume_pc();
+ }
+ 
++/* Experimental NMI-entry bus sequence. The vblank trigger and completion of
++ * an interrupted instruction are not modeled here and remain separate work. */
++static void run_nmi_timed(uint64_t deadline) {
++  uint16_t vector_addr = g_cpu.emulation ? 0xfffa : 0xffea;
++  uint16_t vector;
++  g_cpu.master_cycles += cpu_region_speed(s_resume_pc) + 6u;
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  cpu_mirrors_to_p(&g_cpu);
++  if (!g_cpu.emulation) {
++    cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)(s_resume_pc >> 16));
++    snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++    --g_cpu.S;
++  }
++  cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)(s_resume_pc >> 8));
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
++  cpu_write8_paced(&g_cpu, 0, g_cpu.S, (uint8_t)s_resume_pc);
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
++  cpu_write8_paced(&g_cpu, 0, g_cpu.S, g_cpu.P);
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  g_cpu.S = g_cpu.emulation ? (uint16_t)(0x100 | ((g_cpu.S - 1) & 0xff)) : (uint16_t)(g_cpu.S - 1);
++  g_cpu._flag_I = true;
++  g_cpu._flag_D = false;
++  cpu_mirrors_to_p(&g_cpu);
++  vector = cpu_read8_paced(&g_cpu, 0, vector_addr);
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  vector |= (uint16_t)cpu_read8_paced(&g_cpu, 0, vector_addr + 1) << 8;
++  snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++  interp_bridge_set_master_deadline(deadline);
++  (void)interp_bridge_run_interrupt(&g_cpu, vector);
++  interp_bridge_set_master_deadline(0);
++  update_resume_pc();
++}
++
+ void snes_beam_frame_driver_run_frame(void) {
+   const bool booting = s_resume_pc == 0;
+   int slices = 0;
+@@ -151,7 +186,7 @@ void snes_beam_frame_driver_run_frame(void) {
+   if (!booting && g_snes->nmiEnabled) {
+     g_snes->inNmi = true;
+     s_wai_halted = false;
+-    run_interrupt(nmi_vector(), frame_end);
++    run_nmi_timed(frame_end);
+     g_snes->inNmi = false;
+   }
+ 

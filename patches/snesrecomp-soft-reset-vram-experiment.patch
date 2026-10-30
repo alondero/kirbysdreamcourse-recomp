@@ -1,0 +1,34 @@
+diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
+index e101618..15cf451 100644
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -531,12 +531,28 @@ static void rtl_reset_audio_state(void) {
+ }
+ 
+ void RtlReset(int mode) {
++  /* Diagnostic: the reference soft reset preserves the video RAM contents. */
++  uint8_t preserved_vram[sizeof(g_ppu->vram)];
++  memcpy(preserved_vram, g_ppu->vram, sizeof(preserved_vram));
+   ++s_state_generation;
+   rtl_reset_host_pacing();
+-  snes_reset(g_snes, true);
++  snes_reset(g_snes, false);
++  /* Diagnostic: match Snes9x's architectural soft-reset registers while
++   * preserving the monotonic host clocks used by pacing. */
++  g_cpu.S = 0x100 | ((g_cpu.S - 3) & 0xff);
++  g_cpu.D = 0;
++  g_cpu.DB = g_cpu.PB = 0;
++  g_cpu.X &= 0xff;
++  g_cpu.Y &= 0xff;
++  g_cpu.emulation = g_cpu.m_flag = g_cpu.x_flag = 1;
++  g_cpu._flag_I = 1;
++  g_cpu._flag_D = 0;
++  cpu_mirrors_to_p(&g_cpu);
++  g_cpu.host_return_valid = 0;
+   g_snes->beamMasterLast = g_cpu.master_cycles;
+   SnesEnterNativeMode();
+   ppu_reset(g_ppu);
++  memcpy(g_ppu->vram, preserved_vram, sizeof(preserved_vram));
+   if (!(mode & 1))
+     memset(g_sram, 0, g_sram_size);
+ 

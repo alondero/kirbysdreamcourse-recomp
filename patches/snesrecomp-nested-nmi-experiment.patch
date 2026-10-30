@@ -1,0 +1,101 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index 1a276c7..9dc8435 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -85,6 +85,9 @@ static void service_hdma_event(bool init, uint64_t event) {
+ 
+ static uint64_t s_handler_hdma_event;
+ static bool s_handler_hdma_init;
++static uint64_t s_interrupt_handler_deadline;
++static void run_interrupt_timed(bool nmi, uint64_t deadline);
++static void handler_nmi_event(CpuState *cpu, uint32_t resume_pc);
+ static void handler_hdma_boundary(void) {
+   if (g_cpu.master_cycles < s_handler_hdma_event) return;
+   snes_sync_master_clock(g_snes, g_cpu.master_cycles);
+@@ -92,11 +95,35 @@ static void handler_hdma_boundary(void) {
+   service_hdma_event(s_handler_hdma_init, s_handler_hdma_event);
+   s_handler_hdma_event = next_hdma_event(&s_handler_hdma_init);
+ }
+-static void run_handler_with_hdma(uint32_t vector) {
++static void run_handler_with_hdma(uint32_t vector, uint64_t deadline) {
++  uint64_t previous_deadline = s_interrupt_handler_deadline;
++  s_interrupt_handler_deadline = deadline;
+   s_handler_hdma_event = next_hdma_event(&s_handler_hdma_init);
+   interp_bridge_set_interrupt_boundary_hook(handler_hdma_boundary);
++  interp_bridge_set_interrupt_event_hook(handler_nmi_event);
+   (void)interp_bridge_run_interrupt(&g_cpu, vector);
++  interp_bridge_set_interrupt_event_hook(NULL);
+   interp_bridge_set_interrupt_boundary_hook(NULL);
++  s_interrupt_handler_deadline = previous_deadline;
++}
++
++/* The interrupted handler remains on the C stack while the nested guest NMI
++ * runs, so its pending guest PC and outer frame remain owned by that handler. */
++static void handler_nmi_event(CpuState *cpu, uint32_t resume_pc) {
++  (void)cpu;
++  uint32_t previous_resume = s_resume_pc;
++  bool was_nmi = g_snes->inNmi;
++  g_snes->lateNmiQueued = false;
++  g_snes->lateNmiDue = 0;
++  s_resume_pc = resume_pc;
++  g_snes->inNmi = true;
++  run_interrupt_timed(true, s_interrupt_handler_deadline);
++  g_snes->inNmi = was_nmi;
++  s_resume_pc = previous_resume;
++  s_handler_hdma_event = next_hdma_event(&s_handler_hdma_init);
++  interp_bridge_set_master_deadline(s_interrupt_handler_deadline);
++  interp_bridge_set_interrupt_boundary_hook(handler_hdma_boundary);
++  interp_bridge_set_interrupt_event_hook(handler_nmi_event);
+ }
+ 
+ static uint32_t read_vector(uint32_t addr) {
+@@ -204,7 +231,7 @@ static void run_interrupt_timed(bool nmi, uint64_t deadline) {
+   vector |= (uint16_t)cpu_read8_paced(&g_cpu, 0, vector_addr + 1) << 8;
+   sync_interrupt_entry_hdma(&entry_hdma_event, &entry_hdma_init);
+   interp_bridge_set_master_deadline(deadline);
+-  run_handler_with_hdma(vector);
++  run_handler_with_hdma(vector, deadline);
+   interp_bridge_set_master_deadline(0);
+   update_resume_pc();
+ }
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index a2134a8..e5de145 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -624,6 +624,8 @@ static int      s_lle_quiescent_yield = 0;
+ static uint64_t s_lle_master_deadline = 0;
+ static void (*s_interrupt_boundary_hook)(void);
+ void interp_bridge_set_interrupt_boundary_hook(void (*hook)(void)) { s_interrupt_boundary_hook = hook; }
++static void (*s_interrupt_event_hook)(CpuState *, uint32_t);
++void interp_bridge_set_interrupt_event_hook(void (*hook)(CpuState *, uint32_t)) { s_interrupt_event_hook = hook; }
+ /* Depth of nested interpreter runs and the run that owns the current paired
+  * AOT bounce. A rewritten/non-local return from that AOT root must resume the
+  * owning interpreter's guest call chain. */
+@@ -1725,6 +1727,16 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+          * interpreted. */
+         snes_refresh_charge();
+         if (stop_on_rti && s_interrupt_boundary_hook) s_interrupt_boundary_hook();
++        if (stop_on_rti && s_interrupt_event_hook && g_snes && g_snes->lateNmiQueued &&
++            cpu->master_cycles >= g_snes->lateNmiDue) {
++            /* Keep the interrupted interpreter frame alive while the host
++             * delivers the nested NMI, then resume this exact instruction. */
++            sync_interp_to_cpu(&in, cpu);
++            bridge_apu_flush(cpu);
++            s_interrupt_event_hook(cpu, pc_before);
++            sync_cpu_to_interp(cpu, &in);
++            in.pc = (uint16_t)pc_before;
++        }
+ #ifdef SNESRECOMP_INTERP_PROFILE
+         g_interp_total_steps++;
+         interp_hist_init();
+diff --git a/runner/src/snes/interp_bridge.h b/runner/src/snes/interp_bridge.h
+index 2b978a4..a15ac92 100644
+--- a/runner/src/snes/interp_bridge.h
++++ b/runner/src/snes/interp_bridge.h
+@@ -319,5 +319,6 @@ void Tier2CoverageTestRecord(uint32_t site, uint32_t target, uint8_t mx,
+ 
+ /* Experimental callback at interpreted interrupt-handler instruction boundaries. */
+ void interp_bridge_set_interrupt_boundary_hook(void (*hook)(void));
++void interp_bridge_set_interrupt_event_hook(void (*hook)(CpuState *, uint32_t));
+ 
+ #endif /* INTERP_BRIDGE_H */
