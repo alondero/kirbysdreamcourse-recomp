@@ -22,6 +22,7 @@ if (-not $CMake) {
     $CMake = $command.Source
 }
 $CMake = (Resolve-Path -LiteralPath $CMake).Path
+& (Join-Path $PSScriptRoot 'assert_native_cmake.ps1') -CMake $CMake
 $framework = Join-Path $root 'local/snesrecomp'
 $pin = '147b55e252dcb3e7680a99c7c2f50e7183891844'
 New-Item -ItemType Directory -Path (Join-Path $root 'local') -Force | Out-Null

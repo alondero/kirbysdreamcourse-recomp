@@ -77,6 +77,7 @@ if ((Get-FileHash -LiteralPath $romPath -Algorithm SHA256).Hash.ToLowerInvariant
     throw 'ROM SHA-256 mismatch.'
 }
 $cmakePath = (Resolve-Path -LiteralPath $CMake).Path
+& (Join-Path $PSScriptRoot 'assert_native_cmake.ps1') -CMake $cmakePath
 foreach ($path in @($framework, $project, $build)) {
     if (Test-Path -LiteralPath $path) { throw "$path already exists; choose a fresh -Name." }
 }
