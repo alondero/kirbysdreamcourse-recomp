@@ -51,6 +51,24 @@ class CompareRecordingTest(unittest.TestCase):
                        '--host-b', str(root / 'b/frames'), '--recording', str(recording)]
             good = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(good.returncode, 0, good.stderr)
+            # Reset and state-loaded runs need their own alignment and provenance.
+            ref_data = json.loads(reference.read_text(encoding='utf-8'))
+            ref_data['reset_before_frame'] = 2
+            reference.write_text(json.dumps(ref_data), encoding='utf-8')
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn('Reset scenarios', rejected.stderr)
+            del ref_data['reset_before_frame']
+            reference.write_text(json.dumps(ref_data), encoding='utf-8')
+            manifest_path = root / 'a/run.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest['initial_state_sha256'] = 'a' * 64
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn('initial save state', rejected.stderr)
+            del manifest['initial_state_sha256']
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
             # Explicit same-number alignment selects reference frame 1 for
             # host frame 1, while the default selects reference frame 2.
             ref_data = json.loads(reference.read_text(encoding='utf-8'))

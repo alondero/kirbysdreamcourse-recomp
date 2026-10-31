@@ -27,6 +27,8 @@ def main():
     if args.allow_bounce_difference and not args.recording:
         p.error('--allow-bounce-difference requires --recording')
     recording = json.loads(args.reference.read_text(encoding='utf-8'))
+    if recording.get('reset_before_frame') is not None or recording.get('reset_before_frames'):
+        raise SystemExit('Reset scenarios are not supported by this comparator')
     expected_input = []
     if args.recording:
         if args.expect_press:
@@ -44,6 +46,8 @@ def main():
         config_hashes = []
         for directory in (args.host_a, args.host_b):
             manifest = json.loads((directory.parent / 'run.json').read_text(encoding='utf-8-sig'))
+            if manifest.get('initial_state_sha256') is not None:
+                raise SystemExit(f'Host initial save state is not supported by this comparator: {directory}')
             expected_sram = (hashlib.sha256(bytes(8192)).hexdigest()
                              if args.expect_sram_sha256 == 'zero' else args.expect_sram_sha256.lower())
             if (manifest.get('completed') is not True or manifest.get('frames') != input_recording['frames']
