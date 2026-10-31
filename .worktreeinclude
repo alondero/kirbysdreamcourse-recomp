@@ -1,0 +1,9 @@
+# Buildmesh copies these local inputs into new worktrees; missing files are skipped.
+# The ROM and reference emulator must remain local and must not be committed.
+Kirby's Dream Course (USA).sfc
+local/reference/snes9x_libretro.dll
+
+# Local project guidance and the archived investigation are useful to agents.
+CLAUDE.md
+CLAUDE.local.md
+docs/framework-spike.md
