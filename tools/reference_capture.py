@@ -41,6 +41,8 @@ def main():
     parser.add_argument('--reset-frame', type=int, action='append', default=[],
                         help='reset immediately before this 1-based frame; may be repeated')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--roundtrip-frame', type=int,
+                        help='save after this frame and replay the remaining inputs to check state restoration')
     parser.add_argument('--wram-frame', type=int, action='append', default=[],
                         help='also save this frame WRAM beside output; may be repeated')
     parser.add_argument('--vram-frame', type=int, action='append', default=[],
@@ -55,6 +57,8 @@ def main():
     parser.add_argument('--input-recording', type=Path,
                         help='validated frame-numbered JSON recording shared with the host')
     args = parser.parse_args()
+    if args.roundtrip_frame is not None and not 1 <= args.roundtrip_frame < args.frames:
+        parser.error('--roundtrip-frame must be at least 1 and less than --frames')
     if args.frames <= 0:
         parser.error('--frames must be positive')
     if any(not 1 <= frame <= args.frames for frame in args.reset_frame):
@@ -123,6 +127,7 @@ def main():
     audio_pcm = bytearray()
     audio_frame_counts = []
     current_frame = 0
+    replaying = False
     @env_t
     def environment(command, data):
         nonlocal pixel_format
@@ -149,13 +154,13 @@ def main():
     def sample(left, right):
         data = int(left).to_bytes(2, 'little', signed=True) + int(right).to_bytes(2, 'little', signed=True)
         audio.update(data)
-        if args.audio_raw:
+        if args.audio_raw and not replaying:
             audio_pcm.extend(data)
     @batch_t
     def batch(data, count):
         samples = c.string_at(data, count * 4)
         audio.update(samples)
-        if args.audio_raw:
+        if args.audio_raw and not replaying:
             audio_pcm.extend(samples)
         return count
     @poll_t
@@ -211,6 +216,12 @@ def main():
         raise SystemExit(f'Unexpected WRAM size: {wram_size}')
     # The framework hard reset zeroes WRAM; Snes9x defaults to 0x55.
     c.memset(wram_ptr, 0, wram_size)
+    core.retro_serialize_size.restype = c.c_size_t
+    core.retro_serialize.argtypes = [c.c_void_p, c.c_size_t]
+    core.retro_serialize.restype = c.c_bool
+    core.retro_unserialize.argtypes = [c.c_void_p, c.c_size_t]
+    core.retro_unserialize.restype = c.c_bool
+    snapshot = None
     records = []
     for i in range(1, args.frames + 1):
         current_frame = i
@@ -257,11 +268,41 @@ def main():
         records.append({'frame': i, 'video': frame, 'audio_sha256': audio.hexdigest(),
                         'wram_sha256': hashlib.sha256(wram).hexdigest(),
                         'sram_sha256': hashlib.sha256(sram).hexdigest()})
+        if i == args.roundtrip_frame:
+            size = core.retro_serialize_size()
+            if not size:
+                raise SystemExit('Reference core does not support serialization')
+            snapshot = c.create_string_buffer(size)
+            if not core.retro_serialize(snapshot, size):
+                raise SystemExit('Reference state serialization failed')
+    if snapshot is not None:
+        replaying = True
+        if not core.retro_unserialize(snapshot, len(snapshot)):
+            raise SystemExit('Reference state restoration failed')
+        # A NULL video callback repeats the preceding frame in libretro.
+        frame = records[args.roundtrip_frame - 1]['video']
+        for i in range(args.roundtrip_frame + 1, args.frames + 1):
+            current_frame = i
+            if i in args.reset_frame:
+                core.retro_reset()
+            audio = hashlib.sha256()
+            core.retro_run()
+            actual = {'frame': i, 'video': frame, 'audio_sha256': audio.hexdigest(),
+                      'wram_sha256': hashlib.sha256(memory(2)).hexdigest(),
+                      'sram_sha256': hashlib.sha256(memory(0)).hexdigest()}
+            expected = records[i - 1]
+            differences = [key for key in actual if actual[key] != expected[key]]
+            if differences:
+                raise SystemExit(f'Reference round-trip first divergence at frame {i}: ' + ', '.join(differences))
     result = {'core_sha256': args.core_sha256.lower(), 'rom_sha256': ROM_SHA256,
               'core_name': info.library_name.decode(), 'core_version': info.library_version.decode(),
               'initial_sram': hashlib.sha256(initial_sram).hexdigest() if args.initial_sram else 'zero',
               'initial_wram': 'zero',
               'input': inputs if inputs else 'none', 'frames': records}
+    if snapshot is not None:
+        result['roundtrip'] = {'saved_after_frame': args.roundtrip_frame,
+                               'replayed_through_frame': args.frames,
+                               'compared': ['video', 'audio_sha256', 'wram_sha256', 'sram_sha256']}
     if len(args.reset_frame) == 1:
         result['reset_before_frame'] = args.reset_frame[0]
     elif args.reset_frame:
