@@ -1,0 +1,22 @@
+---
+name: release
+description: Prepare and publish a Windows GitHub release of Kirby's Dream Course Recomp when asked to release or ship this project.
+---
+
+# Kirby's Dream Course release
+
+Produce a downloadable Windows release for `alondero/kirbysdreamcourse-recomp`, with a clear account of what works and what remains experimental. Run from the requested repository checkout, not an unrelated worktree. A request to release authorizes the release action; a request merely to create or change this skill does not.
+
+## Release gates
+
+1. Read the checkout's `AGENTS.md`, `architecture.md`, `README.md`, and `docs/compatibility.md`. Inspect the target commit, working tree, remote, existing GitHub releases, release workflows and build scripts. Release the requested commit or, if none is specified, the current published main-branch commit; do not silently include uncommitted work. Determine the version from the request or existing tags, and avoid overwriting an existing release or tag.
+2. Establish a distributable build path before tagging. This project prohibits distributing ROMs, extracted assets, generated game-derived output, saves and recordings. The current guarded build generates game code from a local ROM and links it into the executable; the README explicitly treats that executable as local-only. Do not publish it. If a ROM-free executable can be built without game-derived generated code, establish that from the build inputs and artifact and validate its behavior. If not, stop and report the missing compliant build path; do not quietly substitute a source release for the requested executable.
+3. Review the pinned framework and all linked dependency licenses and include required notices. Preserve the interpreter fallback and check the supported ROM identity in `rom_identity.txt`. Never upload a ROM, private input, generated game-derived code or executable, recordings, or saves, including as CI artifacts. Do not send local ROMs to CI.
+4. Build from the exact release commit with a reproducible, documented Windows build. Package the executable, required runtime DLLs and license/attribution files in a ZIP; examine the archive contents and dependencies. Test the extracted package in a clean directory on Windows: it must start with the user's supported `.sfc` beside the executable, reject an incorrect ROM clearly, and operate without developer tools or a separate build step. Test the actual release configuration and required timing options, not just `tools/play_experimental.ps1`. Verify the local ROM hash before ROM-dependent tests, and keep the ROM and all test outputs local. Run the appropriate available tests and report limitations using the evidence in `docs/compatibility.md`; do not claim full compatibility.
+5. If a build, package, or release workflow is missing, implement and validate it for this project before publishing. Inspect the real workflow and its permissions rather than assuming the other recomp projects' workflow exists. Record exact commands, dependency pins, checks and unresolved limitations. Do not publish until every gate above is satisfied.
+
+## Publish and verify
+
+- Review commits and merged changes since the previous release (or the project's initial commit for the first binary release). Write release notes for the target commit: features, supported Windows and ROM requirements, download and setup instructions, controls, known limitations, license and attribution. Say explicitly that the ROM is supplied by the player. Avoid unsupported completion claims.
+- Create and push the requested version tag at the verified release commit, then publish the ZIP and notes through the verified project workflow or `gh release create`. Use prerelease status if requested or warranted by the experimental state; describe that status accurately. Use a UTF-8 notes file with `--notes-file`.
+- Verify the remote tag resolves to the intended commit, the GitHub release is accessible by that tag, its draft/prerelease status and title are correct, and all expected assets are attached. Download the published ZIP, check its SHA-256 against the tested archive, inspect its contents and integrity, and confirm the latest-release link points to it when a latest stable release was intended. Report the release URL, asset, checksum, tests and remaining gaps. If publishing fails, report what was created and avoid blindly retrying or moving tags.
