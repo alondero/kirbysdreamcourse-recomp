@@ -50,8 +50,7 @@ checks repeatability, not emulator accuracy or every preceding frame. No new
 reference-emulator comparison was performed during this investigation.
 
 At frame 8199, camera staging was `(460,196)` in WRAM words `$7E:0086/$7E:0088`.
-Live task entries using the
-`$80:E55A` draw callback retained these values:
+Live task entries using the `$80:E55A` draw callback retained these values:
 
 | Task byte offset | World origin | Camera-relative origin | Layout pointer | Coarse culling |
 | --- | --- | --- | --- | --- |
@@ -74,7 +73,10 @@ The accepted layout was present in the draw queue; the two rejected layouts were
 absent. Their layouts decoded into six pieces each from low WRAM mirrored into
 bank `$89`, rather than from ROM. The accepted layout decoded from ROM. Its
 `$89:D242` layout header selects WRAM word `$7E:697A` for the priority override;
-the dump contains 3, giving priority bits `$3000` through `$80:8D90-$80:8DA9`.
+the dump contains 3, giving priority bits `$3000`, computed at
+`$80:8D90-$80:8DA9`. In this sample the override equals the static priority bits
+already present in ROM attribute word `$3384`; it does not demonstrate the
+override changing the output.
 `local/sprite-proof.json` records the resulting coordinates, layout pointers and
 piece attributes; it does not record the source animation or priority fields.
 
@@ -94,12 +96,14 @@ must not enter commits or release assets.
 ### Replay command
 
 The runs used `tools/headless.ps1` with the following settings, in a disposable
-PowerShell session. Resolve the three input paths to local files matching the
-hashes above. The executable used during the investigation was
-`../cloven-shrieking-well/local/guarded-build/KirbyDreamCourseRecomp.exe`;
-the recording and SRAM came from the main checkout's
-`local/course3-source-8200.json` and
-`local/course2-completion-fallback/saves/save.srm` respectively.
+PowerShell session. Replace the three placeholders with locally supplied files
+matching these SHA-256 identities; the files are not distributed with this repo:
+
+| Input | Required SHA-256 |
+| --- | --- |
+| Executable | `3a062c076dc566dc3c374aced81d31dfd4099333033ff906325c2712206b3aea` |
+| Recording | `50b521dbdf8ce53e62d9db37a5a73a079f683163838ba977cb51ce55560e5a1b` |
+| Initial SRAM | `278e7bb6bc4c789319fe7b4d8202102c88971e28258be23610fb0c500b44c354` |
 
 ```powershell
 $env:SNESRECOMP_APU_BEAM_ELAPSED = '1'
@@ -128,7 +132,11 @@ $env:SNESRECOMP_FRAMEDUMP_VIDEO = '1'
 
 Use fresh output names if these directories already exist. The second run also
 captures VRAM, CGRAM and PPU metadata; compare the shared WRAM/BMP files for
-frames 8190-8199. Each output's `run.json` records input identities and options.
+frames 8190-8199. Each output's `run.json` records input identities and selected
+runtime options, but omits the `SNESRECOMP_FRAMEDUMP_*` settings. The two retained
+manifests are identical: their file lists, not their manifests, show the extra
+VRAM, CGRAM and PPU captures in the second run. The command above records the
+different `SNESRECOMP_FRAMEDUMP_VIDEO` setting explicitly.
 
 ## Proposed implementation
 
