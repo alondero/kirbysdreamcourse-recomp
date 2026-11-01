@@ -49,7 +49,7 @@ int main(void)
     Ppu *ppu = ppu_init();
     Cart cart = {.rom = rom, .romImageSize = sizeof(rom)};
     Snes snes = {.ppu = ppu, .cart = &cart};
-    CpuState cpu = {.ram = ram};
+    CpuState cpu = {.ram = ram, .DB = 0x7e};
     g_snes = &snes;
     assert(ppu);
     KdcInitializeSprites();

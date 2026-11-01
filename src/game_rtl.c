@@ -359,7 +359,7 @@ static void GameLoadExtra(struct SaveLoadInfo *sli, uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
-    KdcResetSprites(g_snes->ppu);
+    KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     RtlApplyExecutionState();
 #ifdef KDC_EXPERIMENTAL_RASTER_STATE
     if (saved_beam_valid)
@@ -401,7 +401,7 @@ static void GameStateLoaded(uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
-    KdcResetSprites(g_snes->ppu);
+    KdcResetSprites(g_snes ? g_snes->ppu : NULL);
 }
 #endif
 

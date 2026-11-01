@@ -76,6 +76,15 @@ static uint16_t DirectWord(const CpuState *cpu, unsigned offset)
     return KdcReadWord(cpu->ram, (uint16_t)(cpu->D + offset));
 }
 
+static uint16_t AbsoluteWord(const CpuState *cpu, uint16_t address)
+{
+    uint16_t value = 0;
+    /* Absolute operands use DB; DP operands always use bank zero. Reject
+     * unsupported mappings rather than guessing WRAM or touching MMIO. */
+    if (!ReadWord(cpu, cpu->DB, address, &value)) building.invalid = true;
+    return value;
+}
+
 static void Expand(const CpuState *cpu, const Request *request)
 {
     if (building.invalid) return;
@@ -127,8 +136,8 @@ static void Capture(const CpuState *cpu, unsigned bank, uint16_t layout,
     }
     Request *request = &requests[request_count++];
     *request = (Request){
-        (int16_t)(x + KdcReadWord(cpu->ram, 0x86)),
-        (int16_t)(y + KdcReadWord(cpu->ram, 0x88)),
+        (int16_t)(x + AbsoluteWord(cpu, 0x86)),
+        (int16_t)(y + AbsoluteWord(cpu, 0x88)),
         layout, (uint8_t)bank, (uint8_t)bucket, direct, recovered
     };
     /* Resolve queued layouts at $8C12, after the dynamic-layout updater.
@@ -150,7 +159,7 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
         request_count = 0;
         return;
     }
-    if (address == 0x8ae1) {
+    if (address == 0x8841 || address == 0x8ae1) {
         /* Unlike $8823, this clears queues without resetting the OAM
          * allocation pointer. Keep pieces already expanded into that OAM. */
         request_count = 0;
@@ -159,6 +168,9 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
     if (address == 0x8c12) {
         for (unsigned i = 0; i < request_count; ++i)
             if (!requests[i].direct) Expand(cpu, &requests[i]);
+        /* Each request needs only one presentation copy, even if the game
+         * consumes the same native queue again before clearing its headers. */
+        request_count = 0;
         return;
     }
     if (address == 0x82ca) {
@@ -172,7 +184,7 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
         return;
     }
     if (cpu->m_flag || cpu->x_flag || cpu->emulation) return;
-    unsigned bank = KdcReadWord(cpu->ram, 0x9e) & 0xff;
+    unsigned bank = AbsoluteWord(cpu, 0x9e) & 0xff;
     uint16_t layout;
     int x, y;
     unsigned bucket;
@@ -181,29 +193,29 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
     case 0xe55e: case 0xe5a6: {
         unsigned slot = DirectWord(cpu, 0xd2);
         if (slot >= 0x80 || (slot & 1)) return;
-        uint16_t animation = KdcReadWord(cpu->ram, 0x5d9c + slot);
+        uint16_t animation = AbsoluteWord(cpu, 0x5d9c + slot);
         if (animation & 0x8000) return; /* intentionally hidden/deleted */
-        x = (int16_t)KdcReadWord(cpu->ram, 0x5f1c + slot);
-        y = (int16_t)KdcReadWord(cpu->ram, 0x5f9c + slot);
+        x = (int16_t)AbsoluteWord(cpu, 0x5f1c + slot);
+        y = (int16_t)AbsoluteWord(cpu, 0x5f9c + slot);
         if (address == 0xe55e) {
-            x = (int16_t)(x - KdcReadWord(cpu->ram, 0x86));
-            y = (int16_t)(y - KdcReadWord(cpu->ram, 0x88));
+            x = (int16_t)(x - AbsoluteWord(cpu, 0x86));
+            y = (int16_t)(y - AbsoluteWord(cpu, 0x88));
         }
         if (!Rejected(x, y, -48, -32)) return; /* queue observer owns it */
-        uint16_t table = KdcReadWord(cpu->ram, 0x5e1c + slot);
+        uint16_t table = AbsoluteWord(cpu, 0x5e1c + slot);
         if (!ReadWord(cpu, bank, (uint16_t)(table + 2 * animation), &layout)) {
             building.invalid = true;
             return;
         }
-        bucket = KdcReadWord(cpu->ram, 0x5e9c + slot);
+        bucket = AbsoluteWord(cpu, 0x5e9c + slot);
         break;
     }
     case 0xe60b: case 0xe635:
         x = (int16_t)cpu->X;
         y = (int16_t)cpu->Y;
         if (address == 0xe60b) {
-            x = (int16_t)(x - KdcReadWord(cpu->ram, 0x86));
-            y = (int16_t)(y - KdcReadWord(cpu->ram, 0x88));
+            x = (int16_t)(x - AbsoluteWord(cpu, 0x86));
+            y = (int16_t)(y - AbsoluteWord(cpu, 0x88));
         }
         if (!Rejected(x, y, -48, -32)) return;
         layout = DirectWord(cpu, 0xc0);
@@ -211,12 +223,12 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
         break;
     case 0x9e9e: case 0x9eec:
         if (cpu->X >= 0x20 || (cpu->X & 1)) return;
-        x = (int16_t)KdcReadWord(cpu->ram, 0x8de + cpu->X);
+        x = (int16_t)AbsoluteWord(cpu, 0x8de + cpu->X);
         y = (int16_t)cpu->Y;
         if (!Rejected(x, y, address == 0x9eec ? -24 : -48,
                       address == 0x9eec ? -24 : -32)) return;
         layout = DirectWord(cpu, 0xe6);
-        bucket = KdcReadWord(cpu->ram, 0x2880);
+        bucket = AbsoluteWord(cpu, 0x2880);
         break;
     case 0x8b09:
         recovered = false;
@@ -242,7 +254,7 @@ static void InterpretedObserver(CpuState *cpu, uint32_t pc)
 void KdcInitializeSprites(void)
 {
     static const uint16_t sites[] = {
-        0x8823, 0x8ae1, 0x82ca, 0x8c12, 0xe55e, 0xe5a6, 0xe60b, 0xe635,
+        0x8823, 0x8841, 0x8ae1, 0x82ca, 0x8c12, 0xe55e, 0xe5a6, 0xe60b, 0xe635,
         0x9e9e, 0x9eec, 0x8b09, 0x8a3d
     };
     for (unsigned i = 0; i < sizeof(sites) / sizeof(sites[0]); ++i) {

@@ -9,7 +9,7 @@
 +   * Cleared on reset and excluded from guest snapshots. */
 +  void (*extraObjectProvider)(Ppu *ppu, int line, void *context);
 +  void *extraObjectContext;
-+  bool extraObjectMargins; /* complete host list owns pixels outside [0,256) */
++  bool extraObjectMargins; /* opaque host pixels precede native margins */
    const PpuExtraObject *extraObjects;
    size_t extraObjectCount;
    uint16_t objectColors[kPpuBufWidth];
@@ -47,13 +47,18 @@
    if(ppu->extraObjectCount) {
      memset(ppu->objectColors,0,sizeof(ppu->objectColors));
      memset(ppu->objectOrder,0xff,sizeof(ppu->objectOrder));
-@@ -3018,6 +3032,9 @@
-                     (bits >> 14) & 4 | (bits >> 21) & 8;
-         if (pixel == 0) continue;
-         if (ws_clip_left && col + x + px < 0) continue;
-+        /* A complete host margin list has its own unbounded ordering.
-+         * Keep native evaluation/budgets and every center pixel intact. */
-+        if (ppu->extraObjectMargins && (col+x+px<0 || col+x+px>=256)) continue;
-               if (capture_slot) {
-                 int screen_x = col + x + px;
-                 if (screen_x >= obj_capture->x0 && screen_x < obj_capture->x1) {
+@@ -3038,6 +3052,14 @@
+            !(ppu->renderFlags & kPpuRenderFlags_NoSpriteLimits))
+       break;
+   }
++  /* Opaque host pixels may replace native margin pixels regardless of OAM
++   * slot. Keep native depth/palette for uncovered pixels and transparent
++   * holes, so incomplete host lists never erase native margin objects. */
++  if(ppu->extraObjectMargins && ppu->extraObjectCount) {
++    for(unsigned i=0;i<kPpuBufWidth;++i)
++      if(i<kPpuExtraLeftRight || i>=kPpuExtraLeftRight+256)
++        ppu->objectOrder[i]=UINT64_MAX;
++  }
+   bool extra=ppu->extraObjectCount && PpuComposeExtraObjects(
+       ppu->extraObjects,ppu->extraObjectCount,line,-kPpuExtraLeftRight,
+       kPpuBufWidth,first_slot,ppu->objBuffer.data,ppu->objectColors,ppu->objectOrder);
