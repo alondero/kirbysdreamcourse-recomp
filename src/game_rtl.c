@@ -43,6 +43,9 @@
 #include "snes/saveload.h"
 #endif
 #include "common_rtl.h"
+#include "widescreen.h"
+#include "snes/ws_shadow.h"
+#include "course_view.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,6 +110,10 @@ void GameRunOneFrame(void)
 
 void GameDrawPpuFrame(void)
 {
+    /* The pinned desktop host narrows the margin to uint8_t. Reapply the
+     * full buffer-supported budget here, including very wide displays. */
+    PpuSetExtraSpace(g_snes->ppu, g_ws_extra);
+    KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
     snes_beam_frame_driver_draw_ppu_frame();
 }
 
@@ -117,6 +124,7 @@ void GameSessionReset(void)
      * been fine" is the usual desync culprit, because single-player never
      * re-enters the boot path twice in one process. */
     snes_beam_frame_driver_reset();
+    WsShadowReset();
 }
 
 #ifdef KDC_EXPERIMENTAL_STATE
