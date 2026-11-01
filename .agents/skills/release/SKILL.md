@@ -1,5 +1,5 @@
 ---
-name: kirby-dream-course-release
+name: release
 description: Prepare and publish a Windows GitHub release of Kirby's Dream Course Recomp when asked to release or ship this project.
 ---
 
