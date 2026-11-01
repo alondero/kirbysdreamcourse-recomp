@@ -33,14 +33,16 @@ $copy = Join-Path $destination 'game.exe'
 Copy-Item -LiteralPath $exe -Destination $copy
 # Keep keyboard seats and physical controllers out of recorded runs. The host
 # otherwise ORs their state with the script.
-@'
+$delaySetting = if ($Unpaced) { 1 } else { 0 }
+$wideSetting = if ($Widescreen) { 1 } else { 0 }
+@"
 [General]
 Autosave = 0
-DisableFrameDelay = 0
+DisableFrameDelay = $delaySetting
 [Graphics]
 NewRenderer = 1
 NoSpriteLimits = 0
-Widescreen = 0
+Widescreen = $wideSetting
 [Sound]
 EnableAudio = 1
 AudioFreq = 32000
@@ -52,19 +54,7 @@ SourceP2 = 0
 [GamepadMap]
 EnableGamepad1 = false
 EnableGamepad2 = false
-'@ | Set-Content -LiteralPath (Join-Path $destination 'config.initial.ini') -Encoding ASCII
-if ($Widescreen) {
-    $configPath = Join-Path $destination 'config.initial.ini'
-    $configText = [IO.File]::ReadAllText($configPath).Replace('Widescreen = 0', 'Widescreen = 1')
-    [IO.File]::WriteAllText($configPath, $configText, [Text.Encoding]::ASCII)
-}
-if ($Unpaced) {
-    $configPath = Join-Path $destination 'config.initial.ini'
-    $configText = [IO.File]::ReadAllText($configPath)
-    if (-not $configText.Contains('DisableFrameDelay = 0')) { throw 'Expected frame-delay setting is missing.' }
-    $configText = $configText.Replace('DisableFrameDelay = 0', 'DisableFrameDelay = 1')
-    [IO.File]::WriteAllText($configPath, $configText, [Text.Encoding]::ASCII)
-}
+"@ | Set-Content -LiteralPath (Join-Path $destination 'config.initial.ini') -Encoding ASCII
 Copy-Item -LiteralPath (Join-Path $destination 'config.initial.ini') -Destination (Join-Path $destination 'config.ini')
 $configHash = (Get-FileHash -LiteralPath (Join-Path $destination 'config.initial.ini') -Algorithm SHA256).Hash.ToLowerInvariant()
 $sram = [byte[]]::new(8192)

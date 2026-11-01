@@ -26,7 +26,7 @@ class CourseViewTest(unittest.TestCase):
         framework = Path(os.environ.get('SNESRECOMP_ROOT', root / 'local/guarded-framework'))
         source = framework / 'runner/src'
         api = source / 'snes/ws_shadow.h'
-        if compiler is None or not api.is_file() or 'WsShadowResolveTile8x8' not in api.read_text():
+        if compiler is None or not api.is_file() or 'WsShadowResolveTile8x8' not in api.read_text(encoding='utf-8', errors='replace'):
             self.skipTest('Requires GCC and patched pinned framework (SNESRECOMP_ROOT)')
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / 'course_render_test.exe'
@@ -44,7 +44,7 @@ class CourseViewTest(unittest.TestCase):
         framework = Path(os.environ.get('SNESRECOMP_ROOT', root / 'local/guarded-framework'))
         source = framework / 'runner/src'
         api = source / 'snes/ws_shadow.h'
-        if compiler is None or not api.is_file() or 'WsShadowResolveTile8x8' not in api.read_text():
+        if compiler is None or not api.is_file() or 'WsShadowResolveTile8x8' not in api.read_text(encoding='utf-8', errors='replace'):
             self.skipTest('Requires GCC and patched pinned framework (SNESRECOMP_ROOT)')
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / 'course_shadow_test.exe'
