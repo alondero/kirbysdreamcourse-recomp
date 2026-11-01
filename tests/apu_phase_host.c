@@ -6,10 +6,7 @@
 #include <string.h>
 #include "snes/apu.h"
 
-uint64_t g_apu_timer0_total_ticks;
-int snes_frame_counter;
-void RtlApuLock(void) {}
-void RtlApuUnlock(void) {}
+#include "apu_fixture_host.h"
 
 static int single_cycle;
 static void advance(Apu *apu, unsigned clocks) {

@@ -19,6 +19,7 @@ class ApuAccuracyTest(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True, timeout=180)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('native=1: queue boundary: passed', result.stdout)
+        self.assertIn('native=1: upload queue boundary: passed', result.stdout)
 
 
 if __name__ == '__main__':

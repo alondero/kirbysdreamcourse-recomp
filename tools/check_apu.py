@@ -12,6 +12,12 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 FRAMEWORK_PIN = '147b55e252dcb3e7680a99c7c2f50e7183891844'
 REFERENCE_PIN = 'fae2fea08f74180759ef540ee94259213f503480'
+TIMER_CASES = 144
+PORT_RACE_PHASES = 13
+INDEXED_STORE_PHASES = 5
+DSP_SCENARIOS = 360
+DSP_SAMPLES_PER_SCENARIO = 256
+SPC_RECORDS = TIMER_CASES + PORT_RACE_PHASES + INDEXED_STORE_PHASES
 
 
 def run(*args, **kwargs):
@@ -28,9 +34,9 @@ def require_pin(repo, pin):
         raise ValueError(f'{repo}: expected {pin}, found {actual}')
 
 
-def build_host(framework, fixture, executable, native, cc='gcc'):
+def build_host(framework, fixture, executable, native):
     source = framework / 'runner/src'
-    run(cc, '-std=c11', '-O2', '-UNDEBUG', '-DSNESRECOMP_TRACE=0',
+    run('gcc', '-std=c11', '-O2', '-UNDEBUG', '-DSNESRECOMP_TRACE=0',
         f'-DSNESRECOMP_APU_NATIVE={native}', '-ffunction-sections',
         '-fdata-sections', f'-I{source}', ROOT / 'tests' / fixture,
         *(source / 'snes' / part for part in
@@ -63,7 +69,7 @@ def main():
                      'snes/dsp_shadow.c', 'snes/audio_shadow.c', 'audio_trace.c'):
             fingerprint.update(name.encode('ascii') + b'\0')
             fingerprint.update((source / name).read_bytes())
-        print(f'Framework APU source fingerprint: {fingerprint.hexdigest()}')
+        print(f'Framework APU source fingerprint (provenance only): {fingerprint.hexdigest()}')
         for compiler in ('gcc', 'g++'):
             if not shutil.which(compiler):
                 raise ValueError(f'{compiler} required on PATH')
@@ -85,11 +91,12 @@ def main():
             compare_lines(['pause 5 516 0 3', 'pause 6 516 0 2', 'pause 7 516 0 1'],
                           pauses, 'reference comparison overshoot')
             expected = [line for line in records if not line.startswith('pause ')]
-            if len(expected) != 144 + 13 + 5 + 360 * 256:
+            if len(expected) != SPC_RECORDS + DSP_SCENARIOS * DSP_SAMPLES_PER_SCENARIO:
                 raise ValueError('reference returned an incomplete matrix')
-            dsp_records = expected[144 + 13 + 5:]
-            for scenario in range(360):
-                samples = dsp_records[scenario * 256:(scenario + 1) * 256]
+            dsp_records = expected[SPC_RECORDS:]
+            for scenario in range(DSP_SCENARIOS):
+                samples = dsp_records[scenario * DSP_SAMPLES_PER_SCENARIO:
+                                      (scenario + 1) * DSP_SAMPLES_PER_SCENARIO]
                 if not any(line.split()[-4:-2] != ['0', '0'] for line in samples):
                     raise ValueError(f'reference DSP scenario {scenario} is silent')
             for native in (0, 1):
@@ -98,14 +105,16 @@ def main():
                 for chunking in (0, 1):
                     actual = run(exe, chunking, text=True).splitlines()
                     compare_lines(expected, actual, f'native={native}, single-cycle={chunking}')
-                print(f'native={native}: 144 timer, 13 port race, 5 store phases and '
-                      '360 DSP scenarios match; whole spans and single cycles')
+                print(f'native={native}: {TIMER_CASES} timer, {PORT_RACE_PHASES} port race, '
+                      f'{INDEXED_STORE_PHASES} store phases and {DSP_SCENARIOS} DSP '
+                      'scenarios match; whole spans and single cycles')
                 exe = tmp / f'resume-{native}.exe'
                 build_host(args.framework, 'apu_state_resume.c', exe, native)
                 print(f'native={native}: {run(exe, text=True).strip()}')
                 exe = tmp / f'queue-{native}.exe'
                 build_host(args.framework, 'apu_queue_boundary.c', exe, native)
                 print(f'native={native}: {run(exe, text=True).strip()}')
+                print(f'native={native}: {run(exe, "--upload", text=True).strip()}')
     except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         print(f'error: {error}')
         if isinstance(error, subprocess.CalledProcessError):

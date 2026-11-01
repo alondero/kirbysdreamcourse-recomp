@@ -19,7 +19,10 @@ The reference is exported with `git archive` at the exact pin before compiling,
 so local instrumentation in a source checkout cannot affect this test.
 The selected framework's working files are intentionally compiled, since they
 include the project's runtime patches. The tool checks its base commit and
-prints an APU source fingerprint. GCC/G++ 15.2.0 on Windows were used here.
+prints an APU source fingerprint for provenance. No expected fingerprint is
+enforced; the pin and output comparisons are acceptance checks. GCC/G++ 15.2.0
+on Windows were used here. The reference's test-only licenses are also recorded
+in [third-party attribution](../THIRD_PARTY_ATTRIBUTION.md).
 
 ## Reproduce the synthetic checks
 
@@ -65,7 +68,7 @@ integration test is explicitly skipped.
 | Indexed store | `MOV dp+X,A` leaves the output port unchanged for four cycles and publishes on cycle five. |
 | DSP | 360 scenarios of 256 stereo samples, including ENDX and ENVX: all eight voices, four BRR filters, zero/fractional/unit/max pitches, and noise-rate changes. |
 | Resume | 17 cuts through timer reads, port reads, indexed writes and a branch; serialized APU/DSP/SPC and separately saved port scheduler replay identically. |
-| Queue boundary | Due writes consume no SPC/DSP time, equal-time writes retain FIFO order, cycle budgets stop before future writes, and an earlier request cannot expose a later queued write. |
+| Queue boundary | Both guest-time synchronization and the upload queue drain publish due writes without SPC/DSP time; equal-time writes retain FIFO order, cycle budgets stop before future writes, and an earlier guest-time request cannot expose a later queued write. |
 
 The reference repeats every matrix record across fresh executions. Host output
 matches it both in full-span calls and one-cycle calls, in scalar and batched
@@ -115,8 +118,20 @@ physical SPC instruction phase.
 `snesrecomp-apu-boundary-sync.patch` publishes queued events through the
 requested boundary when that time has already been reached. It leaves later
 events pending and consumes a cycle budget only when time must advance.
+The upload handoff's `apu_runUntilPortQueueEmpty` follows the same rule: it
+publishes all events already due, then advances only as far as the next event
+within its remaining budget. The regression covers both entry points with
+zero budgets, exact budgets, equal-time writes and exhaustion before later
+events. Before the upload-drain correction, the new `--upload` fixture fails
+in both APU modes: a write due at clock zero leaves `portClock` at one.
 The regression passes in both APU modes. Save/resume tests compare the full
 serialized guest state, including DSP output, and the port scheduler.
+
+The upload drain has a caller in the framework's HLE upload helpers. The
+current game configuration has no `hle_spc_upload` entries, and its generated
+code has no upload-helper callers. The new regression exercises the real queue
+drain directly; game-level HLE upload and live-transfer handshakes remain
+untested. This correction does not enable HLE uploads.
 
 The candidate is **opt-in** through `-ApuBoundarySync`. CMake checks both
 directions of patch/option agreement and requires the existing SPC-D4 guarded
@@ -167,6 +182,17 @@ The tested control executable hash is
 candidate hash is
 `33d6b10a6dda1e7bf00c9e1a4c8563bebf2e6c1f616406bab450653c2c30890a`.
 These identify local builds, not distributed artifacts.
+
+After correcting the upload queue drain, a rebuilt candidate with SHA-256
+`2b14845ca28e09e9402bca3b6379bb20829e504bc4cbbba914af3e0e990ea7bb`
+completed fresh paced 850-frame native and fallback runs. Both reproduce all
+850 WRAM boundaries and all 452,621 PCM samples from the earlier candidate.
+The first reference divergence and mismatch count are unchanged. The updated
+queue fixture passes both APU modes, including publication at clock 32 without
+producing the DSP sample scheduled at that edge. The full 17-test suite passes
+with the APU and reference integration tests enabled, and the Windows build
+succeeds. HLE upload behavior beyond the directly tested queue drain remains
+unqualified.
 
 To replay a local recording, use fresh output and capture paths for every run:
 

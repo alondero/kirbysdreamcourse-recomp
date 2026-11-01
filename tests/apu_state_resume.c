@@ -6,10 +6,7 @@
 #include <string.h>
 #include "snes/apu.h"
 
-uint64_t g_apu_timer0_total_ticks;
-int snes_frame_counter;
-void RtlApuLock(void) {}
-void RtlApuUnlock(void) {}
+#include "apu_fixture_host.h"
 
 typedef struct Buffer {
   SaveLoadInfo base;
@@ -62,10 +59,10 @@ int main(void) {
     apu_saveload(restored, &final->base);
     assert(saved->pos == final->pos);
     assert(memcmp(saved->bytes, final->bytes, saved->pos) == 0);
-    ApuPortSched replayed = {0};
-    apu_port_sched_save(original, &scheduler);
+    ApuPortSched completed = {0}, replayed = {0};
+    apu_port_sched_save(original, &completed);
     apu_port_sched_save(restored, &replayed);
-    assert(memcmp(&scheduler, &replayed, sizeof(scheduler)) == 0);
+    assert(memcmp(&completed, &replayed, sizeof(completed)) == 0);
     assert(original->portClock == 64 && original->dsp->sampleWrite == 2);
     apu_free(original);
     apu_free(restored);
