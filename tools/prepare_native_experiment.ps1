@@ -33,6 +33,7 @@ param(
     [switch]$ManualJoypad,
     [switch]$AutoJoyPhase,
     [switch]$SpcD4Phase,
+    [switch]$ApuBoundarySync,
     [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$Name = 'native-experiment'
 )
 $ErrorActionPreference = 'Stop'
@@ -65,6 +66,7 @@ if ($SpcC4Phase -and -not $ApuQueueRead) { throw '-SpcC4Phase requires -ApuQueue
 if ($RasterLiveRestore -and -not $ApuQueueRead) { throw '-RasterLiveRestore requires -ApuQueueRead.' }
 if ($AutoJoyPhase -and (-not $ManualJoypad -or -not $Ppu2Bus -or $SpcC4Phase)) { throw '-AutoJoyPhase requires -ManualJoypad and -Ppu2Bus and cannot be combined with -SpcC4Phase.' }
 if ($SpcD4Phase -and (-not $AutoJoyPhase -or $SpcC4Phase)) { throw '-SpcD4Phase requires -AutoJoyPhase and cannot be combined with -SpcC4Phase.' }
+if ($ApuBoundarySync -and -not $SpcD4Phase) { throw '-ApuBoundarySync requires -SpcD4Phase.' }
 $root = Split-Path -Parent $PSScriptRoot
 $local = Join-Path $root 'local'
 $frameworkName = "$Name-framework"
@@ -135,6 +137,7 @@ if ($RasterLiveRestore) { $patches += 'snesrecomp-raster-live-restore-experiment
 if ($ManualJoypad) { $patches += 'snesrecomp-manual-joypad-strobe-experiment.patch' }
 if ($AutoJoyPhase) { $patches += 'snesrecomp-autojoy-phase-experiment.patch' }
 if ($SpcD4Phase) { $patches += 'snesrecomp-spc-indexed-write-state-experiment.patch' }
+if ($ApuBoundarySync) { $patches += 'snesrecomp-apu-boundary-sync.patch' }
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
     git -C $framework apply --check $patch
@@ -184,6 +187,7 @@ if ($Ppu2Bus) { $cmakeArgs += "-DKDC_EXPERIMENTAL_PPU2_BUS_STATE=ON" }
 if ($SpcC4Phase) { $cmakeArgs += "-DKDC_EXPERIMENTAL_SPC_C4_STATE=ON" }
 if ($AutoJoyPhase) { $cmakeArgs += "-DKDC_EXPERIMENTAL_AUTOJOY_STATE=ON" }
 if ($SpcD4Phase) { $cmakeArgs += "-DKDC_EXPERIMENTAL_SPC_D4_STATE=ON" }
+if ($ApuBoundarySync) { $cmakeArgs += "-DKDC_EXPERIMENTAL_APU_BOUNDARY_STATE=ON" }
 & $cmakePath @cmakeArgs
 if ($LASTEXITCODE -ne 0) { throw 'Experimental CMake configuration failed.' }
 & $cmakePath --build $build --parallel 8

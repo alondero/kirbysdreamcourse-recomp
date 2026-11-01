@@ -1,0 +1,32 @@
+diff --git a/runner/src/snes/apu.c b/runner/src/snes/apu.c
+--- a/runner/src/snes/apu.c
++++ b/runner/src/snes/apu.c
+@@ -166,14 +166,20 @@ bool apu_runToGuestCycle(Apu* apu, uint64_t guest_cycle,
+   for (;;) {
+-    bool due_event = false;
+-    if (apu->portQHead != apu->portQTail) {
+-      const ApuPortWrite *w =
+-          &apu->portQueue[apu->portQHead & (APU_PORT_QUEUE_LEN - 1)];
+-      due_event = w->target_cycle <= target;
++    if (apu->portClock >= target) {
++      /* EXPERIMENT-apu-boundary-sync: publishing a due event does not
++       * consume SPC time. Preserve FIFO order for equal timestamps and stop
++       * at the requested target even when SPC has run ahead of it. */
++      while (apu->portQHead != apu->portQTail) {
++        const ApuPortWrite *w =
++            &apu->portQueue[apu->portQHead & (APU_PORT_QUEUE_LEN - 1)];
++        if (w->target_cycle > target)
++          break;
++        apu_applyPortWrite(apu, w);
++        apu->portQHead++;
++      }
++      return true;
+     }
+-    if (apu->portClock >= target && !due_event)
+-      return true;
+     if (!max_cycles) return false;
+-    uint64_t distance = target > apu->portClock ? target - apu->portClock : 1u;
++    uint64_t distance = target - apu->portClock;
+     uint32_t span = distance > max_cycles ? max_cycles : (uint32_t)distance;
+     apu_runCycles(apu, span);
+     max_cycles -= span;
