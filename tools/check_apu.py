@@ -39,6 +39,7 @@ def build_host(framework, fixture, executable, native):
     run('gcc', '-std=c11', '-O2', '-UNDEBUG', '-DSNESRECOMP_TRACE=0',
         f'-DSNESRECOMP_APU_NATIVE={native}', '-ffunction-sections',
         '-fdata-sections', f'-I{source}', ROOT / 'tests' / fixture,
+        ROOT / 'tests/apu_fixture_host.c',
         *(source / 'snes' / part for part in
           ('apu.c', 'spc.c', 'dsp.c', 'dsp_shadow.c', 'audio_shadow.c')),
         source / 'audio_trace.c', '-Wl,--gc-sections', '-lm', '-o', executable)
@@ -114,7 +115,9 @@ def main():
                 exe = tmp / f'queue-{native}.exe'
                 build_host(args.framework, 'apu_queue_boundary.c', exe, native)
                 print(f'native={native}: {run(exe, text=True).strip()}')
-                print(f'native={native}: {run(exe, "--upload", text=True).strip()}')
+                exe = tmp / f'upload-{native}.exe'
+                build_host(args.framework, 'apu_upload_boundary.c', exe, native)
+                print(f'native={native}: {run(exe, text=True).strip()}')
     except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         print(f'error: {error}')
         if isinstance(error, subprocess.CalledProcessError):

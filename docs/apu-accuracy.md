@@ -120,11 +120,14 @@ requested boundary when that time has already been reached. It leaves later
 events pending and consumes a cycle budget only when time must advance.
 The upload handoff's `apu_runUntilPortQueueEmpty` follows the same rule: it
 publishes all events already due, then advances only as far as the next event
-within its remaining budget. The regression covers both entry points with
+within its remaining budget. `apu_queue_boundary.c` exercises
+`apu_runToGuestCycle`, including earlier requests that leave future events
+pending. The separate `apu_upload_boundary.c` exercises
+`apu_runUntilPortQueueEmpty`, including its DSP-edge case. Each fixture covers
 zero budgets, exact budgets, equal-time writes and exhaustion before later
-events. Before the upload-drain correction, the new `--upload` fixture fails
-in both APU modes: a write due at clock zero leaves `portClock` at one.
-The regression passes in both APU modes. Save/resume tests compare the full
+events. Before the upload-drain correction, the upload fixture fails in both
+APU modes: a write due at clock zero leaves `portClock` at one.
+Both fixtures pass in both APU modes. Save/resume tests compare the full
 serialized guest state, including DSP output, and the port scheduler.
 
 The upload drain has a caller in the framework's HLE upload helpers. The
@@ -177,6 +180,10 @@ from libretro. No resampling or inferred alignment is applied.
 
 The local 850-frame recording hash is
 `ec5fd4dd49bb8f8ba5a17153b35ee82416003903e03f00dd7fc7055c8413cace`.
+The executable hashes below identify only the local binaries used for these
+captures. Compiler versions, linker paths, build configuration and other
+environment inputs can change the resulting bytes; these hashes are not
+reproducible-build identities or acceptance checks.
 The tested control executable hash is
 `0a9d2a94a258ab156f534e5e910b6962e79e1fc3c87a8c23c139a3cfa21f6b38`;
 candidate hash is
@@ -193,6 +200,17 @@ producing the DSP sample scheduled at that edge. The full 17-test suite passes
 with the APU and reference integration tests enabled, and the Windows build
 succeeds. HLE upload behavior beyond the directly tested queue drain remains
 unqualified.
+
+After integrating main commit `5a69939` (widescreen support), the merged tree
+also passed the standalone APU matrix and all 20 Python tests without skips.
+The full suite enabled `KDC_TEST_APU=1` and `KDC_TEST_REFERENCE=1`, with both
+`KDC_APU_FRAMEWORK` and `SNESRECOMP_ROOT` pointing to the candidate framework
+containing the widescreen tile-provider and APU boundary patches. CMake
+configured with the boundary option on, rejected option-off/patched and
+option-on/unpatched combinations, and the Windows Ninja build succeeded.
+These integration checks reuse the existing local generated code; they do
+not establish an end-to-end run of `prepare_guarded.ps1` or new gameplay
+coverage after the merge.
 
 To replay a local recording, use fresh output and capture paths for every run:
 

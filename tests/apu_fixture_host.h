@@ -4,9 +4,9 @@
 
 #include <stdint.h>
 
-uint64_t g_apu_timer0_total_ticks;
-int snes_frame_counter;
-void RtlApuLock(void) {}
-void RtlApuUnlock(void) {}
+extern uint64_t g_apu_timer0_total_ticks;
+extern int snes_frame_counter;
+void RtlApuLock(void);
+void RtlApuUnlock(void);
 
 #endif
