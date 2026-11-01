@@ -28,13 +28,18 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ws_shadow.h" KDC_TILE_PROVIDER_
 if(NOT KDC_TILE_PROVIDER_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-widescreen-tile-provider.patch; tools/setup.ps1 includes it")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_OBJECT_PROVIDER_API
+     REGEX "PpuSetExtraObjectProvider" LIMIT_COUNT 1)
+if(NOT KDC_OBJECT_PROVIDER_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-extra-object-provider.patch; tools/setup.ps1 includes it")
+endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_LAUNCHER_ROM_API
     REGEX "validate_rom_path" LIMIT_COUNT 1)
 if(NOT KDC_LAUNCHER_ROM_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-launcher-with-rom.patch; tools/setup.ps1 includes it")
 endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
-    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/gen_stubs.c)
+    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/gen_stubs.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")
 set(KDC_FUNCTIONS_DIR "${CMAKE_SOURCE_DIR}/recomp" CACHE PATH "Local generated function declarations")

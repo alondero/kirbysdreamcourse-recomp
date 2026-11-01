@@ -1,0 +1,59 @@
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -341,6 +341,12 @@
+   uint32_t renderFlags;
+   PpuPixelPrioBufs bgBuffers[2];
+   PpuPixelPrioBufs objBuffer;
++  /* Presentation-only callback, called with raster-time VRAM/palette and
++   * scroll immediately before OBJ evaluation. May only update host objects.
++   * Cleared on reset and excluded from guest snapshots. */
++  void (*extraObjectProvider)(Ppu *ppu, int line, void *context);
++  void *extraObjectContext;
++  bool extraObjectMargins; /* complete host list owns pixels outside [0,256) */
+   const PpuExtraObject *extraObjects;
+   size_t extraObjectCount;
+   uint16_t objectColors[kPpuBufWidth];
+@@ -391,6 +397,9 @@
+ #define SPRITE_PRIO_TO_PRIO_HI(prio) ((prio) * 4 + 2)
+
+ void PpuSetExtraObjects(Ppu *ppu, const PpuExtraObject *objects, size_t count);
++void PpuSetExtraObjectProvider(Ppu *ppu,
++    void (*provider)(Ppu *, int, void *), void *context);
++void PpuSetExtraObjectMargins(Ppu *ppu, bool enabled);
+ /* Shared by the PPU and title renderers. Existing native objects must publish
+  * order=(((slot-first_slot)&127)<<32), transparent pixels UINT64_MAX, and colors=0. x0 is the
+  * screen coordinate of array element zero. Returns whether a pixel was added. */
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -2875,7 +2875,21 @@
+   return added;
+ }
+
++void PpuSetExtraObjectProvider(Ppu *ppu,
++    void (*provider)(Ppu *, int, void *), void *context) {
++  ppu->extraObjectProvider=provider;
++  ppu->extraObjectContext=context;
++  ppu->extraObjectMargins=false;
++  PpuSetExtraObjects(ppu,NULL,0);
++}
++
++void PpuSetExtraObjectMargins(Ppu *ppu, bool enabled) {
++  ppu->extraObjectMargins=enabled;
++}
++
+ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
++  if(ppu->extraObjectProvider)
++    ppu->extraObjectProvider(ppu,line,ppu->extraObjectContext);
+   if(ppu->extraObjectCount) {
+     memset(ppu->objectColors,0,sizeof(ppu->objectColors));
+     memset(ppu->objectOrder,0xff,sizeof(ppu->objectOrder));
+@@ -3018,6 +3032,9 @@
+                     (bits >> 14) & 4 | (bits >> 21) & 8;
+         if (pixel == 0) continue;
+         if (ws_clip_left && col + x + px < 0) continue;
++        /* A complete host margin list has its own unbounded ordering.
++         * Keep native evaluation/budgets and every center pixel intact. */
++        if (ppu->extraObjectMargins && (col+x+px<0 || col+x+px>=256)) continue;
+               if (capture_slot) {
+                 int screen_x = col + x + px;
+                 if (screen_x >= obj_capture->x0 && screen_x < obj_capture->x1) {

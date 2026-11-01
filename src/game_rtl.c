@@ -46,6 +46,7 @@
 #include "widescreen.h"
 #include "snes/ws_shadow.h"
 #include "course_view.h"
+#include "course_sprites.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,7 @@ static void initialize_bounce_log(void)
     static int initialized;
     if (initialized) return;
     initialized = 1;
+    KdcInitializeSprites();
     const char *apu_path = getenv("KDC_APU_STATE_LOG");
     if (apu_path && *apu_path) {
         apu_state_log = fopen(apu_path, "w");
@@ -114,7 +116,9 @@ void GameDrawPpuFrame(void)
      * full buffer-supported budget here, including very wide displays. */
     PpuSetExtraSpace(g_snes->ppu, g_ws_extra);
     KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
+    KdcPrepareSprites(g_snes->ppu, g_ws_extra);
     snes_beam_frame_driver_draw_ppu_frame();
+    KdcReportSprites(snes_frame_counter);
 }
 
 void GameSessionReset(void)
@@ -125,6 +129,7 @@ void GameSessionReset(void)
      * re-enters the boot path twice in one process. */
     snes_beam_frame_driver_reset();
     WsShadowReset();
+    KdcResetSprites(g_snes ? g_snes->ppu : NULL);
 }
 
 #ifdef KDC_EXPERIMENTAL_STATE
@@ -354,6 +359,7 @@ static void GameLoadExtra(struct SaveLoadInfo *sli, uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
+    KdcResetSprites(g_snes->ppu);
     RtlApplyExecutionState();
 #ifdef KDC_EXPERIMENTAL_RASTER_STATE
     if (saved_beam_valid)
@@ -391,6 +397,12 @@ static void GameStateLoaded(uint32_t version)
 #endif
     saved_beam_valid = false;
 }
+#else
+static void GameStateLoaded(uint32_t version)
+{
+    (void)version;
+    KdcResetSprites(g_snes->ppu);
+}
 #endif
 
 const RtlGameInfo kGameInfo = {
@@ -402,10 +414,10 @@ const RtlGameInfo kGameInfo = {
 #ifdef KDC_EXPERIMENTAL_STATE
     .state_save_extra = &GameSaveExtra,
     .state_load_extra = &GameLoadExtra,
-    .on_state_loaded = &GameStateLoaded,
     .snapshot_guard_identity = &GameSnapshotIdentity,
     .snapshot_preflight = &GameSnapshotPreflight,
 #endif
+    .on_state_loaded = &GameStateLoaded,
     .session_reset = &GameSessionReset,
     .hardware_reset = &GameSessionReset,
 };

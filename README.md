@@ -46,7 +46,7 @@ For source-built SPC/DSP differential tests and the optional APU queue-boundary 
 
 Enable **Adaptive widescreen** on the launcher's **Mods** page, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. It can be changed during play. Resize the window or use Alt+Return for fullscreen. The view follows the window's aspect ratio, including ultrawide displays, while retaining the original pixel proportions. A 4:3 window still shows the original width with the default 4:3 pixel aspect. Widescreen is off by default.
 
-The course's extra terrain is rendered from its full map in memory, beyond the original streaming viewport. The HUD and bounded menu foregrounds remain centered. The original game's object visibility rules remain in effect; distant sprites can still appear only when the game emits them. See [widescreen implementation and validation](docs/widescreen.md) for coverage and limits.
+The course's extra terrain is rendered from its full map in memory, beyond the original streaming viewport. Draw requests captured before the game's viewport culling supply sprites in the horizontal margins. The HUD and bounded menu foregrounds remain centered. Whole-hole zoom and complete coverage of every object/effect are still unqualified. See [widescreen implementation and validation](docs/widescreen.md) and [sprite rendering](docs/widescreen-sprites.md) for coverage and limits.
 
 ## Status
 

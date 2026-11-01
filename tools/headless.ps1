@@ -102,6 +102,7 @@ $manifest = [ordered]@{
     initial_config_sha256 = $configHash
     runtime_options = [ordered]@{
         SNESRECOMP_WS_EXTRA = $wideOverride
+        KDC_SPRITE_VIEW = [Environment]::GetEnvironmentVariable('KDC_SPRITE_VIEW')
         SNESRECOMP_APU_BEAM_ELAPSED = [Environment]::GetEnvironmentVariable('SNESRECOMP_APU_BEAM_ELAPSED')
         SNESRECOMP_APU_HANDOFF = [Environment]::GetEnvironmentVariable('SNESRECOMP_APU_HANDOFF')
         SNESRECOMP_APU_ABSOLUTE_PREANCHOR = [Environment]::GetEnvironmentVariable('SNESRECOMP_APU_ABSOLUTE_PREANCHOR')
