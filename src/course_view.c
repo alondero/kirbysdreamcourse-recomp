@@ -9,7 +9,7 @@ typedef struct CourseView {
 
 static CourseView view;
 
-static bool IsCourse(const Ppu *ppu)
+bool KdcIsCourse(const Ppu *ppu)
 {
     /* The preview uses bounded $50/$58 maps, not the streamed course. */
     return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x51 &&
@@ -26,7 +26,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
                             uint16_t scroll_x, uint16_t native_tile, void *context)
 {
     const CourseView *source = context;
-    if (!IsCourse(source->ppu)) return native_tile;
+    if (!KdcIsCourse(source->ppu)) return native_tile;
     /* Mosaic groups may span several tiles and the native boundary. Keep
      * their hardware source during the effect instead of changing a group. */
     if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
@@ -50,5 +50,5 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
     ppu->wsOamMotionGraceOn = extra ? 0 : 1;
     /* Bounded foregrounds stay centered; decorative BG2/backdrop can fill
      * the sides. The provider checks the live raster signature itself. */
-    if (extra && !IsCourse(ppu)) PpuSetWidescreenLayerClamp(ppu, 1);
+    if (extra && !KdcIsCourse(ppu)) PpuSetWidescreenLayerClamp(ppu, 1);
 }

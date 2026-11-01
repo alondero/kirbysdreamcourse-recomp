@@ -2,8 +2,10 @@
 #define KDC_COURSE_VIEW_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 struct Ppu;
+bool KdcIsCourse(const struct Ppu *ppu);
 void KdcPrepareCourseView(struct Ppu *ppu, const uint8_t *ram, int extra);
 
 static inline uint16_t KdcReadWord(const uint8_t *ram, unsigned address)
