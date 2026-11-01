@@ -28,6 +28,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ws_shadow.h" KDC_TILE_PROVIDER_
 if(NOT KDC_TILE_PROVIDER_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-widescreen-tile-provider.patch; tools/setup.ps1 includes it")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_LAUNCHER_ROM_API
+    REGEX "validate_rom_path" LIMIT_COUNT 1)
+if(NOT KDC_LAUNCHER_ROM_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-launcher-with-rom.patch; tools/setup.ps1 includes it")
+endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/gen_stubs.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
@@ -168,3 +173,64 @@ elseif(KDC_APU_BOUNDARY_API)
 endif()
 snesrecomp_target_sdl(KirbyDreamCourseRecomp)
 snesrecomp_target_desktop_host(KirbyDreamCourseRecomp)
+
+# The framework owns the host; games select and pin the shared launcher UI.
+include(FetchContent)
+set(KDC_RECOMP_UI_REV "3f1d6f122a58823614abce14f5b86f4d165a629c")
+FetchContent_Declare(kdc_recomp_ui
+    GIT_REPOSITORY https://github.com/RetroPortingToolKit/recomp-ui.git
+    GIT_TAG ${KDC_RECOMP_UI_REV}
+    GIT_SUBMODULES ""
+    # Consume its helper only; the top-level project builds standalone demos.
+    SOURCE_SUBDIR cmake)
+FetchContent_MakeAvailable(kdc_recomp_ui)
+execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE KDC_RECOMP_UI_HEAD OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE UI_GIT_RESULT)
+if(NOT UI_GIT_RESULT EQUAL 0 OR NOT KDC_RECOMP_UI_HEAD STREQUAL KDC_RECOMP_UI_REV)
+    message(FATAL_ERROR "recomp-ui revision does not match the tested pin")
+endif()
+# Built-in settings providers do not offer external package management.
+set(KDC_UI_PATCH "${CMAKE_SOURCE_DIR}/patches/recomp-ui-builtin-settings.patch")
+execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --reverse --check "${KDC_UI_PATCH}"
+    RESULT_VARIABLE KDC_UI_PATCHED OUTPUT_QUIET ERROR_QUIET)
+if(NOT KDC_UI_PATCHED EQUAL 0)
+    if(FETCHCONTENT_SOURCE_DIR_KDC_RECOMP_UI)
+        message(FATAL_ERROR
+            "The supplied recomp-ui checkout needs patches/recomp-ui-builtin-settings.patch. "
+            "It was left unchanged. Apply that patch explicitly, or omit "
+            "FETCHCONTENT_SOURCE_DIR_KDC_RECOMP_UI to use the managed checkout.")
+    endif()
+    execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --check "${KDC_UI_PATCH}"
+        RESULT_VARIABLE KDC_UI_PATCH_CHECK)
+    if(NOT KDC_UI_PATCH_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "recomp-ui built-in settings patch does not apply to the managed checkout: "
+            "${kdc_recomp_ui_SOURCE_DIR}. An older project patch or local edits may be present. "
+            "Preserve any edits, then use a fresh build directory or recreate this managed "
+            "checkout before configuring again.")
+    endif()
+    execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply "${KDC_UI_PATCH}"
+        RESULT_VARIABLE KDC_UI_PATCH_RESULT)
+    if(NOT KDC_UI_PATCH_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not apply recomp-ui built-in settings patch")
+    endif()
+endif()
+set(RECOMP_UI_ROOT "${kdc_recomp_ui_SOURCE_DIR}" CACHE PATH "Pinned launcher UI" FORCE)
+include("${RECOMP_UI_ROOT}/recomp_ui.cmake")
+recomp_target_launcher_ui(KirbyDreamCourseRecomp CONSOLE snes)
+target_sources(KirbyDreamCourseRecomp PRIVATE src/launcher_settings.c)
+
+# Upstream stages chrome and fonts, but leaves notice staging to consumers.
+add_custom_command(TARGET KirbyDreamCourseRecomp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RECOMP_UI_ROOT}/LICENSE"
+        "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui/LICENSE.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RECOMP_UI_ROOT}/src/third_party/imgui/LICENSE.txt"
+        "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui/ImGui.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RECOMP_UI_ROOT}/assets/common/fonts/NOTICE.md"
+        "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui/fonts.md"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RECOMP_UI_ROOT}/assets/common/img/NOTICE.md"
+        "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui/images.md"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/licenses/recomp-ui"
+        "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui"
+    VERBATIM)

@@ -27,6 +27,7 @@
 
 #include "host_main.h"
 #include "game_rtl.h"
+#include "launcher_settings.h"
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
 
@@ -61,19 +62,36 @@ static void PrepareWideFrame(int drawable_w, int drawable_h, int *width, int *he
         SnesDisplayAspect_Clamp(g_config.display_aspect)).width;
 }
 
+static const struct RecompLauncherCModProvider *LauncherSettings(void)
+{
+    return KdcLauncherSettings(&g_config.widescreen, SNESRECOMP_ROM_EXPECTED_SHA256);
+}
+
+static const char *ValidateRomPath(const char *path)
+{
+    return KdcValidateRomPath(path, SNESRECOMP_ROM_EXPECTED_SHA256);
+}
+
 static const SnesDesktopHostGame kGameHost = {
-    .display_name        = "Kirby Dream Course",
-    .window_title        = "Kirby Dream Course",
+    .display_name        = "Kirby's Dream Course",
+    .window_title        = "Kirby's Dream Course",
     .region              = SNESRECOMP_ROM_REGION,
     .rom_file            = SNESRECOMP_ROM_FILE,
     .expected_sha256_hex = SNESRECOMP_ROM_EXPECTED_SHA256,
     .expected_crc32_hex  = SNESRECOMP_ROM_EXPECTED_CRC32,
+    .rom_help           = "Use the unmodified headerless 1 MiB USA image; copier headers are not accepted.",
     .game_id             = SNESRECOMP_ROM_GAME_ID,
     .build_version       = SNES_GAME_VERSION,
     .game_info           = &kGameInfo,
     .num_players         = 2,
     .widescreen_supported = 1,
     .native_widescreen    = 1,
+    .in_game_launcher   = 1,
+    .launcher_with_rom  = 1,
+    .validate_rom_path  = ValidateRomPath,
+    .display_aspect_supported = 1,
+    .mods_provider      = LauncherSettings,
+    .configure_launcher = KdcConfigureLauncher,
     .prepare_frame       = PrepareWideFrame,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
@@ -89,6 +107,7 @@ static const SnesDesktopHostGame kGameHost = {
         "DisplayPerf = f\nToggleRenderer = r\nSaveStateMenu = F11\nRewind = F12\n"
         "Load = F1,F2,F3,F4,F5,F6,F7,F8,F9,F10\n"
         "Save = Shift+F1,Shift+F2,Shift+F3,Shift+F4,Shift+F5,Shift+F6,Shift+F7,Shift+F8,Shift+F9,Shift+F10\n"
+        "[Controller]\nSourceP1 = 1\nSourceP2 = 0\n"
         "[GamepadMap]\nEnableGamepad1 = true\nEnableGamepad2 = true\n"
         "Controls = DpadUp,DpadDown,DpadLeft,DpadRight,Back,Start,B,A,Y,X,Lb,Rb\n"
         "ControlsP2 = DpadUp,DpadDown,DpadLeft,DpadRight,Back,Start,B,A,Y,X,Lb,Rb\n",

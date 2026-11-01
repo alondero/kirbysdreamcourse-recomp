@@ -2,6 +2,8 @@
 
 Research snapshot: 2026-10-28. Project descriptions are self-reported; status and dependency revisions change. Links are primary project sources.
 
+Launcher and settings follow-up, 2026-11-01: [source comparison and Kirby integration](menu-research.md) covers Super Mario World, Super Metroid, DKC1 and DKC2, with exact framework/UI pins and local validation.
+
 ## Common architecture
 
 [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) translates 65816 instructions to C and links the result with a shared SNES hardware runtime. Unresolved code can execute in an interpreter. The game project supplies analysis metadata and integration; framework compatibility does not itself make an arbitrary ROM playable. The [Super Mario World project](https://github.com/mstan/SuperMarioWorldRecomp) describes the runtime as LakeSnes-derived with Snes9x-attributed algorithms: the PPU, SPC700/APU, DMA/HDMA, memory mapping and register I/O remain hardware emulation, not native translations of game logic.

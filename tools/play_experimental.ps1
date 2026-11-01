@@ -2,6 +2,7 @@ param(
     [string]$Rom = "Kirby's Dream Course (USA).sfc",
     [string]$Executable = 'local/guarded-build/KirbyDreamCourseRecomp.exe',
     [switch]$Fallback,
+    [switch]$NoLauncher,
     [ValidateRange(0, 2147483647)][int]$Frames = 0
 )
 
@@ -35,7 +36,9 @@ try {
     }
     Push-Location -LiteralPath $fallbackDir
     try {
-        & $exePath --no-launcher --rom $romPath
+        $hostArgs = @('--rom', $romPath)
+        if ($NoLauncher -or $Frames -gt 0) { $hostArgs += '--no-launcher' }
+        & $exePath @hostArgs
         if ($LASTEXITCODE -ne 0) { throw "Experimental host exited with code $LASTEXITCODE." }
     } finally {
         Pop-Location
