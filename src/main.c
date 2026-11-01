@@ -27,12 +27,14 @@
 
 #include "host_main.h"
 #include "game_rtl.h"
+#include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
 
 #ifndef __ANDROID__
 #define SDL_MAIN_HANDLED 1
 #endif
 #include "desktop/sdl_compat.h"
+#include "config.h"
 #ifdef __ANDROID__
 /* SDLActivity loads libmain.so and dlsyms its SDL_main. */
 #define main SDL_main
@@ -41,6 +43,23 @@
 #ifndef SNES_GAME_VERSION
 #define SNES_GAME_VERSION "dev"
 #endif
+
+/* Widen the raster, keeping the original pixel shape and camera centre. */
+static void PrepareWideFrame(int drawable_w, int drawable_h, int *width, int *height)
+{
+    *height = 224;
+    *width = 256;
+    if (!g_config.widescreen) return;
+    int extra = PpuWsExtraOverride();
+    if (extra >= 0) {
+        *width += 2 * extra;
+        return;
+    }
+    double aspect = drawable_h > 0 ? (double)drawable_w / drawable_h : 4.0 / 3.0;
+    *width = SnesDisplayAspect_ComputeAdaptiveFrame(
+        256, 224, kPpuBufWidth, aspect,
+        SnesDisplayAspect_Clamp(g_config.display_aspect)).width;
+}
 
 static const SnesDesktopHostGame kGameHost = {
     .display_name        = "Kirby Dream Course",
@@ -53,12 +72,15 @@ static const SnesDesktopHostGame kGameHost = {
     .build_version       = SNES_GAME_VERSION,
     .game_info           = &kGameInfo,
     .num_players         = 2,
+    .widescreen_supported = 1,
+    .native_widescreen    = 1,
+    .prepare_frame       = PrepareWideFrame,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
     .default_config_ini =
         "[General]\nAutosave = 0\nDisableFrameDelay = 0\n"
         "[Graphics]\nWindowSize = Auto\nFullscreen = 0\nWindowScale = 3\n"
-        "NewRenderer = 1\nIgnoreAspectRatio = 0\nNoSpriteLimits = 0\n"
+        "NewRenderer = 1\nIgnoreAspectRatio = 0\nNoSpriteLimits = 0\nWidescreen = 0\n"
         "[Sound]\nEnableAudio = 1\nVolume = 100\nAudioFreq = 32000\n"
         "AudioChannels = 2\nAudioSamples = 512\n"
         "[KeyMap]\nFullscreen = Alt+Return\nReset = Ctrl+r\nPause = Shift+p\n"
