@@ -203,7 +203,11 @@ if(NOT KDC_UI_PATCHED EQUAL 0)
     execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --check "${KDC_UI_PATCH}"
         RESULT_VARIABLE KDC_UI_PATCH_CHECK)
     if(NOT KDC_UI_PATCH_CHECK EQUAL 0)
-        message(FATAL_ERROR "recomp-ui built-in settings patch does not apply")
+        message(FATAL_ERROR
+            "recomp-ui built-in settings patch does not apply to the managed checkout: "
+            "${kdc_recomp_ui_SOURCE_DIR}. An older project patch or local edits may be present. "
+            "Preserve any edits, then use a fresh build directory or recreate this managed "
+            "checkout before configuring again.")
     endif()
     execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply "${KDC_UI_PATCH}"
         RESULT_VARIABLE KDC_UI_PATCH_RESULT)

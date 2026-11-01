@@ -13,7 +13,7 @@
 
 int main(int argc, char **argv)
 {
-    CHECK(argc == 5);
+    CHECK(argc == 5 || argc == 6);
     RecompLauncherCGameInfo info = {.has_run_ahead = 1, .has_renderer = 1};
     KdcConfigureLauncher(&info);
     CHECK(!info.has_run_ahead && info.has_renderer && !info.audio_frequency_locked);
@@ -26,6 +26,16 @@ int main(int argc, char **argv)
     RecompLauncherCModPackage package;
     bool widescreen = false;
     const RecompLauncherCModProvider *provider = KdcLauncherSettings(&widescreen, hash);
+    if (argc == 6) {
+        /* Simulate a verified ROM disappearing after the game has started. */
+        CHECK(provider->commit(provider->ctx, rom));
+        CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 1));
+        CHECK(remove(rom) == 0);
+        CHECK(!provider->commit(provider->ctx, rom));
+        CHECK(provider->last_error(provider->ctx));
+        CHECK(!widescreen);
+        return 0;
+    }
     /* The real launcher's feature UI requires all of these callbacks. */
     CHECK(provider->feature_get && provider->feature_count &&
            provider->feature_enable && provider->feature_option_get &&

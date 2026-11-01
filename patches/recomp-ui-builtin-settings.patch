@@ -54,17 +54,7 @@ diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/
          ui_pick_file(m, ui_text("Install Mod Package"), {archive_pattern},
                       archive_description, [m, mods](const char* path) {
              if (!path) return;
-@@ -11760,7 +11760,8 @@
-             ImGui::PushID(i);
-             const bool selected = m->mod_package_selected == i;
-             char label[196];
--            if (feature_provider) {
-+            if (feature_provider && (mods->install_archive || mods->remove_package ||
-+                             mods->select_version)) {
-                 std::snprintf(label, sizeof(label), "%s\n%s",
-                               package.name, package.version);
-             } else {
-@@ -12226,7 +12227,7 @@
+@@ -12226,7 +12226,7 @@
                    "Install %s", archive_extension);
      std::snprintf(archive_pattern, sizeof(archive_pattern),
                    "*%s", archive_extension);
@@ -73,7 +63,7 @@ diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/
          ui_pick_file(m, "Install Mod Package", {archive_pattern},
                       archive_description, [m, mods](const char* path) {
              if (!path) return;
-@@ -12241,7 +12242,7 @@
+@@ -12241,7 +12241,7 @@
      }
      /* No "Enable all": in a title with many mods it turns on features that
       * need owner files or conflict with each other, all at once. */
@@ -82,13 +72,14 @@ diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/
      if (ImGui::Button(ui_text("Disable all")))
          disable_all_mod_features(m);
      if (ImGui::IsItemHovered())
-@@ -12666,7 +12667,8 @@
+@@ -12666,7 +12666,9 @@
          mods->feature_set_option;
      if (!feature_provider) m->mod_show_packages = true;
 
 -    if (feature_provider) {
 +    if (feature_provider && (mods->install_archive || mods->remove_package ||
 +                             mods->select_version)) {
++
          if (ImGui::RadioButton(ui_text("Features"), !m->mod_show_packages))
              m->mod_show_packages = false;
          ImGui::SameLine();

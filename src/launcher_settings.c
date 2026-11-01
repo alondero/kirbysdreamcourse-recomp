@@ -20,7 +20,7 @@ typedef struct {
 void KdcConfigureLauncher(struct RecompLauncherCGameInfo *info)
 {
     /* Kirby has not qualified the snapshot round trips needed by run-ahead
-     * and mid-session renderer/audio-rate changes. Offer restart settings
+     * and mid-session renderer/audio-rate changes. Offer those controls only
      * before boot, and resume the same ROM after every settings visit. */
     info->has_run_ahead = 0;
     info->has_renderer = !info->in_session;
@@ -116,8 +116,8 @@ const char *KdcValidateRomPath(const char *rom, const char *expected_rom_hash)
     }
     free(bytes);
     if (!valid_size || strcmp(hash_hex, expected_rom_hash)) {
-        return "Select the unmodified headerless 1 MiB Kirby's Dream Course "
-               "USA ROM. The selected file's size or SHA-256 does not match.";
+        return "The ROM must be the unmodified headerless 1 MiB Kirby's Dream Course "
+               "USA image. The file is unavailable, or its size or SHA-256 does not match.";
     }
     return NULL;
 }
@@ -126,7 +126,12 @@ static int Commit(void *ctx, const char *rom)
 {
     KdcLauncherSettingsState *state = ctx;
     state->last_error = KdcValidateRomPath(rom, state->expected_rom_hash);
-    if (state->last_error) return 0;
+    if (state->last_error) {
+        /* The launcher's close path resumes even when this commit refuses;
+         * its transient UI status is no longer visible after the close. */
+        fprintf(stderr, "Launcher feature settings were not applied: %s\n", state->last_error);
+        return 0;
+    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     *state->widescreen = state->pending_widescreen != 0;
@@ -155,7 +160,8 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .feature_option_get = GetOption,
         .feature_set_option = SetOption,
     };
-    /* Reopening starts from the applied setting, discarding uncommitted edits. */
+    /* One modal launcher at a time: reset this singleton's staged state on
+     * every open, discarding uncommitted edits from the previous visit. */
     state = (KdcLauncherSettingsState){
         .widescreen = widescreen,
         .pending_widescreen = *widescreen,

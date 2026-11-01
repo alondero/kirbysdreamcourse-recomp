@@ -24,6 +24,7 @@ class LauncherSettingsTest(unittest.TestCase):
             modified.write_bytes(data[:-1] + b'\x01')
             for name, flags in (('debug', []), ('release', ['-DNDEBUG'])):
                 with self.subTest(configuration=name):
+                    rom.write_bytes(data)
                     executable = Path(directory) / f'launcher_settings_{name}.exe'
                     result = subprocess.run(
                         [compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', *flags,
@@ -42,3 +43,13 @@ class LauncherSettingsTest(unittest.TestCase):
                     result = subprocess.run(args, capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn('CHECK failed', result.stderr)
+                    # Closing an in-session launcher ignores a refused commit;
+                    # the provider must still report that its edit was rejected.
+                    args[2] = hashlib.sha256(data).hexdigest()
+                    args.append('remove-before-commit')
+                    rom.write_bytes(data)
+                    result = subprocess.run(args, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('Launcher feature settings were not applied:', result.stderr)
+                    self.assertIn('headerless 1 MiB', result.stderr)
+                    rom.write_bytes(data)
