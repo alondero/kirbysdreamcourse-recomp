@@ -6,12 +6,27 @@
 #include "common/sha256.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int pending_widescreen;
-static const char *expected_rom_hash;
-static const char *last_error;
+typedef struct {
+    bool *widescreen;
+    int pending_widescreen;
+    const char *expected_rom_hash;
+    const char *last_error;
+} KdcLauncherSettingsState;
+
+void KdcConfigureLauncher(struct RecompLauncherCGameInfo *info)
+{
+    /* Kirby has not qualified the snapshot round trips needed by run-ahead
+     * and mid-session renderer/audio-rate changes. Offer restart settings
+     * before boot, and resume the same ROM after every settings visit. */
+    info->has_run_ahead = 0;
+    info->has_renderer = !info->in_session;
+    info->audio_frequency_locked = info->in_session;
+    info->disc_selection_locked = info->in_session;
+}
 
 static int IsFeature(const char *package, const char *feature)
 {
@@ -27,20 +42,20 @@ static int Count(void *ctx)
 
 static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
 {
-    (void)ctx;
+    const KdcLauncherSettingsState *state = ctx;
     if (index != 0 || !out) return 0;
     *out = (RecompLauncherCModPackage){0};
     snprintf(out->id, sizeof(out->id), "kdc.presentation");
     snprintf(out->version, sizeof(out->version), "1.0.0");
     snprintf(out->name, sizeof(out->name), "Kirby's Dream Course presentation");
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
-    out->enabled = pending_widescreen;
+    out->enabled = state->pending_widescreen;
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
-    (void)ctx;
+    const KdcLauncherSettingsState *state = ctx;
     if (index != 0 || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
@@ -53,16 +68,16 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
              "Show extra course terrain to fit the window or fullscreen display. "
              "Preserves pixel proportions and the centered HUD. Distant sprites "
              "still follow the original game's visibility rules.");
-    out->enabled = pending_widescreen;
+    out->enabled = state->pending_widescreen;
     out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
     return 1;
 }
 
 static int EnableFeature(void *ctx, const char *package, const char *feature, int enabled)
 {
-    (void)ctx;
+    KdcLauncherSettingsState *state = ctx;
     if (!IsFeature(package, feature)) return 0;
-    pending_widescreen = enabled != 0;
+    state->pending_widescreen = enabled != 0;
     return 1;
 }
 
@@ -82,10 +97,10 @@ static int SetOption(void *ctx, const char *package, const char *feature,
     return 0;
 }
 
-static int Commit(void *ctx, const char *rom)
+const char *KdcValidateRomPath(const char *rom, const char *expected_rom_hash)
 {
-    /* The shared picker normalizes copier headers. Kirby's input contract
-     * requires the exact raw image, so validate again before PLAY/RESUME. */
+    /* Require the exact raw image at both launcher commit and host startup,
+     * including paths that bypass the shared picker's normalized checks. */
     const size_t rom_size = 1048576;
     FILE *file = rom && *rom ? fopen(rom, "rb") : NULL;
     unsigned char *bytes = file ? malloc(rom_size) : NULL;
@@ -101,27 +116,35 @@ static int Commit(void *ctx, const char *rom)
     }
     free(bytes);
     if (!valid_size || strcmp(hash_hex, expected_rom_hash)) {
-        last_error = "Select the unmodified headerless 1 MiB Kirby's Dream Course "
-                     "USA ROM. The selected file's size or SHA-256 does not match.";
-        return 0;
+        return "Select the unmodified headerless 1 MiB Kirby's Dream Course "
+               "USA ROM. The selected file's size or SHA-256 does not match.";
     }
-    last_error = NULL;
+    return NULL;
+}
+
+static int Commit(void *ctx, const char *rom)
+{
+    KdcLauncherSettingsState *state = ctx;
+    state->last_error = KdcValidateRomPath(rom, state->expected_rom_hash);
+    if (state->last_error) return 0;
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
-    *(bool *)ctx = pending_widescreen != 0;
+    *state->widescreen = state->pending_widescreen != 0;
     return 1;
 }
 
 static const char *LastError(void *ctx)
 {
-    (void)ctx;
-    return last_error;
+    const KdcLauncherSettingsState *state = ctx;
+    return state->last_error;
 }
 
 const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
                                                           const char *rom_sha256)
 {
-    static RecompLauncherCModProvider provider = {
+    static KdcLauncherSettingsState state;
+    static const RecompLauncherCModProvider provider = {
+        .ctx = &state,
         .package_count = Count,
         .package_get = GetPackage,
         .commit = Commit,
@@ -133,9 +156,10 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .feature_set_option = SetOption,
     };
     /* Reopening starts from the applied setting, discarding uncommitted edits. */
-    provider.ctx = widescreen;
-    expected_rom_hash = rom_sha256;
-    last_error = NULL;
-    pending_widescreen = *widescreen;
+    state = (KdcLauncherSettingsState){
+        .widescreen = widescreen,
+        .pending_widescreen = *widescreen,
+        .expected_rom_hash = rom_sha256,
+    };
     return &provider;
 }

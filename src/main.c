@@ -36,7 +36,6 @@
 #endif
 #include "desktop/sdl_compat.h"
 #include "config.h"
-#include "recomp_launcher.h"
 #ifdef __ANDROID__
 /* SDLActivity loads libmain.so and dlsyms its SDL_main. */
 #define main SDL_main
@@ -68,12 +67,9 @@ static const struct RecompLauncherCModProvider *LauncherSettings(void)
     return KdcLauncherSettings(&g_config.widescreen, SNESRECOMP_ROM_EXPECTED_SHA256);
 }
 
-static void ConfigureLauncher(struct RecompLauncherCGameInfo *info)
+static const char *ValidateRomPath(const char *path)
 {
-    /* Run-ahead depends on snapshot round trips that Kirby has not qualified. */
-    info->has_run_ahead = 0;
-    /* A settings visit must resume this ROM, including the window-close path. */
-    info->disc_selection_locked = info->in_session;
+    return KdcValidateRomPath(path, SNESRECOMP_ROM_EXPECTED_SHA256);
 }
 
 static const SnesDesktopHostGame kGameHost = {
@@ -92,9 +88,10 @@ static const SnesDesktopHostGame kGameHost = {
     .native_widescreen    = 1,
     .in_game_launcher   = 1,
     .launcher_with_rom  = 1,
+    .validate_rom_path  = ValidateRomPath,
     .display_aspect_supported = 1,
     .mods_provider      = LauncherSettings,
-    .configure_launcher = ConfigureLauncher,
+    .configure_launcher = KdcConfigureLauncher,
     .prepare_frame       = PrepareWideFrame,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */

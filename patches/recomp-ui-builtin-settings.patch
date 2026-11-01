@@ -1,7 +1,51 @@
+diff --git a/src/recomp_launcher.h b/src/recomp_launcher.h
+--- a/src/recomp_launcher.h
++++ b/src/recomp_launcher.h
+@@ -2442,6 +2442,9 @@
+      * Image Filtering mod) sets this so no control that nothing applies is
+      * drawn. Appended for ABI stability; zero keeps the row. */
+     int                linear_filter_hidden;
++    /* Hide the sample-rate row when a running host cannot safely reopen audio.
++     * Zero preserves the existing console-profile behavior. */
++    int                audio_frequency_locked;
+ } RecompLauncherCGameInfo;
+ /* RecompLauncherCGameInfo carries linear_filter_hidden. */
+ #define RECOMP_LAUNCHER_HAS_LINEAR_FILTER_HIDDEN 1
+diff --git a/src/common/launcher_model.h b/src/common/launcher_model.h
+--- a/src/common/launcher_model.h
++++ b/src/common/launcher_model.h
+@@ -192,6 +192,7 @@
+
+     // ---- NES-style capabilities (borrowed from RecompLauncherCGameInfo) ----
+     bool        has_solar_sensor;    // Solar sensor panel in Settings
++    bool        audio_frequency_locked; // host policy for sample-rate edits
+     bool        in_session;          // opened from a running game (RESUME, not PLAY)
+     bool        has_open_launcher_hotkey; // [KeyMap] OpenLauncher row in Hotkeys
+     bool        has_integer_scale;   // Integer-scale checkbox in Display settings
+diff --git a/src/common/launcher_model.c b/src/common/launcher_model.c
+--- a/src/common/launcher_model.c
++++ b/src/common/launcher_model.c
+@@ -382,6 +382,7 @@
+         m->saves_supported      = game->sram_path != NULL;
+         m->sram_path            = game->sram_path;
+         m->has_solar_sensor     = game->has_solar_sensor != 0;
++    m->audio_frequency_locked = game->audio_frequency_locked != 0;
+     m->in_session           = game->in_session != 0;
+     m->has_open_launcher_hotkey = game->has_open_launcher_hotkey != 0;
+         m->has_integer_scale    = game->has_integer_scale != 0;
 diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/imgui/launcher_imgui.cpp
 --- a/src/common/backends/imgui/launcher_imgui.cpp
 +++ b/src/common/backends/imgui/launcher_imgui.cpp
-@@ -11722,7 +11722,7 @@ static void draw_mod_packages(LauncherModel* m, const LauncherTheme& th) {
+@@ -4629,7 +4629,7 @@
+     // Sample rate: hidden for consoles whose runtime has no audio-frequency
+     // setting (SystemProfile.hide_audio_freq — NES has Volume only).
+     const SystemProfile* audio_prof = (const SystemProfile*)m->profile;
+-    if (!audio_prof || !audio_prof->hide_audio_freq) {
++    if (!m->audio_frequency_locked && (!audio_prof || !audio_prof->hide_audio_freq)) {
+         const float fw = settings_cycle_w(m, "Sample rate", th,
+             launcher_model_cycle_freq, launcher_model_freq_label);
+         row_label_right("Sample rate", th, fw);
+@@ -11722,7 +11722,7 @@
                    "%s %s", ui_text("Install"), archive_extension);
      std::snprintf(archive_pattern, sizeof(archive_pattern),
                    "*%s", archive_extension);
@@ -10,7 +54,17 @@ diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/
          ui_pick_file(m, ui_text("Install Mod Package"), {archive_pattern},
                       archive_description, [m, mods](const char* path) {
              if (!path) return;
-@@ -12225,7 +12225,7 @@ static void draw_mod_features(LauncherModel* m, const LauncherTheme& th) {
+@@ -11760,7 +11760,8 @@
+             ImGui::PushID(i);
+             const bool selected = m->mod_package_selected == i;
+             char label[196];
+-            if (feature_provider) {
++            if (feature_provider && (mods->install_archive || mods->remove_package ||
++                             mods->select_version)) {
+                 std::snprintf(label, sizeof(label), "%s\n%s",
+                               package.name, package.version);
+             } else {
+@@ -12226,7 +12227,7 @@
                    "Install %s", archive_extension);
      std::snprintf(archive_pattern, sizeof(archive_pattern),
                    "*%s", archive_extension);
@@ -19,7 +73,7 @@ diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/
          ui_pick_file(m, "Install Mod Package", {archive_pattern},
                       archive_description, [m, mods](const char* path) {
              if (!path) return;
-@@ -12240,7 +12240,7 @@ static void draw_mod_features(LauncherModel* m, const LauncherTheme& th) {
+@@ -12241,7 +12242,7 @@
      }
      /* No "Enable all": in a title with many mods it turns on features that
       * need owner files or conflict with each other, all at once. */
@@ -28,7 +82,7 @@ diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/
      if (ImGui::Button(ui_text("Disable all")))
          disable_all_mod_features(m);
      if (ImGui::IsItemHovered())
-@@ -12667,7 +12667,8 @@ static void draw_mods(LauncherModel* m, const LauncherTheme& th) {
+@@ -12666,7 +12667,8 @@
          mods->feature_set_option;
      if (!feature_provider) m->mod_show_packages = true;
 

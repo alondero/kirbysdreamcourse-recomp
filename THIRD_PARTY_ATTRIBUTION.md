@@ -8,7 +8,8 @@ Stanley), including Dear ImGui (MIT, copyright 2014-2025 Omar Cornut),
 tinyfiledialogs (Zlib, copyright 2014-2025 Guillaume Vareille), and stb image
 helpers (MIT/public domain; the public-domain alternative is available).
 `patches/recomp-ui-builtin-settings.patch` hides package-management controls
-when a title only supplies built-in settings. The UI's remaining code and
+when a title only supplies built-in settings and adds an optional host lock
+for sample-rate changes. The UI's remaining code and
 assets are unmodified. The game executable also retains the framework's
 PolyForm Noncommercial terms.
 

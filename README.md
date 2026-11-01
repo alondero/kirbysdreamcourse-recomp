@@ -26,7 +26,7 @@ Setup creates `local/guarded-framework`, `local/guarded` and `local/guarded-buil
 
 Open the launcher during play with **Ctrl+L**, or **Select+L3** on a gamepad (Back + left-stick click on most controllers). The game and audio pause while the settings window is open. Choose **Resume** to apply changes and continue. Closing the settings window also resumes; **Quit Game** exits. The game window is hidden while settings are open.
 
-Use **Settings** for fullscreen, window scale, pixel aspect, filtering, VSync and volume; use **Controller** for player-one/player-two input sources and bindings. Changes persist in `config.ini` and `keybinds.ini`. Renderer and audio sample-rate changes require the shared host to restart through a temporary save state; see [menu integration and validation](docs/menu-research.md) for tested paths and remaining limits.
+Use **Settings** for fullscreen, window scale, pixel aspect, filtering, VSync and volume; use **Controller** for player-one/player-two input sources and bindings. Changes persist in `config.ini` and `keybinds.ini`. Renderer and audio sample rate can be selected in the startup launcher. Those controls are hidden during play while snapshot restart support remains unqualified; see [menu integration and validation](docs/menu-research.md) for tested paths and remaining limits.
 
 For two players on the keyboard, choose Keyboard for both players on the Controller page and assign different keys to player two. The same sources can still be configured directly in `local/guarded-build/config.ini`:
 

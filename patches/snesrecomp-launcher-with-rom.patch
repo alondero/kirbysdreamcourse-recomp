@@ -1,20 +1,23 @@
 diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
 --- a/runner/src/desktop/host_main.h
 +++ b/runner/src/desktop/host_main.h
-@@ -217,6 +217,9 @@
+@@ -217,6 +217,12 @@
     * raster-state capture. The host owns this writable surface. A separate
     * draw_frame may retain a wider image for presentation. */
    void (*publish_native_field)(uint8_t *field, unsigned number);
 +  /* Show the startup launcher with an explicit --rom too, while honoring
 +   * SkipLauncher. --launcher still overrides that preference. */
 +  int launcher_with_rom;
++  /* Optional title policy applied to every resolved path before guest setup.
++   * Return NULL to accept, or a player-facing refusal reason. */
++  const char *(*validate_rom_path)(const char *path);
  } SnesDesktopHostGame;
 
  /* The whole program. Returns the process exit code. */
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
-@@ -3533,13 +3533,17 @@
+@@ -3520,13 +3520,17 @@
                       (vd && strcmp(vd, "dummy") == 0);
        const char *env_no_launcher = getenv("SNESRECOMP_NO_LAUNCHER");
        int want_launcher = !headless && !no_launcher && !(env_no_launcher && *env_no_launcher) &&
@@ -34,3 +37,17 @@ diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
            FILE *probe = fopen(cached, "rb");
            if (probe) {
              fclose(probe);
+@@ -3646,6 +3650,13 @@
+   argc = 1;
+   host_report_breadcrumb("rom resolved: %s", rom_path_buf);
+   g_rom_path = rom_path_buf;
++  if (game->validate_rom_path) {
++    const char *refusal = game->validate_rom_path(rom_path_buf);
++    if (refusal) {
++      fprintf(stderr, "ROM refused: %s\n", refusal);
++      return 1;
++    }
++  }
+
+ #if defined(SNES_HAS_LOBBY_CLIENT)
+   /* Same direct-IP/environment entry point as the standalone SNES hosts. */

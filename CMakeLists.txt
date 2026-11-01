@@ -29,7 +29,7 @@ if(NOT KDC_TILE_PROVIDER_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-widescreen-tile-provider.patch; tools/setup.ps1 includes it")
 endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_LAUNCHER_ROM_API
-    REGEX "int launcher_with_rom;" LIMIT_COUNT 1)
+    REGEX "validate_rom_path" LIMIT_COUNT 1)
 if(NOT KDC_LAUNCHER_ROM_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-launcher-with-rom.patch; tools/setup.ps1 includes it")
 endif()
@@ -194,6 +194,12 @@ set(KDC_UI_PATCH "${CMAKE_SOURCE_DIR}/patches/recomp-ui-builtin-settings.patch")
 execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --reverse --check "${KDC_UI_PATCH}"
     RESULT_VARIABLE KDC_UI_PATCHED OUTPUT_QUIET ERROR_QUIET)
 if(NOT KDC_UI_PATCHED EQUAL 0)
+    if(FETCHCONTENT_SOURCE_DIR_KDC_RECOMP_UI)
+        message(FATAL_ERROR
+            "The supplied recomp-ui checkout needs patches/recomp-ui-builtin-settings.patch. "
+            "It was left unchanged. Apply that patch explicitly, or omit "
+            "FETCHCONTENT_SOURCE_DIR_KDC_RECOMP_UI to use the managed checkout.")
+    endif()
     execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --check "${KDC_UI_PATCH}"
         RESULT_VARIABLE KDC_UI_PATCH_CHECK)
     if(NOT KDC_UI_PATCH_CHECK EQUAL 0)
