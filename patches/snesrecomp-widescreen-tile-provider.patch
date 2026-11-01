@@ -1,0 +1,99 @@
+diff --git a/runner/src/snes/ws_shadow.c b/runner/src/snes/ws_shadow.c
+index 2e11552..a0f01f4 100644
+--- a/runner/src/snes/ws_shadow.c
++++ b/runner/src/snes/ws_shadow.c
+@@ -160,7 +160,19 @@ static bool IsLiveOpaque(uint16_t tile) {
+   return tile != 0 && tile != 0x0200u && tile != 0x0DAEu;
+ }
+ 
++static WsShadowTileProvider *s_tileProvider;
++static void *s_tileProviderContext;
++static uint8_t s_tileProviderMask;
++
++void WsShadowSetTileProvider(uint8_t layerMask, WsShadowTileProvider *provider,
++                             void *context) {
++  s_tileProvider = provider;
++  s_tileProviderContext = context;
++  s_tileProviderMask = provider ? (layerMask & ((1u << kLayers) - 1)) : 0;
++}
++
+ void WsShadowReset(void) {
++  WsShadowSetTileProvider(0, NULL, NULL);
+   for (int i = 0; i < kLayers; i++) {
+     WsShadowLayer *layer = &s_layers[i];
+     if (layer->valid)
+@@ -1271,6 +1283,24 @@ static uint8_t FoldRowPeriod(WsShadowLayer *layer, int row, int natCol) {
+   return period;
+ }
+ 
++bool WsShadowHasTileProvider(int layerIndex) {
++  return layerIndex >= 0 && layerIndex < kLayers &&
++      s_tileProvider && (s_tileProviderMask & (1u << layerIndex));
++}
++
++uint16_t WsShadowResolveTile8x8(int layerIndex, int screenX, uint32_t wrappedY,
++                               uint16_t hScroll, uint16_t mapWordAdr,
++                               uint16_t realTile) {
++  if (WsShadowHasTileProvider(layerIndex)) {
++    int chunkPixels = 8 - (((unsigned)hScroll + (unsigned)screenX) & 7);
++    if (screenX < 256 && screenX + chunkPixels > 0)
++      return realTile;
++    return s_tileProvider(layerIndex, screenX, wrappedY, hScroll,
++                          realTile, s_tileProviderContext);
++  }
++  return WsShadowTile(layerIndex, screenX, wrappedY, hScroll, mapWordAdr, realTile);
++}
++
+ uint16_t WsShadowTile(int layerIndex, int screenX, uint32_t wrappedY,
+                       uint16_t hScroll, uint16_t mapWordAdr,
+                       uint16_t realTile) {
+diff --git a/runner/src/snes/ws_shadow.h b/runner/src/snes/ws_shadow.h
+index 5b44a4d..3cce7ff 100644
+--- a/runner/src/snes/ws_shadow.h
++++ b/runner/src/snes/ws_shadow.h
+@@ -15,6 +15,20 @@ enum {
+ 
+ void WsShadowReset(void);
+ 
++/* Optional direct source for 8x8 background margin tiles. Called at raster
++ * time with that line's scroll, before history/fold lookup. Native tiles,
++ * including chunks overlapping either native edge, keep real VRAM. The
++ * provider must not mutate guest state. NULL disables; Reset clears it. */
++typedef uint16_t WsShadowTileProvider(int layer, int screenX, uint32_t scrolledY,
++                                     uint16_t hScroll, uint16_t realTile,
++                                     void *context);
++void WsShadowSetTileProvider(uint8_t layerMask, WsShadowTileProvider *provider,
++                             void *context);
++bool WsShadowHasTileProvider(int layer);
++uint16_t WsShadowResolveTile8x8(int layer, int screenX, uint32_t scrolledY,
++                               uint16_t hScroll, uint16_t mapWordAdr,
++                               uint16_t realTile);
++
+ /* True world-space camera origin for shadow keys (tile capture / margins).
+  * For games where PPU scroll == camera (SMW-style), pass hScroll/vScroll.
+  * For strip-streaming games (Metal Warriors), pass the WRAM camera and also
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1144,8 +1144,8 @@
+   int tileadr = PPU_bgTileAdr(ppu, layer), pixel;
+   int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
+   const uint16 *addr;
+-  bool ws_shadow = WsShadowLayerActive(layer);
+-#define WS_TILE(t, sx) (ws_shadow ? WsShadowTile(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
++  bool ws_shadow = WsShadowLayerActive(layer) || WsShadowHasTileProvider(layer);
++#define WS_TILE(t, sx) (ws_shadow ? WsShadowResolveTile8x8(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -1748,8 +1748,8 @@
+   int tileadr = PPU_bgTileAdr(ppu, layer), pixel;
+   int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
+   const uint16 *addr;
+-  bool ws_shadow = WsShadowLayerActive(layer);
+-#define WS_TILE(t, sx) (ws_shadow ? WsShadowTile(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
++  bool ws_shadow = WsShadowLayerActive(layer) || WsShadowHasTileProvider(layer);
++#define WS_TILE(t, sx) (ws_shadow ? WsShadowResolveTile8x8(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part

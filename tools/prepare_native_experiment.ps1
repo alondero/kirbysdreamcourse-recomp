@@ -84,6 +84,7 @@ foreach ($path in @($framework, $project, $build)) {
 if ($SdlSource) { $SdlSource = (Resolve-Path -LiteralPath $SdlSource).Path }
 & (Join-Path $root 'tools/prepare_handoff.ps1') -SimpleBus -Refresh -Name $frameworkName
 $patches = @(
+    'snesrecomp-widescreen-tile-provider.patch',
     'snesrecomp-apu-rate-experiment.patch',
     'snesrecomp-preanchor-experiment.patch',
     'snesrecomp-beam-apu-clock-experiment.patch',

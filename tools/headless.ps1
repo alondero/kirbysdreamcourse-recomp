@@ -8,6 +8,8 @@ param(
     [string]$InputRecording = '',
     [string]$InitialSram = '',
     [string]$InitialState = '',
+    [switch]$Widescreen,
+    [ValidateRange(0, 272)][int]$WideExtra = 43,
     [switch]$Unpaced
 )
 $ErrorActionPreference = 'Stop'
@@ -38,6 +40,7 @@ DisableFrameDelay = 0
 [Graphics]
 NewRenderer = 1
 NoSpriteLimits = 0
+Widescreen = 0
 [Sound]
 EnableAudio = 1
 AudioFreq = 32000
@@ -50,6 +53,11 @@ SourceP2 = 0
 EnableGamepad1 = false
 EnableGamepad2 = false
 '@ | Set-Content -LiteralPath (Join-Path $destination 'config.initial.ini') -Encoding ASCII
+if ($Widescreen) {
+    $configPath = Join-Path $destination 'config.initial.ini'
+    $configText = [IO.File]::ReadAllText($configPath).Replace('Widescreen = 0', 'Widescreen = 1')
+    [IO.File]::WriteAllText($configPath, $configText, [Text.Encoding]::ASCII)
+}
 if ($Unpaced) {
     $configPath = Join-Path $destination 'config.initial.ini'
     $configText = [IO.File]::ReadAllText($configPath)
@@ -76,6 +84,7 @@ $recordingHash = $null
 $env:SDL_VIDEODRIVER = 'dummy'
 $env:SDL_AUDIODRIVER = 'dummy'
 $env:SNESRECOMP_RUN_FRAMES = "$Frames"
+$wideOverride = if ($Widescreen) { "$WideExtra" } else { '0' }
 $hostArgs = @('--no-launcher', '--rom', $romPath, '--framedump', (Join-Path $destination 'frames'))
 if ($InputRecording) {
     $InputRecording = (Resolve-Path -LiteralPath $InputRecording).Path
@@ -85,8 +94,14 @@ if ($InputRecording) {
     if ($LASTEXITCODE -ne 0) { throw 'Invalid input recording.' }
 }
 if ($InputScript) { $hostArgs += @('--script', (Resolve-Path -LiteralPath $InputScript).Path) }
-& $copy @hostArgs
-if ($LASTEXITCODE -ne 0) { throw "Host failed: $LASTEXITCODE" }
+$previousWideOverride = $env:SNESRECOMP_WS_EXTRA
+try {
+    $env:SNESRECOMP_WS_EXTRA = $wideOverride
+    & $copy @hostArgs
+    if ($LASTEXITCODE -ne 0) { throw "Host failed: $LASTEXITCODE" }
+} finally {
+    $env:SNESRECOMP_WS_EXTRA = $previousWideOverride
+}
 $count = @(Get-ChildItem -LiteralPath (Join-Path $destination 'frames') -Filter '*_wram.bin').Count
 $expectedCount = if ($ExpectedUniqueFrames) { $ExpectedUniqueFrames } else { $Frames }
 if ($count -ne $expectedCount) { throw "Expected $expectedCount WRAM frames, got $count." }
@@ -96,6 +111,7 @@ $manifest = [ordered]@{
     executable_sha256 = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant()
     initial_config_sha256 = $configHash
     runtime_options = [ordered]@{
+        SNESRECOMP_WS_EXTRA = $wideOverride
         SNESRECOMP_APU_BEAM_ELAPSED = [Environment]::GetEnvironmentVariable('SNESRECOMP_APU_BEAM_ELAPSED')
         SNESRECOMP_APU_HANDOFF = [Environment]::GetEnvironmentVariable('SNESRECOMP_APU_HANDOFF')
         SNESRECOMP_APU_ABSOLUTE_PREANCHOR = [Environment]::GetEnvironmentVariable('SNESRECOMP_APU_ABSOLUTE_PREANCHOR')

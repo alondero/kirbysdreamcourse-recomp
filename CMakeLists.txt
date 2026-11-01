@@ -22,8 +22,13 @@ if(NOT GIT_RESULT EQUAL 0 OR NOT FRAMEWORK_REV STREQUAL "147b55e252dcb3e7680a99c
 endif()
 set(SNESRECOMP_ENABLE_MODS ON CACHE BOOL "Framework desktop host requires mod support" FORCE)
 include(${SNESRECOMP_ROOT}/runner/runner.cmake)
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ws_shadow.h" KDC_TILE_PROVIDER_API
+     REGEX "WsShadowResolveTile8x8" LIMIT_COUNT 1)
+if(NOT KDC_TILE_PROVIDER_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-widescreen-tile-provider.patch; tools/setup.ps1 includes it")
+endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
-    src/main.c src/host_contract.c src/game_rtl.c src/gen_stubs.c)
+    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/gen_stubs.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")
 set(KDC_FUNCTIONS_DIR "${CMAKE_SOURCE_DIR}/recomp" CACHE PATH "Local generated function declarations")

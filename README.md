@@ -36,6 +36,12 @@ Controller source values are `0` for none, `1` for keyboard and `2` for gamepad.
 
 The included ROM-free input and comparison tests can be run with `python -m unittest discover -s tests -p 'test_*.py' -v`. The headless and reference-capture tools support locally stored input recordings; keep recordings and captures out of the repository.
 
+## Widescreen
+
+Enable Widescreen in the launcher, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. Resize the window or use Alt+Return for fullscreen. The view follows the window's aspect ratio, including ultrawide displays, while retaining the original pixel proportions. A 4:3 window still shows the original width. Widescreen is off by default.
+
+The course's extra terrain is rendered from its full map in memory, beyond the original streaming viewport. The HUD and bounded menu foregrounds remain centered. The original game's object visibility rules remain in effect; distant sprites can still appear only when the game emits them. See [widescreen implementation and validation](docs/widescreen.md) for coverage and limits.
+
 ## Status
 
 Recorded single-player runs completed courses one and two in native and fallback modes. A two-player smoke test completed one hole. The pinned reference and host still differ in startup and gameplay state; audio, timing, save-state compatibility and many paths remain under investigation. See [compatibility and evidence](docs/compatibility.md) and the repository issues. Native blocks fall back to the interpreter when they cannot safely execute.
