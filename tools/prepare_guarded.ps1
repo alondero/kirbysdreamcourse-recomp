@@ -2,6 +2,7 @@ param(
     [string]$Rom = "Kirby's Dream Course (USA).sfc",
     [Parameter(Mandatory=$true)][string]$CMake,
     [string]$SdlSource = '',
+    [switch]$ApuBoundarySync,
     [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$Name = 'guarded'
 )
 
@@ -42,5 +43,6 @@ $options = @{
     ManualJoypad = $true
     AutoJoyPhase = $true
     SpcD4Phase = $true
+    ApuBoundarySync = [bool]$ApuBoundarySync
 }
 & $prepare @options

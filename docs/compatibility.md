@@ -8,6 +8,10 @@ The first full-WRAM boot mismatch occurs at host frame 15 versus reference frame
 
 ## Audio baseline
 
+Focused instruction, timer, port-ordering and DSP checks, including an opt-in
+queue-boundary candidate, are documented in [APU accuracy](apu-accuracy.md).
+The candidate has its own snapshot identity and is not enabled by ordinary setup.
+
 With zero SRAM and no input, two paced 400-frame guarded native runs produced identical DSP-ring captures, and two Snes9x captures produced identical audio over the same interval. The first 180 frames were silent, so silence alone is not an audio accuracy test. The first nonzero stereo sample appeared at host sample 156932 and reference sample 157388. Aligning those onsets gives an observational offset of 456 samples; the first difference after that alignment is host sample 156991, `(4722, 4781)`, versus reference sample 157447, `(4723, 4782)`. The host capture skips the first DSP capture interval, while the reference captures libretro output, so this offset is not a measurement of hardware latency. The comparison does not isolate DSP arithmetic from scheduling, resampling or other emulator differences.
 
 For this baseline, run `tools/setup.ps1 -CMake 'C:/path/to/native/cmake.exe'` to build the guarded configuration, set the four timing and native-dispatch environment variables from `tools/play_experimental.ps1`, and set `SNESRECOMP_DSPOUT` to a fresh absolute path under `local/`. Run `tools/headless.ps1` for 400 frames without `-Unpaced`, twice with separate output and capture paths. Run `tools/reference_capture.py` twice for 400 frames with `--audio-raw`, the pinned core, and no input. Both tools check the ROM identity; the reference tool also checks the core hash. Captures contain game-derived audio and remain local. This baseline does not test port ordering, individual SPC instruction or timer phases, gameplay input, fallback mode, or physical hardware.

@@ -149,7 +149,9 @@ static uint32_t saved_ppu2_bus_state[5];
 
 static const char *GameSnapshotIdentity(void)
 {
-#ifdef KDC_EXPERIMENTAL_SPC_D4_STATE
+#ifdef KDC_EXPERIMENTAL_APU_BOUNDARY_STATE
+    return "kirby-apu-boundary-v1";
+#elif defined(KDC_EXPERIMENTAL_SPC_D4_STATE)
     return "kirby-spc-d4-phase-v1";
 #elif defined(KDC_EXPERIMENTAL_AUTOJOY_STATE)
     return "kirby-autojoy-phase-v1";

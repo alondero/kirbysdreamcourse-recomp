@@ -6,6 +6,24 @@ SNESRecomp's original code is licensed under the PolyForm Noncommercial
 License 1.0.0 in [`LICENSE`](LICENSE). The notices below describe the licenses
 that continue to apply to identified third-party material.
 
+## Test-only Snes9x SMP and Shay Green DSP reference
+
+`tools/check_apu.py` builds a local differential reference from Snes9x commit
+`fae2fea08f74180759ef540ee94259213f503480`. Its SMP source remains subject to
+the upstream Snes9x notices. The included `apu/bapu/dsp/SPC_DSP.cpp` identifies
+Shay Green, copyright 2007, and the GNU Lesser General Public License version
+2.1 or, at the recipient's option, any later version. Its companion headers
+retain their upstream notices.
+
+Pinned sources and notices:
+[Snes9x license](https://github.com/snes9xgit/snes9x/blob/fae2fea08f74180759ef540ee94259213f503480/LICENSE),
+[SPC_DSP.cpp license header](https://github.com/snes9xgit/snes9x/blob/fae2fea08f74180759ef540ee94259213f503480/apu/bapu/dsp/SPC_DSP.cpp).
+
+The reference source and test executable are generated in local or temporary
+directories for comparison only. This repository distributes neither, and
+the reference is not linked into the game executable. The runtime's own
+licenses and notices below continue to apply independently.
+
 ## snesrev — zelda3 / smw reverse-engineered ports
 
 The C runner is substantially based on snesrev's reverse-engineered ports. The
