@@ -1,5 +1,32 @@
 # Third-Party Attribution
 
+## Kirby launcher integration
+
+Kirby links [recomp-ui](https://github.com/RetroPortingToolKit/recomp-ui) at
+`3f1d6f122a58823614abce14f5b86f4d165a629c` (MIT, copyright 2026 Matthew
+Stanley), including Dear ImGui (MIT, copyright 2014-2025 Omar Cornut),
+tinyfiledialogs (Zlib, copyright 2014-2025 Guillaume Vareille), and stb image
+helpers (MIT/public domain; the public-domain alternative is available).
+`patches/recomp-ui-builtin-settings.patch` hides package-management controls
+when a title only supplies built-in settings. The UI's remaining code and
+assets are unmodified. The game executable also retains the framework's
+PolyForm Noncommercial terms.
+
+CMake stages recomp-ui's MIT license, ImGui's MIT license and its font/image
+notices into `licenses/recomp-ui/` beside the local executable. The repository's
+`licenses/recomp-ui/` supplies the full OFL-1.1 and CC BY-SA 4.0 texts for the
+bundled LatoLatin, Noto and OpenMoji assets. The font copyright notices and
+source links are in the staged `fonts.md`; the Noto flag-sheet attribution is
+in `images.md`. These notices and license texts belong with any future
+permitted package containing the launcher. No game box art is supplied.
+
+The license texts were obtained from the
+[pinned LatoLatin source](https://github.com/hakger/latolatin-webfont/blob/4a7162e18a6a01f2ce87dec05c4e4605d8167eb6/OFL.txt),
+[Noto Symbols source](https://github.com/notofonts/symbols/blob/main/OFL.txt),
+and [Creative Commons legal code](https://creativecommons.org/licenses/by-sa/4.0/legalcode.en).
+Upstream component details and exact project pins are in
+[the menu research](docs/menu-research.md).
+
 snesrecomp incorporates the following third-party software.
 
 SNESRecomp's original code is licensed under the PolyForm Noncommercial

@@ -6,7 +6,7 @@ The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe829
 
 ## Build and play on Windows
 
-Install Git, Python 3.11 or newer, CMake 3.20 or newer, Ninja, and a 64-bit MinGW GCC toolchain; put them on PATH. CMake downloads the pinned SDL 3.4.10 source if an SDL3 package is not installed. Setup also needs network access to fetch the pinned SNESRecomp revision.
+Install Git, Python 3.11 or newer, CMake 3.20 or newer, Ninja, and a 64-bit MinGW GCC/G++ toolchain; put them on PATH. CMake downloads the pinned SDL 3.4.10 source if an SDL3 package is not installed, plus the pinned recomp-ui launcher. Setup also needs network access to fetch the pinned SNESRecomp revision.
 
 Place your ROM at the project root as `Kirby's Dream Course (USA).sfc`, or pass its path with `-Rom`. In PowerShell, from the repository root:
 
@@ -22,9 +22,13 @@ To specify a ROM, CMake executable or existing SDL3 source tree:
 ./tools/play_experimental.ps1 -Rom 'C:/path/to/your-game.sfc'
 ```
 
-Setup creates `local/guarded-framework`, `local/guarded` and `local/guarded-build`; use a clean checkout to repeat setup. Generated files remain in ignored local directories. The launcher sets the timing options; use `-Fallback` to select the interpreter. Settings and saves are stored beside the local executable. Default player-one keyboard controls are arrows, X for A, Z for B, Return for Start and Right Shift for Select.
+Setup creates `local/guarded-framework`, `local/guarded` and `local/guarded-build`; use a clean checkout to repeat setup. Generated files remain in ignored local directories. The play script sets the timing options and opens the graphical launcher; use `-Fallback` to select the interpreter, or `-NoLauncher` to start directly. The launcher also remembers **Skip launcher on boot**. `-Frames` runs skip the startup launcher. Settings and saves are stored beside the local executable. Default player-one keyboard controls are arrows, X for A, Z for B, Return for Start and Right Shift for Select.
 
-For two players on the keyboard, first run the game once to create its configuration. In `local/guarded-build/config.ini`, add the following section, then edit the `[player2]` bindings in `keybinds.ini` in the same directory to use different keys from player one. Restart the game to apply the changes.
+Open the launcher during play with **Ctrl+L**, or **Select+L3** on a gamepad (Back + left-stick click on most controllers). The game and audio pause while the settings window is open. Choose **Resume** to apply changes and continue. Closing the settings window also resumes; **Quit Game** exits. The game window is hidden while settings are open.
+
+Use **Settings** for fullscreen, window scale, pixel aspect, filtering, VSync and volume; use **Controller** for player-one/player-two input sources and bindings. Changes persist in `config.ini` and `keybinds.ini`. Renderer and audio sample-rate changes require the shared host to restart through a temporary save state; see [menu integration and validation](docs/menu-research.md) for tested paths and remaining limits.
+
+For two players on the keyboard, choose Keyboard for both players on the Controller page and assign different keys to player two. The same sources can still be configured directly in `local/guarded-build/config.ini`:
 
 ```ini
 [Controller]
@@ -40,7 +44,7 @@ For source-built SPC/DSP differential tests and the optional APU queue-boundary 
 
 ## Widescreen
 
-Enable Widescreen in the launcher, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. Resize the window or use Alt+Return for fullscreen. The view follows the window's aspect ratio, including ultrawide displays, while retaining the original pixel proportions. A 4:3 window still shows the original width. Widescreen is off by default.
+Enable **Adaptive widescreen** on the launcher's **Mods** page, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. It can be changed during play. Resize the window or use Alt+Return for fullscreen. The view follows the window's aspect ratio, including ultrawide displays, while retaining the original pixel proportions. A 4:3 window still shows the original width with the default 4:3 pixel aspect. Widescreen is off by default.
 
 The course's extra terrain is rendered from its full map in memory, beyond the original streaming viewport. The HUD and bounded menu foregrounds remain centered. The original game's object visibility rules remain in effect; distant sprites can still appear only when the game emits them. See [widescreen implementation and validation](docs/widescreen.md) for coverage and limits.
 
