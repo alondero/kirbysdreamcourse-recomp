@@ -47,6 +47,7 @@
 #include "snes/ws_shadow.h"
 #include "course_view.h"
 #include "course_sprites.h"
+#include "dev_start.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,7 @@ static void initialize_bounce_log(void)
     if (initialized) return;
     initialized = 1;
     KdcInitializeSprites();
+    KdcDevInitialize();
     const char *apu_path = getenv("KDC_APU_STATE_LOG");
     if (apu_path && *apu_path) {
         apu_state_log = fopen(apu_path, "w");
@@ -130,6 +132,7 @@ void GameSessionReset(void)
     snes_beam_frame_driver_reset();
     WsShadowReset();
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
+    KdcDevReset();
 }
 
 #ifdef KDC_EXPERIMENTAL_STATE
@@ -359,6 +362,7 @@ static void GameLoadExtra(struct SaveLoadInfo *sli, uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
+    KdcDevStateLoaded();
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     RtlApplyExecutionState();
 #ifdef KDC_EXPERIMENTAL_RASTER_STATE
@@ -401,6 +405,7 @@ static void GameStateLoaded(uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
+    KdcDevStateLoaded();
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
 }
 #endif

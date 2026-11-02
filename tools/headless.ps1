@@ -8,6 +8,8 @@ param(
     [string]$InputRecording = '',
     [string]$InitialSram = '',
     [string]$InitialState = '',
+    [string]$DevHole = '',
+    [switch]$DevTwoPlayer,
     [switch]$Widescreen,
     [ValidateRange(0, 272)][int]$WideExtra = 43,
     [switch]$Unpaced
@@ -17,6 +19,8 @@ $root = Split-Path -Parent $PSScriptRoot
 if ($Frames -le 0) { throw 'Frames must be positive.' }
 if ($ExpectedUniqueFrames -lt 0 -or $ExpectedUniqueFrames -gt $Frames) { throw 'ExpectedUniqueFrames must be between zero and Frames.' }
 if ($InputScript -and $InputRecording) { throw 'Choose InputScript or InputRecording, not both.' }
+if ($DevHole -and $InitialState) { throw 'Choose DevHole or InitialState, not both.' }
+if ($DevTwoPlayer -and -not $DevHole.StartsWith('map:')) { throw 'DevTwoPlayer requires DevHole map:ID.' }
 if ($Unpaced -and [Environment]::GetEnvironmentVariable('SNESRECOMP_DSPOUT')) {
     throw 'Unpaced runs cannot capture deterministic DSP ring audio.'
 }
@@ -76,6 +80,8 @@ $env:SDL_AUDIODRIVER = 'dummy'
 $env:SNESRECOMP_RUN_FRAMES = "$Frames"
 $wideOverride = if ($Widescreen) { "$WideExtra" } else { '0' }
 $hostArgs = @('--no-launcher', '--rom', $romPath, '--framedump', (Join-Path $destination 'frames'))
+if ($DevHole) { $hostArgs += @('--dev-hole', $DevHole) }
+if ($DevTwoPlayer) { $hostArgs += '--dev-two-player' }
 if ($InputRecording) {
     $InputRecording = (Resolve-Path -LiteralPath $InputRecording).Path
     $recordingHash = (Get-FileHash -LiteralPath $InputRecording -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -118,6 +124,7 @@ $manifest = [ordered]@{
     initial_sram_sha256 = $initialSramHash
     unpaced = [bool]$Unpaced
     initial_state_sha256 = $initialStateHash
+    dev_start = if ($DevHole) { [ordered]@{ hole = $DevHole; two_player = [bool]$DevTwoPlayer } } else { $null }
     input_recording_sha256 = $recordingHash
     input_script_sha256 = if ($InputScript) { (Get-FileHash -LiteralPath $InputScript -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
     frames = $Frames

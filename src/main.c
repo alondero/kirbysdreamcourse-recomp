@@ -28,6 +28,7 @@
 #include "host_main.h"
 #include "game_rtl.h"
 #include "launcher_settings.h"
+#include "dev_start.h"
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
 
@@ -121,5 +122,7 @@ static const SnesDesktopHostGame kGameHost = {
 #endif
 int main(int argc, char **argv)
 {
+    int dev = KdcDevParseArgs(&argc, argv);
+    if (dev) return dev < 0 ? 2 : 0;
     return snesrecomp_desktop_main(&kGameHost, argc, argv);
 }

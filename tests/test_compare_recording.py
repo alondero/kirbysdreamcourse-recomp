@@ -68,6 +68,12 @@ class CompareRecordingTest(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn('initial save state', rejected.stderr)
             del manifest['initial_state_sha256']
+            manifest['dev_start'] = {'hole': 'normal:1:1', 'two_player': False}
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn('Developer hole starts', rejected.stderr)
+            del manifest['dev_start']
             manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
             # Explicit same-number alignment selects reference frame 1 for
             # host frame 1, while the default selects reference frame 2.
