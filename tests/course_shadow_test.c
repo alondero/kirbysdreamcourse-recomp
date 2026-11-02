@@ -7,6 +7,7 @@ int snes_frame_counter;
 static uint8_t ram[0x20000];
 /* Policy setter only; tile-provider dispatch uses the patched runtime. */
 void PpuSetWidescreenLayerClamp(Ppu *ppu, uint8_t mask) { ppu->wsLayerClamp = mask; }
+void PpuSetWidescreenBg3Widen(Ppu *ppu, uint8_t y) { ppu->wsBg3WidenY = y; }
 void PpuWsSetOamRightHints(Ppu *ppu, const uint8_t *hints) { (void)ppu; (void)hints; }
 void PpuWsSetOamLeftHints(Ppu *ppu, const uint8_t *hints) { (void)ppu; (void)hints; }
 static void word(unsigned a, uint16_t v) { ram[a] = v; ram[a + 1] = v >> 8; }
@@ -23,6 +24,33 @@ int main(void)
     WsShadowReset();
     KdcPrepareCourseView(p, ram, 272);
     assert(WsShadowHasTileProvider(0));
+    /* A camera above Y=0 wraps in the PPU's 10-bit scroll register. The
+     * next-frame camera may already be zero: use it only to select the
+     * 1024-pixel period, preserving the live raster's fine scroll. */
+    word(0x93b0 + 2, 1); word(0x9bb0 + 2, 200);
+    word(0x13000 + 110, 0x1234);
+    p->vScroll[0] = 1023;
+    assert(WsShadowResolveTile8x8(0, -8, 1039, 460, 0, 0) == 0x1234);
+    assert(WsShadowResolveTile8x8(0, -8, 1023, 460, 0, 0xffff) == 0);
+    p->vScroll[0] = 0;
+    p->vScroll[1] = 1023;
+    word(0x19800 + 110, 0x2345);
+    assert(WsShadowResolveTile8x8(1, -8, 1039, 460, 0, 0) == 0x2345);
+    p->vScroll[1] = 0;
+    /* Likewise recover wrapped negative X, without treating valid positive
+     * scrolls above 511 as negative. Support origins beyond one PPU period. */
+    word(0x86, 0);
+    word(0x13000 + 62, 0x3456); /* row 1, column 32 */
+    assert(WsShadowResolveTile8x8(0, 264, 8, 1023, 0, 0xffff) == 0x3456);
+    word(0x86, 1024);
+    word(0x13000 + 252, 0x4567); /* row 1, column 127 */
+    assert(WsShadowResolveTile8x8(0, -8, 8, 0, 0, 0) == 0x4567);
+    word(0x86, 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 272);
+    word(0x86, 600);
+    word(0x13000 + 146, 0x5678); /* row 1, column 74 */
+    assert(WsShadowResolveTile8x8(0, -8, 8, 600, 0, 0) == 0x5678);
+    word(0x86, 0);
     /* Live raster scroll 460/196; WRAM's pending camera is deliberately 0. */
     assert(WsShadowResolveTile8x8(0, -8, 196, 460, 0, 0xabcd) == 0x1234);
     /* Preserve whole tiles straddling either original edge without history. */
@@ -45,6 +73,7 @@ int main(void)
     assert(WsShadowResolveTile8x8(0, -8, 196, 460, 0, 0x6789) == 0x6789);
     KdcPrepareCourseView(p, ram, 43);
     assert(p->wsLayerClamp == 1);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 43) == 0);
     KdcPrepareCourseView(p, ram, 0);
     assert(!WsShadowHasTileProvider(0));
     p->bgXsc[0] = 0x51;
