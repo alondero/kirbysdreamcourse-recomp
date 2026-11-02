@@ -22,6 +22,14 @@ static int TileCoordinate(int pixel)
     return pixel >= 0 ? pixel / 8 : -((-pixel + 7) / 8);
 }
 
+static int CourseScroll(uint16_t raster, uint16_t camera)
+{
+    /* PPU scroll registers retain only ten bits. WRAM selects the world
+     * period, but may stage the next frame: keep all ten live raster bits. */
+    int origin = (int16_t)camera;
+    return origin + (int)(((unsigned)raster - (unsigned)origin + 512) & 1023) - 512;
+}
+
 static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
                             uint16_t scroll_x, uint16_t native_tile, void *context)
 {
@@ -31,9 +39,11 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
      * their hardware source during the effect instead of changing a group. */
     if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
         return native_tile;
-    /* Use the raster's scroll, never next-frame WRAM camera staging. */
-    int x = (int16_t)scroll_x + screen_x;
-    int y = (int16_t)(uint16_t)scrolled_y;
+    /* Keep live raster fine scroll; WRAM only disambiguates its period. */
+    int x = CourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;
+    int raster_y = source->ppu->vScroll[layer];
+    int y = (int)scrolled_y - raster_y +
+            CourseScroll(raster_y, KdcReadWord(source->ram, 0x88));
     return KdcCourseTile(source->ram, layer, TileCoordinate(x), TileCoordinate(y));
 }
 
@@ -42,6 +52,10 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
     static const uint8_t no_hints[16] = {0};
     view = (CourseView){ppu, ram};
     WsShadowSetTileProvider(3, extra ? CourseTile : NULL, &view);
+    /* In streamed courses BG3 is scenery; the HUD is made of objects.
+     * The runtime otherwise assumes BG3 is a centered status bar. Visible
+     * SNES scanlines start at 1; zero disables the widening policy. */
+    PpuSetWidescreenBg3Widen(ppu, extra && KdcIsCourse(ppu) ? 1 : 0);
     /* This ROM still emits ordinary signed 9-bit OAM coordinates. Do not
      * reinterpret left-edge sprites as right-margin objects, or include
      * hidden left-side objects in the hardware sprite budget. */
