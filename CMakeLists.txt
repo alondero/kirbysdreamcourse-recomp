@@ -39,7 +39,7 @@ if(NOT KDC_LAUNCHER_ROM_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-launcher-with-rom.patch; tools/setup.ps1 includes it")
 endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
-    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/gen_stubs.c)
+    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/gen_stubs.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")
 set(KDC_FUNCTIONS_DIR "${CMAKE_SOURCE_DIR}/recomp" CACHE PATH "Local generated function declarations")

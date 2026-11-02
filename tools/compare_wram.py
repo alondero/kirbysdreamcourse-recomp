@@ -48,6 +48,8 @@ def main():
             manifest = json.loads((directory.parent / 'run.json').read_text(encoding='utf-8-sig'))
             if manifest.get('initial_state_sha256') is not None:
                 raise SystemExit(f'Host initial save state is not supported by this comparator: {directory}')
+            if manifest.get('dev_start') is not None:
+                raise SystemExit(f'Developer hole starts do not match a reference boot recording: {directory}')
             expected_sram = (hashlib.sha256(bytes(8192)).hexdigest()
                              if args.expect_sram_sha256 == 'zero' else args.expect_sram_sha256.lower())
             if (manifest.get('completed') is not True or manifest.get('frames') != input_recording['frames']

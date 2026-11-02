@@ -42,6 +42,23 @@ The included ROM-free input and comparison tests can be run with `python -m unit
 
 For source-built SPC/DSP differential tests and the optional APU queue-boundary experiment, see [APU timing and audio checks](docs/apu-accuracy.md).
 
+## Start directly on a hole
+
+After building, use the developer shortcut to skip the menus:
+
+```powershell
+./tools/play_experimental.ps1 -DevHole normal:3:7
+./tools/play_experimental.ps1 -DevHole extra:8:8
+./tools/play_experimental.ps1 -DevHole multi:2:4
+./tools/play_experimental.ps1 -DevHole multi-extra:4:8
+./tools/play_experimental.ps1 -DevHole demo:2
+./tools/play_experimental.ps1 -DevHole map:160
+```
+
+Course and hole numbers start at 1. `demo:1` through `demo:4` select the attract-mode holes with human controls. `map:0` through `map:255` expose every ROM map-table slot, including unused and shared data; add `-DevTwoPlayer` to play a raw slot with two players. Some unused slots contain incomplete or placeholder layouts. Use `-DevHoleList` for syntax and `-Fallback` for interpreter testing.
+
+The script stores developer saves and settings in `local/dev-play`, separately from ordinary play. **Ctrl+R** restarts on the selected hole. See [developer starts](docs/dev-start.md) for raw-slot ranges, executable arguments, headless captures and validation limits.
+
 ## Widescreen
 
 Enable **Adaptive widescreen** on the launcher's **Mods** page, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. It can be changed during play. Resize the window or use Alt+Return for fullscreen. The view follows the window's aspect ratio, including ultrawide displays, while retaining the original pixel proportions. A 4:3 window still shows the original width with the default 4:3 pixel aspect. Widescreen is off by default.
