@@ -59,6 +59,8 @@ Course and hole numbers start at 1. `demo:1` through `demo:4` select the attract
 
 The script stores developer saves and settings in `local/dev-play`, separately from ordinary play. **Ctrl+R** restarts on the selected hole. See [developer starts](docs/dev-start.md) for raw-slot ranges, executable arguments, headless captures and validation limits.
 
+The [hole ID reference](docs/hole-ids.md) maps all 256 slots to their known courses and explains how to generate a local screenshot gallery from your ROM.
+
 ## Widescreen
 
 Enable **Adaptive widescreen** on the launcher's **Mods** page, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. It can be changed during play. Resize the window or use Alt+Return for fullscreen. The view follows the window's aspect ratio, including ultrawide displays, while retaining the original pixel proportions. A 4:3 window still shows the original width with the default 4:3 pixel aspect. Widescreen is off by default.
