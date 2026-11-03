@@ -13,6 +13,8 @@ Build with `tools/setup.ps1`, then launch with `tools/play_experimental.ps1 -Dev
 
 Raw ranges 160-191 and 224-255 are outside the ordinary course selections. A slot is an index into the ROM's tables, not a guarantee of a distinct or complete hole. Several entries share map headers or placeholder terrain. Slot 184 is explicitly selected by the game's opening-sequence routine at `$87E572`; loading its data through the playable-hole loader does not reproduce that cinematic's special setup. Use raw slots to inspect/test the layouts, without assuming normal completion is possible.
 
+The [hole ID reference](hole-ids.md) lists the known correspondence for every slot and explains how to generate a local screenshot gallery.
+
 The demo selections come from the four attract records referenced at `$83DB10`: normal Course 1 Hole 1, normal Course 6 Hole 3, normal Course 6 Hole 5, and extra Course 2 Hole 6. They load those holes for a human player; they do not replay the attract input or its recorded health, RNG and shot state.
 
 ## Invocation and saves
