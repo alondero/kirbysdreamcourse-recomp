@@ -36,11 +36,16 @@ class LauncherSettingsTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     args = [str(executable), str(rom), hashlib.sha256(data).hexdigest(),
                             str(headered), str(modified)]
-                    result = subprocess.run(args, capture_output=True, text=True)
+                    result = subprocess.run(args, capture_output=True, text=True, cwd=directory)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual((Path(directory) / 'kdc-widescreen.cfg').read_text().strip(), '21:9')
+                    reloaded = subprocess.run(args + ['reload', 'check'], capture_output=True,
+                                              text=True, cwd=directory)
+                    self.assertEqual(reloaded.returncode, 0, reloaded.stdout + reloaded.stderr)
+                    (Path(directory) / 'kdc-widescreen.cfg').unlink()
                     # A wrong expected hash must fail even in a release build.
                     args[2] = '0' * 64
-                    result = subprocess.run(args, capture_output=True, text=True)
+                    result = subprocess.run(args, capture_output=True, text=True, cwd=directory)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn('CHECK failed', result.stderr)
                     # Closing an in-session launcher ignores a refused commit;
@@ -48,7 +53,7 @@ class LauncherSettingsTest(unittest.TestCase):
                     args[2] = hashlib.sha256(data).hexdigest()
                     args.append('remove-before-commit')
                     rom.write_bytes(data)
-                    result = subprocess.run(args, capture_output=True, text=True)
+                    result = subprocess.run(args, capture_output=True, text=True, cwd=directory)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn('Launcher feature settings were not applied:', result.stderr)
                     self.assertIn('headerless 1 MiB', result.stderr)

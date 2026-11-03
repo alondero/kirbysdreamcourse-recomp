@@ -58,6 +58,9 @@ static void PrepareWideFrame(int drawable_w, int drawable_h, int *width, int *he
         return;
     }
     double aspect = drawable_h > 0 ? (double)drawable_w / drawable_h : 4.0 / 3.0;
+    static const double ratios[] = {0.0, 16.0 / 9.0, 21.0 / 9.0, 32.0 / 9.0};
+    int selected = KdcWidescreenAspect();
+    if (selected) aspect = ratios[selected];
     *width = SnesDisplayAspect_ComputeAdaptiveFrame(
         256, 224, kPpuBufWidth, aspect,
         SnesDisplayAspect_Clamp(g_config.display_aspect)).width;

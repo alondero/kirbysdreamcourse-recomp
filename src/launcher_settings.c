@@ -13,9 +13,27 @@
 typedef struct {
     bool *widescreen;
     int pending_widescreen;
+    int pending_aspect;
     const char *expected_rom_hash;
     const char *last_error;
 } KdcLauncherSettingsState;
+
+static const char *const aspect_values[] = {"auto", "16:9", "21:9", "32:9"};
+static int aspect = -1;
+
+int KdcWidescreenAspect(void)
+{
+    if (aspect < 0) {
+        char value[32] = {0};
+        FILE *file = fopen("kdc-widescreen.cfg", "r");
+        if (file) { (void)fgets(value, sizeof(value), file); fclose(file); }
+        value[strcspn(value, "\r\n")] = 0;
+        aspect = 0;
+        for (int i = 1; i < 4; ++i)
+            if (!strcmp(value, aspect_values[i])) aspect = i;
+    }
+    return aspect;
+}
 
 void KdcConfigureLauncher(struct RecompLauncherCGameInfo *info)
 {
@@ -62,13 +80,14 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
     snprintf(out->package_version, sizeof(out->package_version), "1.0.0");
     snprintf(out->package_name, sizeof(out->package_name), "Kirby's Dream Course presentation");
-    snprintf(out->name, sizeof(out->name), "Adaptive widescreen");
+    snprintf(out->name, sizeof(out->name), "Widescreen");
     snprintf(out->group, sizeof(out->group), "Display");
     snprintf(out->description, sizeof(out->description),
-             "Show extra course terrain to fit the window or fullscreen display. "
+             "Show extra course terrain using the selected view aspect. "
              "Preserves pixel proportions and the centered HUD. Distant sprites "
              "still follow the original game's visibility rules.");
     out->enabled = state->pending_widescreen;
+    out->option_count = 1;
     out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
     return 1;
 }
@@ -81,19 +100,42 @@ static int EnableFeature(void *ctx, const char *package, const char *feature, in
     return 1;
 }
 
-/* recomp-ui requires the complete feature callback group even when a
- * feature has no options. Missing callbacks select its legacy package UI. */
 static int GetOption(void *ctx, const char *package, const char *feature,
                      int index, RecompLauncherCModOption *out)
 {
-    (void)ctx; (void)package; (void)feature; (void)index; (void)out;
-    return 0;
+    const KdcLauncherSettingsState *state = ctx;
+    if (!IsFeature(package, feature) || index != 0 || !out) return 0;
+    *out = (RecompLauncherCModOption){0};
+    snprintf(out->id, sizeof(out->id), "aspect");
+    snprintf(out->label, sizeof(out->label), "View aspect");
+    snprintf(out->description, sizeof(out->description), "Automatic follows the window; a fixed ratio letterboxes when needed. Pixel aspect remains independent.");
+    snprintf(out->value, sizeof(out->value), "%s", aspect_values[state->pending_aspect]);
+    snprintf(out->default_value, sizeof(out->default_value), "auto");
+    out->type = RECOMP_MOD_OPTION_CHOICE;
+    out->choice_count = 4;
+    return 1;
+}
+
+static int GetChoice(void *ctx, const char *package, const char *feature,
+                     const char *option, int index, RecompLauncherCModChoice *out)
+{
+    (void)ctx;
+    if (!IsFeature(package, feature) || !option || strcmp(option, "aspect") ||
+        index < 0 || index >= 4 || !out) return 0;
+    *out = (RecompLauncherCModChoice){0};
+    snprintf(out->value, sizeof(out->value), "%s", aspect_values[index]);
+    snprintf(out->label, sizeof(out->label), "%s", index ? aspect_values[index] : "Automatic");
+    return 1;
 }
 
 static int SetOption(void *ctx, const char *package, const char *feature,
                      const char *option, const char *value)
 {
-    (void)ctx; (void)package; (void)feature; (void)option; (void)value;
+    KdcLauncherSettingsState *state = ctx;
+    if (!IsFeature(package, feature) || !option || strcmp(option, "aspect") || !value) return 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!strcmp(value, aspect_values[i])) { state->pending_aspect = i; return 1; }
+    }
     return 0;
 }
 
@@ -132,6 +174,22 @@ static int Commit(void *ctx, const char *rom)
         fprintf(stderr, "Launcher feature settings were not applied: %s\n", state->last_error);
         return 0;
     }
+    if (state->pending_aspect != KdcWidescreenAspect()) {
+        FILE *file = fopen("kdc-widescreen.cfg", "w");
+        if (!file) {
+            state->last_error = "Could not save widescreen settings.";
+            fprintf(stderr, "Launcher feature settings were not applied: %s\n", state->last_error);
+            return 0;
+        }
+        int ok = fprintf(file, "%s\n", aspect_values[state->pending_aspect]) > 0;
+        if (fclose(file) != 0) ok = 0;
+        if (!ok) {
+            state->last_error = "Could not save widescreen settings.";
+            fprintf(stderr, "Launcher feature settings were not applied: %s\n", state->last_error);
+            return 0;
+        }
+        aspect = state->pending_aspect;
+    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     *state->widescreen = state->pending_widescreen != 0;
@@ -158,6 +216,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .feature_get = GetFeature,
         .feature_enable = EnableFeature,
         .feature_option_get = GetOption,
+        .feature_choice_get = GetChoice,
         .feature_set_option = SetOption,
     };
     /* One modal launcher at a time: reset this singleton's staged state on
@@ -165,6 +224,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
     state = (KdcLauncherSettingsState){
         .widescreen = widescreen,
         .pending_widescreen = *widescreen,
+        .pending_aspect = KdcWidescreenAspect(),
         .expected_rom_hash = rom_sha256,
     };
     return &provider;

@@ -13,7 +13,8 @@
 
 int main(int argc, char **argv)
 {
-    CHECK(argc == 5 || argc == 6);
+    CHECK(argc == 5 || argc == 6 || argc == 7);
+    if (argc == 7) { CHECK(KdcWidescreenAspect() == 2); return 0; }
     RecompLauncherCGameInfo info = {.has_run_ahead = 1, .has_renderer = 1};
     KdcConfigureLauncher(&info);
     CHECK(!info.has_run_ahead && info.has_renderer && !info.audio_frequency_locked);
@@ -24,6 +25,8 @@ int main(int argc, char **argv)
     const char *rom = argv[1], *hash = argv[2];
     RecompLauncherCModFeature feature;
     RecompLauncherCModPackage package;
+    RecompLauncherCModOption option;
+    RecompLauncherCModChoice choice;
     bool widescreen = false;
     const RecompLauncherCModProvider *provider = KdcLauncherSettings(&widescreen, hash);
     if (argc == 6) {
@@ -43,6 +46,13 @@ int main(int argc, char **argv)
     CHECK(!provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, NULL));
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "invalid", "1"));
     CHECK(provider->feature_count(provider->ctx) == 1);
+    CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
+    CHECK(option.choice_count == 4 && !strcmp(option.value, "auto"));
+    CHECK(provider->feature_choice_get(provider->ctx, "kdc.presentation", "widescreen", "aspect", 2, &choice));
+    CHECK(!strcmp(choice.value, "21:9"));
+    CHECK(!provider->feature_choice_get(provider->ctx, "kdc.presentation", "widescreen", "aspect", 4, &choice));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
+    CHECK(KdcWidescreenAspect() == 0);
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
     CHECK(!feature.enabled);
     CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
@@ -55,13 +65,18 @@ int main(int argc, char **argv)
 
     /* Editing and dismissing a startup launcher must not apply a preview. */
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 1));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
     CHECK(!widescreen);
+    CHECK(KdcWidescreenAspect() == 0);
     provider = KdcLauncherSettings(&widescreen, hash);
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
     CHECK(!feature.enabled);
+    CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
+    CHECK(!strcmp(option.value, "auto"));
 
     /* PLAY/RESUME applies the setting that the host will persist. */
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 1));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
     CHECK(!provider->commit(provider->ctx, "missing.sfc"));
     CHECK(provider->last_error(provider->ctx));
     CHECK(!widescreen);
@@ -70,6 +85,7 @@ int main(int argc, char **argv)
     CHECK(!widescreen);
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(widescreen);
+    CHECK(KdcWidescreenAspect() == 2);
     CHECK(!provider->last_error(provider->ctx));
     provider = KdcLauncherSettings(&widescreen, hash);
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
