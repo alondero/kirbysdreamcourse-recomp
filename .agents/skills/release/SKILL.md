@@ -160,7 +160,7 @@ tags or assets require investigation, never force pushes or blind retries.
 Tag the tested commit and dispatch the implemented workflow explicitly:
 
 ```powershell
-git tag -a <version> <full-sha> -m 'Kirby Dream Course Recomp <version>'
+git tag -a <version> <full-sha> -m "Kirby's Dream Course Recompiled <version>"
 git push origin 'refs/tags/<version>'
 gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref main -f tag=<version> -f publish=true -f prerelease=true
 ```
@@ -177,13 +177,13 @@ The workflow creates an initial notes body and a Windows x64 title. Replace
 the body with the complete prepared UTF-8 notes once the build has passed:
 
 ```powershell
-gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recomp <version> (Windows x64)" --notes-file <notes-path>
+gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recompiled <version> (Windows x64)" --notes-file <notes-path>
 ```
 
 ## 5. Verify the published release
 
 ```powershell
-python .agents/skills/release/scripts/release.py verify --version <version> --target <full-sha> --archive <tested-archive-path> --title "Kirby's Dream Course Recomp <version> (Windows x64)" --prerelease true
+python .agents/skills/release/scripts/release.py verify --version <version> --target <full-sha> --archive <tested-archive-path> --title "Kirby's Dream Course Recompiled <version> (Windows x64)" --prerelease true
 ```
 
 The helper checks the remote tag's peeled commit (including annotated tags),

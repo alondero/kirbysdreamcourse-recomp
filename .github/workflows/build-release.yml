@@ -153,10 +153,14 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $title = "Kirby's Dream Course Recomp $env:RELEASE_TAG (Windows x64)"
+          $title = "Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows x64)"
           $notes = "Experimental Windows x64 EXE build from $env:SOURCE_SHA.`n`nSupply your own headerless Kirby's Dream Course (USA) ROM beside the EXE. The package contains no cartridge ROM, extracted game assets or generated source files. Keep assets/, licenses/ and any DLLs in place. See README.txt and build-info.json in the ZIP. Compatibility limits are documented at the tagged docs/compatibility.md.`n"
           [IO.File]::WriteAllText((Join-Path $PWD 'dist/release-notes.md'), $notes, [Text.UTF8Encoding]::new($false))
-          $flags = if ($env:PRERELEASE -eq 'true') { @('--prerelease', '--latest=false') } else { @('--latest') }
+          # Assign the array directly: an if-expression unrolls a single-element
+          # array into a string, and splatting that string passes one argument
+          # per character instead of one per flag.
+          $flags = @()
+          if ($env:PRERELEASE -eq 'true') { $flags = @('--prerelease', '--latest=false') } else { $flags = @('--latest') }
           gh release create $env:RELEASE_TAG dist/kirbysdreamcourse-recomp-windows-x64.zip --repo $env:GITHUB_REPOSITORY --verify-tag --title $title --notes-file dist/release-notes.md @flags
           if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; inspect remote state before retrying.' }
           python .agents/skills/release/scripts/release.py verify --version $env:RELEASE_TAG --target $env:SOURCE_SHA --archive dist/kirbysdreamcourse-recomp-windows-x64.zip --title $title --prerelease $env:PRERELEASE

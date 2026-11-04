@@ -309,5 +309,59 @@ class ReleaseSkillTests(unittest.TestCase):
             self.stage_fixture(missing_dll=True)
 
 
+class WorkflowPublishTests(unittest.TestCase):
+    """The publish workflow's PowerShell must splat release flags as an array."""
+
+    WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/build-release.yml"
+    SKILL = Path(__file__).resolve().parents[1] / ".agents/skills/release/SKILL.md"
+
+    def release_script(self):
+        """Return the release job's PowerShell lines from the publish workflow."""
+        lines = self.WORKFLOW.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            if "gh release create" not in line:
+                continue
+            start = index
+            while start >= 0 and not lines[start].strip().startswith("run:"):
+                start -= 1
+            block = lines[start + 1: index + 1]
+            indent = min(len(item) - len(item.lstrip()) for item in block if item.strip())
+            return [item[indent:] for item in block]
+        self.fail("The publish workflow no longer creates a release")
+
+    def powershell(self):
+        for name in ("pwsh", "powershell"):
+            found = shutil.which(name)
+            if found:
+                return found
+        self.skipTest("No PowerShell executable is available")
+
+    def test_release_flags_splat_as_an_array(self):
+        # A single-element array assigned from an if-expression is unrolled into
+        # a string by the pipeline; splatting that string passes one argument per
+        # character and fails the publish step. Run the workflow's own flag
+        # selection and check the arguments gh would receive.
+        script = self.release_script()
+        create = next(index for index, line in enumerate(script) if "gh release create" in line)
+        prefix = "\n".join(script[:create])
+        probe = prefix + "\nfunction Show-Args { Write-Output ($args -join '|') }\nShow-Args @flags\n"
+        shell = self.powershell()
+        for prerelease, expected in (("true", "--prerelease|--latest=false"), ("false", "--latest")):
+            with self.subTest(prerelease=prerelease), tempfile.TemporaryDirectory() as temporary:
+                (Path(temporary) / "dist").mkdir()
+                environment = {**os.environ, "PRERELEASE": prerelease,
+                               "RELEASE_TAG": "v0.1.0", "SOURCE_SHA": "a" * 40}
+                result = subprocess.run((shell, "-NoProfile", "-Command", probe), cwd=temporary,
+                                        env=environment, capture_output=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+
+    def test_publish_title_matches_the_documented_title(self):
+        script = "\n".join(self.release_script())
+        self.assertIn("Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows x64)", script)
+        skill = self.SKILL.read_text(encoding="utf-8")
+        self.assertIn("Kirby's Dream Course Recompiled <version> (Windows x64)", skill)
+
+
 if __name__ == "__main__":
     unittest.main()
