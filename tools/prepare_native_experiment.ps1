@@ -2,6 +2,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Rom,
     [Parameter(Mandatory=$true)][string]$CMake,
     [string]$SdlSource = '',
+    [ValidatePattern('^[A-Za-z0-9._+-]+$')][string]$BuildVersion = 'dev',
+    [switch]$ReleaseDefaults,
     [switch]$CurrentStack,
     [switch]$RasterState,
     [switch]$FieldTiming,
@@ -170,6 +172,7 @@ try {
     [Environment]::SetEnvironmentVariable('SNESRECOMP_EMIT_AOT_DENY_GATE', $oldGate)
 }
 $cmakeArgs = @('-S', $root, '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+    "-DKDC_BUILD_VERSION=$BuildVersion", "-DKDC_RELEASE_DEFAULTS=$([int][bool]$ReleaseDefaults)",
     "-DSNESRECOMP_ROOT=$framework", "-DKDC_GENERATED_DIR=$(Join-Path $project 'generated')",
     "-DKDC_FUNCTIONS_DIR=$(Join-Path $project 'recomp')")
 # Prefer the resource compiler paired with the selected GCC over an unrelated

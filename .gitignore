@@ -8,6 +8,7 @@
 *.state
 *.state[0-9]*
 /roms/
+/rom-assets/
 /assets/extracted/
 /generated/
 /src/gen/

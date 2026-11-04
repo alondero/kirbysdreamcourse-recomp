@@ -29,6 +29,7 @@
 #include "game_rtl.h"
 #include "launcher_settings.h"
 #include "dev_start.h"
+#include <stdlib.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
 
@@ -125,6 +126,21 @@ static const SnesDesktopHostGame kGameHost = {
 #endif
 int main(int argc, char **argv)
 {
+#ifdef KDC_RELEASE_DEFAULTS
+    /* Match play_experimental.ps1 for direct release launches. Explicit
+     * environment settings, including interpreter fallback, still win. */
+    const char *names[] = {"SNESRECOMP_APU_BEAM_ELAPSED", "SNESRECOMP_APU_HANDOFF",
+                          "SNESRECOMP_APU_ABSOLUTE_PREANCHOR", "SNESRECOMP_LLE_BOUNCE"};
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (!getenv(names[i])) {
+#ifdef _WIN32
+            _putenv_s(names[i], "1");
+#else
+            setenv(names[i], "1", 0);
+#endif
+        }
+    }
+#endif
     int dev = KdcDevParseArgs(&argc, argv);
     if (dev) return dev < 0 ? 2 : 0;
     return snesrecomp_desktop_main(&kGameHost, argc, argv);

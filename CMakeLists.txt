@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(KirbyDreamCourseRecomp C CXX)
 set(CMAKE_C_STANDARD 11)
+set(KDC_BUILD_VERSION "dev" CACHE STRING "Version recorded in the executable")
+if(NOT KDC_BUILD_VERSION MATCHES "^[A-Za-z0-9._+-]+$")
+    message(FATAL_ERROR "KDC_BUILD_VERSION contains unsupported characters")
+endif()
+option(KDC_RELEASE_DEFAULTS "Use the guarded timing defaults on direct EXE launch" OFF)
 option(KDC_EXPERIMENTAL_STATE "Enable experimental frame-driver save-state support" OFF)
 option(KDC_EXPERIMENTAL_RASTER_STATE "Include raster journal in experimental save states" OFF)
 option(KDC_EXPERIMENTAL_FIELD_STATE "Include experimental beam field state" OFF)
@@ -49,7 +54,10 @@ target_include_directories(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_IN
     ${SNESRECOMP_ROOT}/runner/src/desktop ${CMAKE_SOURCE_DIR}/src ${KDC_FUNCTIONS_DIR})
 target_link_libraries(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_LIBRARIES})
 target_compile_definitions(KirbyDreamCourseRecomp PRIVATE
-    SNES_GAME_VERSION="dev" SNES_GAME_TITLE="Kirby Dream Course")
+    SNES_GAME_VERSION="${KDC_BUILD_VERSION}" SNES_GAME_TITLE="Kirby Dream Course")
+if(KDC_RELEASE_DEFAULTS)
+    target_compile_definitions(KirbyDreamCourseRecomp PRIVATE KDC_RELEASE_DEFAULTS=1)
+endif()
 if(KDC_EXPERIMENTAL_STATE)
     file(STRINGS "${SNESRECOMP_ROOT}/runner/src/beam_frame_driver.h" KDC_BEAM_STATE_API
          REGEX "snes_beam_frame_driver_get_state" LIMIT_COUNT 1)

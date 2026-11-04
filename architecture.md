@@ -47,6 +47,15 @@ Establish a reference emulator and exact version, identical ROM, initial SRAM/re
 
 ## Proposed layout
 
+Release distribution uses the private-input pattern from the Lamborghini and
+AeroGauge projects: a private companion repository supplies the verified ROM
+to an explicitly dispatched CI build, generated game source stays on the
+runner, and the compiled Windows EXE, dependencies and notices form the public
+package. ROMs, extracted game assets and generated source are excluded from
+public commits and artifacts. Players supply their own matching runtime ROM.
+This packaging model does not establish full-game compatibility or change the
+native/interpreter execution strategy.
+
 `recomp/` for game analysis configuration and symbols; `src/` for integration and host code; `tools/` for repeatable generation and validation; `tests/` for small synthetic tests and ROM-dependent scenarios; `docs/` for research and decisions; `build/` and `generated/` for disposable output. Actual paths can follow the selected framework when integrated. Commit scripts, metadata and non-copyrighted fixtures; keep ROMs, extracted assets, generated game-derived output, saves and local recordings out of version control.
 
 ## Open decisions

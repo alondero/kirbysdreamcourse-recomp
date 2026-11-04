@@ -1,0 +1,163 @@
+name: Build & Release
+
+# Private ROM inputs are fetched only on manual dispatch. Generate/compile on
+# the runner; upload only the EXE ZIP. Players still supply their runtime ROM.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (required when publishing)
+        type: string
+        required: false
+      publish:
+        description: Publish a release (false builds the dispatched commit only)
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark the published release experimental
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+      source_sha: ${{ steps.inputs.outputs.source_sha }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout the build target
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, MIT
+        with:
+          ref: ${{ inputs.publish && inputs.tag || github.sha }}
+          persist-credentials: false
+
+      - name: Validate inputs and private asset configuration
+        id: inputs
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ROM_ASSETS_REPO: ${{ vars.ROM_ASSETS_REPO }}
+          ROM_ASSETS_PAT: ${{ secrets.ROM_ASSETS_PAT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:ROM_ASSETS_REPO -or -not $env:ROM_ASSETS_PAT) {
+            throw 'Configure vars.ROM_ASSETS_REPO and read-only secrets.ROM_ASSETS_PAT; see docs/release.md.'
+          }
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot determine build target.' }
+          if ($env:PUBLISH -eq 'true') {
+            if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') {
+              throw 'Publishing requires an existing vMAJOR.MINOR.PATCH[-suffix] tag.'
+            }
+            $tagCommit = git rev-parse "$($env:RELEASE_TAG)^{commit}"
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $source) { throw 'Checkout does not match the requested tag.' }
+            $version = $env:RELEASE_TAG
+          } else {
+            $version = 'v0.0.0-dryrun-' + $source.Substring(0, 12)
+          }
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "source_sha=$source" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Fetch private build inputs
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, MIT
+        with:
+          repository: ${{ vars.ROM_ASSETS_REPO }}
+          token: ${{ secrets.ROM_ASSETS_PAT }}
+          path: rom-assets
+          persist-credentials: false
+
+      - name: Install Windows build tools
+        run: |
+          git config --global core.longpaths true
+          choco install mingw -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'MinGW install failed.' }
+          python -m pip install cmake==4.3.1 ninja==1.13.0
+          if ($LASTEXITCODE -ne 0) { throw 'CMake/Ninja install failed.' }
+          'C:\ProgramData\mingw64\mingw64\bin' | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          python -c "import sysconfig; print(sysconfig.get_path('scripts'))" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Generate, compile and package through the shared script
+        env:
+          BUILD_VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          ./tools/build_release.ps1 -Version $env:BUILD_VERSION -Rom "rom-assets/Kirby's Dream Course (USA).sfc"
+
+      - name: Run ROM-free tests and packaged native/fallback smoke checks
+        env:
+          BUILD_VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'ROM-free regression tests failed.' }
+          python .agents/skills/release/scripts/release.py smoke-windows --archive "local/releases/$env:BUILD_VERSION/kirbysdreamcourse-recomp-windows-x64.zip" --rom "rom-assets/Kirby's Dream Course (USA).sfc"
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged EXE smoke checks failed.' }
+
+      - name: Remove private inputs and generated source
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\') + '\'
+          foreach ($relative in @('rom-assets', 'local/guarded')) {
+            $target = [IO.Path]::GetFullPath((Join-Path $workspace $relative))
+            if (-not $target.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Private-input cleanup target escaped the workspace.'
+            }
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+          }
+
+      - name: Upload only the binary ZIP
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4, MIT
+        with:
+          name: kirbysdreamcourse-recomp-windows-x64
+          path: local/releases/${{ steps.inputs.outputs.version }}/kirbysdreamcourse-recomp-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build-windows
+    if: inputs.publish
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout the exact built commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, MIT
+        with:
+          ref: ${{ needs.build-windows.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Download the tested binary ZIP
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4, MIT
+        with:
+          name: kirbysdreamcourse-recomp-windows-x64
+          path: dist
+
+      - name: Publish and verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-windows.outputs.version }}
+          SOURCE_SHA: ${{ needs.build-windows.outputs.source_sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $title = "Kirby's Dream Course Recomp $env:RELEASE_TAG (Windows x64)"
+          $notes = "Experimental Windows x64 EXE build from $env:SOURCE_SHA.`n`nSupply your own headerless Kirby's Dream Course (USA) ROM beside the EXE. The package contains no cartridge ROM, extracted game assets or generated source files. Keep assets/, licenses/ and any DLLs in place. See README.txt and build-info.json in the ZIP. Compatibility limits are documented at the tagged docs/compatibility.md.`n"
+          [IO.File]::WriteAllText((Join-Path $PWD 'dist/release-notes.md'), $notes, [Text.UTF8Encoding]::new($false))
+          $flags = if ($env:PRERELEASE -eq 'true') { @('--prerelease', '--latest=false') } else { @('--latest') }
+          gh release create $env:RELEASE_TAG dist/kirbysdreamcourse-recomp-windows-x64.zip --repo $env:GITHUB_REPOSITORY --verify-tag --title $title --notes-file dist/release-notes.md @flags
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; inspect remote state before retrying.' }
+          python .agents/skills/release/scripts/release.py verify --version $env:RELEASE_TAG --target $env:SOURCE_SHA --archive dist/kirbysdreamcourse-recomp-windows-x64.zip --title $title --prerelease $env:PRERELEASE
+          if ($LASTEXITCODE -ne 0) { throw 'Published release verification failed.' }
