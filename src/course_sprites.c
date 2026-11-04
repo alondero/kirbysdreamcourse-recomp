@@ -272,7 +272,7 @@ void KdcInitializeSprites(void)
 
 static void PrepareLine(Ppu *ppu, int line, void *context)
 {
-    (void)context;
+    const uint8_t *ram = context;
     static const uint8_t sizes[8][2] = {
         {8,16}, {8,32}, {8,64}, {16,32}, {16,64}, {32,64}, {16,32}, {16,32}
     };
@@ -284,14 +284,16 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     PpuSetExtraObjectMargins(ppu, true);
     unsigned count = 0, order = 0;
     const uint16_t *vram = PpuRenderVram(ppu);
+    int camera_x = KdcCourseScroll(ppu->hScroll[0], KdcReadWord(ram, 0x86));
+    int camera_y = KdcCourseScroll(ppu->vScroll[0], KdcReadWord(ram, 0x88));
     for (unsigned bucket = 0; bucket < 10; ++bucket) {
         for (unsigned i = 0; i < displayed.count; ++i) {
             const Piece *piece = &displayed.pieces[i];
             if (piece->bucket != bucket) continue;
             ++order;
             int size = sizes[PPU_objSize(ppu)][piece->large];
-            int x = (int16_t)(piece->world_x - (int16_t)ppu->hScroll[0]);
-            int y = (int16_t)(piece->world_y - (int16_t)ppu->vScroll[0]);
+            int x = (int16_t)(piece->world_x - camera_x);
+            int y = (int16_t)(piece->world_y - camera_y);
             int row = line - y;
             if (row < 0 || row >= size || x >= 256 + ppu->extraRightCur ||
                 x + size <= -ppu->extraLeftCur || (x >= 0 && x + size <= 256)) continue;
@@ -328,14 +330,14 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     PpuSetExtraObjects(ppu, objects, count);
 }
 
-void KdcPrepareSprites(Ppu *ppu, int extra)
+void KdcPrepareSprites(Ppu *ppu, const uint8_t *ram, int extra)
 {
     left_pixels = right_pixels = 0;
     recovered_left = recovered_right = 0;
     PpuSetExtraObjects(ppu, NULL, 0);
     const char *enabled = getenv("KDC_SPRITE_VIEW");
     if (enabled && !strcmp(enabled, "0")) extra = 0;
-    PpuSetExtraObjectProvider(ppu, extra ? PrepareLine : NULL, NULL);
+    PpuSetExtraObjectProvider(ppu, extra ? PrepareLine : NULL, (void *)ram);
 }
 
 void KdcResetSprites(Ppu *ppu)
@@ -343,7 +345,7 @@ void KdcResetSprites(Ppu *ppu)
     memset(&building, 0, sizeof(building));
     memset(&displayed, 0, sizeof(displayed));
     request_count = 0;
-    if (ppu) KdcPrepareSprites(ppu, 0);
+    if (ppu) KdcPrepareSprites(ppu, NULL, 0);
 }
 
 void KdcReportSprites(int frame)

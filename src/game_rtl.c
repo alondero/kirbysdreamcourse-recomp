@@ -118,7 +118,7 @@ void GameDrawPpuFrame(void)
      * full buffer-supported budget here, including very wide displays. */
     PpuSetExtraSpace(g_snes->ppu, g_ws_extra);
     KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
-    KdcPrepareSprites(g_snes->ppu, g_ws_extra);
+    KdcPrepareSprites(g_snes->ppu, g_ram, g_ws_extra);
     snes_beam_frame_driver_draw_ppu_frame();
     KdcReportSprites(snes_frame_counter);
 }

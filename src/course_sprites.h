@@ -11,7 +11,7 @@ struct Ppu;
 void KdcObserveSprites(const struct CpuState *cpu, uint32_t pc);
 void KdcInitializeSprites(void);
 void KdcResetSprites(struct Ppu *ppu);
-void KdcPrepareSprites(struct Ppu *ppu, int extra);
+void KdcPrepareSprites(struct Ppu *ppu, const uint8_t *ram, int extra);
 void KdcReportSprites(int frame);
 
 #endif
