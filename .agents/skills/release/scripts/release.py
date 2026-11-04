@@ -131,6 +131,8 @@ def source_package(args):
 
 def windows_files(stage, target, tag):
     """Check binary staging; generated source and ROM inputs remain private."""
+    # Resolve the root too: Windows TEMP may use an 8.3 alias such as RUNNER~1.
+    stage = stage.resolve(strict=True)
     required = NOTICES | {"KirbyDreamCourseRecomp.exe", "README.txt", "build-info.json"}
     files = []
     names = set()

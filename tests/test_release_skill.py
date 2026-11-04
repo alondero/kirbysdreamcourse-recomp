@@ -1,10 +1,11 @@
 """ROM-free checks for Windows/source packaging and release verification."""
 
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -191,6 +192,37 @@ class ReleaseSkillTests(unittest.TestCase):
             self.assertTrue(release.NOTICES.issubset(names))
             with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
                 release.windows_package(args)
+
+    def test_windows_stage_accepts_a_relative_directory(self):
+        self.windows_stage()
+        with chdir(self.root):
+            files = release.windows_files(Path("windows-stage"), self.target, self.tag)
+        self.assertTrue(any(file.name == "KirbyDreamCourseRecomp.exe" for file in files))
+
+    @unittest.skipUnless(os.name == "nt", "Windows short-path aliases only")
+    def test_windows_stage_accepts_an_83_alias(self):
+        import ctypes
+        stage = self.windows_stage()
+        buffer = ctypes.create_unicode_buffer(32768)
+        count = ctypes.windll.kernel32.GetShortPathNameW(str(stage), buffer, len(buffer))
+        if not count or count >= len(buffer):
+            self.skipTest("No Windows short-path alias is available")
+        short = Path(buffer.value)
+        if short == stage.resolve():
+            self.skipTest("8.3 aliases are disabled for the test directory")
+        files = release.windows_files(short, self.target, self.tag)
+        self.assertTrue(any(file.name == "KirbyDreamCourseRecomp.exe" for file in files))
+
+    def test_windows_stage_still_rejects_a_link_inside_the_stage(self):
+        stage = self.windows_stage()
+        outside = self.root / "outside"
+        outside.mkdir()
+        try:
+            (stage / "assets/external").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("Creating a directory symlink is not available")
+        with self.assertRaisesRegex(ValueError, "Links are not permitted"):
+            release.windows_files(stage, self.target, self.tag)
 
     def test_windows_stage_rejects_game_data_and_session_settings(self):
         stage = self.windows_stage()
