@@ -119,6 +119,55 @@ int main(void)
     }
     KdcPrepareCourseView(p, ram, 0);
     assert(PpuWidescreenLayerExtra(p, 2, 1, 43) == 0);
+    /* Real 4bpp composition: a conspicuous synthetic frame occupies the
+     * native title/intro maps. Only clean decorative tiles may reach the
+     * margins; tiles straddling a native edge must remain authentic. */
+    p->bgmode = 9;
+    p->screenEnabled[0] = 2;
+    p->vScroll[1] = 0;
+    for (int y = 0; y < 8; ++y) {
+        p->vram[16 + y] = 0xffff; /* Frame: colour 3. */
+        p->vram[24 + y] = 0;
+        p->vram[32 + y] = 0x00ff; /* Wallpaper: colour 1. */
+        p->vram[40 + y] = 0;
+    }
+    for (int scene = 0; scene < 2; ++scene) {
+        unsigned map = scene ? 0x5800 : 0x4800;
+        p->bgXsc[0] = scene ? 0x50 : 0x40;
+        p->bgXsc[1] = scene ? 0x58 : 0x48;
+        p->bgXsc[2] = scene ? 0x3c : 0x58;
+        p->bgTileAdr = scene ? 0x400 : 0x500;
+        for (unsigned row = 0; row < 32; ++row)
+            for (unsigned col = 0; col < 32; ++col) {
+                bool frame = scene ? col >= 2 && col <= 29 && row >= 2 && row <= 20 :
+                                     row >= 1 && row <= 16;
+                p->vram[map + row * 32 + col] = frame ? 1 : 2;
+            }
+        for (unsigned i = 0; i < sizeof(widths) / sizeof(widths[0]); ++i) {
+            int extra = widths[i];
+            PpuSetExtraSpace(p, extra);
+            for (int scroll = 0; scroll < 8; ++scroll) {
+                p->hScroll[1] = scroll;
+                for (int y = 1; y <= 224; ++y) {
+                    PpuPixelPrioBufs original, decorated;
+                    WsShadowSetTileProvider(0, NULL, NULL);
+                    ClearBackdrop(p, &original);
+                    PpuDrawBackground_4bpp(p, &original, y, false, 1, 0xb100, 0x7100);
+                    KdcPrepareCourseView(p, ram, extra);
+                    ClearBackdrop(p, &decorated);
+                    PpuDrawBackground_4bpp(p, &decorated, y, false, 1, 0xb100, 0x7100);
+                    assert(memcmp(original.data + kPpuExtraLeftRight,
+                                  decorated.data + kPpuExtraLeftRight,
+                                  256 * sizeof(PpuZbufType)) == 0);
+                    for (int x = -extra; x < 256 + extra; ++x) {
+                        int tile_start = x - (((unsigned)x + scroll) & 7);
+                        if (tile_start < 256 && tile_start + 8 > 0) continue;
+                        assert(decorated.data[kPpuExtraLeftRight + x] == 0x7101);
+                    }
+                }
+            }
+        }
+    }
     free(p);
     return 0;
 }
