@@ -42,7 +42,7 @@ int main(void)
     assert(PpuDecodeOamX(p, 0) == -8);
     assert(PpuWidescreenOamLeftHintAllows(p, 0, -8, 16, 272));
     assert(!PpuWidescreenOamLeftHintAllows(p, 0, -256, 16, 272));
-    /* Course BG3 is decorative scenery, not the object-based HUD. Exercise
+    /* Course BG3 combines decorative scenery and HUD tiles. Exercise
      * the real 2bpp drawer at both margins without changing center pixels. */
     p->bgmode = 9;
     p->bgXsc[0] = 0x51;
@@ -81,6 +81,40 @@ int main(void)
                 assert(actual.data[kPpuExtraLeftRight + x] ==
                        (native ? 0x7103 : 0x7101));
             }
+        }
+    }
+    /* Non-tileable asymmetric artwork: every reflected pixel must match
+     * its partner in the clean native strip, not the opposite map edge.
+     * Include pre-flipped tiles, palette and vertical-flip attributes. */
+    for (int i = 0; i < 1024; ++i) {
+        uint16_t tile = (3 + (i & 31)) | ((i & 3) << 10) |
+                        ((i & 1) ? 0xc000 : 0);
+        p->vram[0x3c00 + i] = tile;
+        ram[0xdadc + 2 * i] = tile;
+        ram[0xdadc + 2 * i + 1] = tile >> 8;
+    }
+    for (int tile = 3; tile < 35; ++tile)
+        for (int y = 0; y < 8; ++y)
+            p->vram[0x4000 + tile * 8 + y] = (uint16_t)(tile * 1937 + y * 257);
+    for (int scroll = 0; scroll < 1024; scroll += 17) {
+        PpuPixelPrioBufs original, reflected;
+        p->hScroll[2] = scroll;
+        PpuSetExtraSpace(p, 272);
+        WsShadowSetTileProvider(0, NULL, NULL);
+        PpuSetWidescreenBg3Widen(p, 1);
+        ClearBackdrop(p, &original);
+        PpuDrawBackground_2bpp(p, &original, 73, false, 2, 0xb100, 0x7100);
+        KdcPrepareCourseView(p, ram, 272);
+        ClearBackdrop(p, &reflected);
+        PpuDrawBackground_2bpp(p, &reflected, 73, false, 2, 0xb100, 0x7100);
+        int left = -(scroll & 7);
+        int span = (scroll & 7) ? 264 : 256;
+        for (int x = -272; x < 528; ++x) {
+            int offset = (x - left) % (2 * span);
+            if (offset < 0) offset += 2 * span;
+            int source = left + (offset < span ? offset : 2 * span - 1 - offset);
+            assert(reflected.data[kPpuExtraLeftRight + x] ==
+                   original.data[kPpuExtraLeftRight + source]);
         }
     }
     KdcPrepareCourseView(p, ram, 0);

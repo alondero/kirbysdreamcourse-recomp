@@ -34,10 +34,19 @@ int main(void)
         for (int x = -272; x < 528; ++x) {
             unsigned row = 1023;
             int chunk = 8 - (((unsigned)x + scroll) & 7);
-            uint16_t expected = x < 256 && x + chunk > 0 ? 0x1234 :
-                (uint16_t)(0xa400 | 31 * 32 | ((((unsigned)x + scroll) >> 3) & 31));
-            assert(WsShadowResolveTile8x8(2, x, row, scroll, 0, 0x1234) == expected);
+            if (x < 256 && x + chunk > 0)
+                assert(WsShadowResolveTile8x8(2, x, row, scroll, 0, 0x1234) == 0x1234);
+
         }
+    }
+    const struct { int x, column; bool flip; } seams[] = {
+        {-264, 31, false}, {-256, 31, true}, {-8, 0, true},
+        {256, 31, true}, {504, 0, true}, {512, 0, false},
+    };
+    for (unsigned i = 0; i < sizeof(seams) / sizeof(seams[0]); ++i) {
+        uint16_t tile = 0xa400 | (22 * 32 + seams[i].column);
+        assert(WsShadowResolveTile8x8(2, seams[i].x, 176, 0, 0, 0x1234) ==
+               (tile ^ (seams[i].flip ? 0x4000 : 0)));
     }
     p->bgXsc[2] = 0x40; /* Unrecognised map: leave hardware data alone. */
     assert(WsShadowResolveTile8x8(2, -8, 8, 0, 0, 0x1234) == 0x1234);

@@ -41,15 +41,27 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
         return native_tile;
     if (layer == 2) {
         /* USA course scenery: the decompressed 32x32 map survives in WRAM
-         * before the HUD is composited into VRAM. Repeat that clean map,
-         * not the HUD-bearing display map. Keep live raster scroll/palette. */
+         * before the HUD is composited into VRAM. Its opposite edges do
+         * not join. Reflect the clean visible strip at its tile boundaries
+         * instead, preserving the native tiles and live raster phase. */
         if (source->ppu->bgXsc[2] != 0x3c ||
             PPU_bgTileAdr(source->ppu, 2) != 0x4000 ||
             PPU_bigTiles(source->ppu, 2)) return native_tile;
-        unsigned column = ((unsigned)scroll_x + (unsigned)screen_x) >> 3;
+        /* Fine scroll exposes 33 tiles rather than 32. Reflect outside
+         * those complete tiles so a native-edge chunk never changes.
+         * The period is independent of the requested viewport width. */
+        int fine = scroll_x & 7;
+        int columns = fine ? 33 : 32;
+        int phase = TileCoordinate(screen_x + fine) % (2 * columns);
+        if (phase < 0) phase += 2 * columns;
+        bool reflected = phase >= columns;
+        unsigned column = (scroll_x >> 3) +
+            (reflected ? 2 * columns - 1 - phase : phase);
         unsigned row = scrolled_y >> 3;
-        return KdcReadWord(source->ram,
+        uint16_t tile = KdcReadWord(source->ram,
                           0xdadc + 2 * ((row & 31) * 32 + (column & 31)));
+        /* Toggle, rather than set: source artwork already uses flips. */
+        return tile ^ (reflected ? 0x4000 : 0);
     }
     /* Keep live raster fine scroll; WRAM only disambiguates its period. */
     int x = CourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;

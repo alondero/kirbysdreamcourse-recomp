@@ -120,9 +120,9 @@ The USA ROM retains a complete 32x32 scenery tilemap at WRAM `$7E:DADC`
 through `$7E:E2DB`. The display tilemap at VRAM word `$3C00` combines this
 scenery with the HUD panel. Widening that display map repeated the panel in
 both margins. The source buffer contains the actual scenery underneath it:
-no painting, mirrored screen edges, image stretching, or extracted asset pack
-is needed. Repeating the clean map preserves the original pattern, tile flips,
-palette selection and priority at any requested margin width.
+no extracted asset pack is needed. The initial implementation repeated this
+clean map, preserving its tiles and palette but exposing mismatched artwork
+edges. The reflected extension below supersedes that repetition.
 
 `CourseTile` now supplies BG3 from this clean buffer when the live course
 signature, map `$3C` and character base `$4000` match. BG1/BG2 retain their
@@ -152,8 +152,8 @@ ROM-free tests exercise the real 2bpp drawer at margins 1, 43, 96, 213 and
 viewport boundaries. The provider fixture covers wrapped rows, negative X,
 source tile attributes, unsupported signatures and the separate terrain path.
 
-This uses the artwork's original 256-pixel repeating motif rather than
-inventing unique panoramic landmarks. Automatic sizing accepts arbitrary
+The initial version reused a 256-pixel motif rather than inventing unique
+panoramic landmarks; its edge mismatch prompted the correction below. Automatic sizing accepts arbitrary
 window ratios within the existing 800-column raster capacity; larger ratios
 are letterboxed, and narrow windows retain the native field. Mosaic effects
 still use the native tile source, including its HUD, during the effect.
@@ -195,3 +195,66 @@ reference divergence at host 15/reference 16. These samples do not establish
 all holes, course changes, menu/ending scenes, mosaic effects, live resizing,
 or save/load transitions. The clean map's address and scene signature remain
 USA-game-specific assumptions, not generic SNES hardware behavior.
+
+
+## Continuous reflected scenery (2026-11-04)
+
+The clean map is a complete image, not a seamless texture. The first version's
+modulo-32 lookup joined unrelated left/right edges, cutting through clouds and
+cliffs. A user screenshot exposed the mistake that center-preservation tests
+could not catch. Decoded source-map previews reproduce the same discontinuity
+without the PPU; this identifies the artwork boundary rather than scroll math
+or HUD reconstruction as the cause.
+
+The margin lookup now reflects the visible clean tile strip back and forth.
+At a reflection boundary, the adjoining pixels come from the same edge of the
+same source tile, in opposite directions. Existing horizontal flips are XORed
+with the reflection flip; palette, priority and vertical-flip bits survive.
+There is no filtering, color blending, stretched edge column or generated art.
+The map is still read live from WRAM and the usual PPU renders the tiles.
+
+The protected strip comprises 32 tiles at aligned horizontal scroll, or all
+33 partially visible tiles under fine scroll. Reflection starts beyond those
+complete tiles. This keeps the authentic native-edge chunks untouched while
+joining their adjacent clean scenery with matching pixels. The strip follows
+the live scroll and its period is independent of viewport width, so resizing
+does not choose a different panorama. With aligned scroll the period is 512
+pixels; fine-scroll phases use 528 pixels. This is a presentation choice for
+this game's scenery, not an emulated SNES wrap rule.
+
+Reflection removes the hard cuts but can create symmetric or paired landmarks.
+It is not a uniquely painted panorama. Large course motifs in particular can
+make that symmetry apparent. A future art-directed extension would need newly
+authored scenery and a suitable local asset pipeline; this change deliberately
+uses only the player's original tiles. The existing menu, mosaic, raster-width
+and unqualified-transition limits still apply.
+
+A new real-PPU regression uses asymmetric, non-tileable synthetic artwork with
+palette and both tile-flip attributes. It compares every output pixel across
+800 columns to the reflected original strip, sampling the complete ten-bit
+scroll domain in steps of 17 (all fine-scroll phases). The test fails with the
+old wrapping lookup and passes with reflection. Separate assertions preserve
+the native HUD map and check explicit left/right reflection boundary entries.
+This seam-continuity check complements, rather than replaces, center/state
+comparisons and visual inspection.
+
+
+Follow-up validation: Release compilation and the 46-test suite pass (seven
+optional skips). Fresh native, 342-column, 800-column and repeated 800-column
+runs of all eight normal-course first-hole starts match WRAM and center
+pixels at frames 590-599; repeated full images and shared-width regions also
+match. All 80 native captures are byte-identical to the previous build. No
+first state/center divergence was found in these samples. Visual checks of
+the cloud/cliff, geometric and cake themes show continuous reflected joins.
+A fresh two-player first-hole sample preserves center/state across the ten
+checkpoints, and interpreter fallback matches the full normal-course-1 image
+and WRAM at frame 599. Reference-emulator coverage remains unchanged.
+
+All captured course BG3 horizontal scroll values are zero. This policy is
+qualified for that stationary scenery, not smooth horizontal BG3 animation:
+changing between aligned/fine-scroll phases changes the protected strip's
+width, which can move reflected motifs discontinuously (for example source
+X=111 becomes X=127 at screen X=400 when scroll changes 0 to 1). Static
+fine-scroll correctness is tested, but that does not prove temporal continuity.
+If a scene animates BG3 horizontal scroll, it needs separate qualification or
+a pixel-level extension policy before claiming smooth scrolling support.
