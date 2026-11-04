@@ -1,8 +1,22 @@
 ﻿# Kirby's Dream Course recompilation experiment
 
-An experimental Windows build of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This repository does not include the ROM, extracted assets, generated game code, saves, recordings, or a game-derived executable.
+An experimental Windows build of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled EXE, runtime dependencies and notices; they require your matching ROM at runtime.
 
-The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`. The build and launcher verify its hash. Do not share the ROM or generated game-derived output.
+The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`. The build and launcher verify its hash. Do not share the ROM, extracted game assets or generated source.
+
+## Windows binary releases
+
+Extract `kirbysdreamcourse-recomp-windows-x64.zip`, place your matching
+`Kirby's Dream Course (USA).sfc` beside `KirbyDreamCourseRecomp.exe`, and launch
+the EXE. Keep its DLLs, `assets/` and `licenses/` directories in place. Binary
+packages do not require a compiler or a code-generation step. The older
+`*-source-*.zip` releases require the source-build steps below.
+
+Maintainers use the `Build & Release` workflow and the repository's release
+skill. The workflow fetches build inputs from a private companion repository
+via `ROM_ASSETS_REPO` and `ROM_ASSETS_PAT`, verifies the ROM hash, generates and
+compiles on the runner, and uploads only the reviewed binary ZIP. See
+[release setup](docs/release.md) for configuration, dry runs and validation.
 
 ## Build and play on Windows
 

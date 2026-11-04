@@ -44,21 +44,28 @@ while continuing preparation. Never move an existing tag.
 Read [references/project-release.md](references/project-release.md) for current
 packaging evidence and the differences from the N64 release workflows.
 
-Establish a distributable EXE build before tagging. `tools/setup.ps1` builds a
-local EXE, but the current guarded build links generated game code from a
-local ROM. That executable is local-only under this repository's instructions.
-Prove a build without game-derived generated output, or report this specific
-gap before publishing. Building and ZIP-packaging the current EXE do not
-satisfy this gate. Do not silently switch to interpreter-only behavior or
-change the recompilation strategy to clear it.
+Use the private build-input pattern established by Lamborghini and AeroGauge:
+`vars.ROM_ASSETS_REPO` names a private companion repository and
+`secrets.ROM_ASSETS_PAT` grants read-only Contents access to that repository.
+It holds `Kirby's Dream Course (USA).sfc` at its root. The workflow fetches it,
+verifies the exact hash, generates C and compiles the guarded native EXE on
+the runner. Generated source stays private; the compiled EXE is the intended
+public artifact. Players still supply their own ROM for runtime assets and
+interpreter fallback. Do not replace this with an interpreter-only build.
+
+Check the configured variable and secret names without reading/logging token
+values. Read [docs/release.md](../../../docs/release.md) for the one-time
+setup, workflow contract and tested local commands. Missing private-repo
+configuration is a setup gap to report; it is not a reason to prohibit a
+recompiled EXE or substitute a source package.
 
 The existing source releases are historical precedent only. A source package
 requires an explicit source-release request; it never fulfills this skill's
 default distribution goal. Its optional command is documented in the project
 reference, separately from the EXE workflow.
 
-ROMs, extracted assets, generated game-derived output, saves and recordings
-stay local, including during CI. Do not upload them as build artifacts. Review
+ROMs, extracted game assets, generated source, saves and recordings stay in
+local/private build storage. Do not upload them as public build artifacts. Review
 the pinned framework, UI, SDL and transitive notices before packaging; root
 licenses do not replace dependency terms. Keep the interpreter fallback.
 
@@ -84,20 +91,27 @@ prerelease flag from prose such as "experimental quality".
 
 ## 3. Build the EXE, package and test before tagging
 
-Use a clean build from the full target SHA. Inspect the chosen generator,
-patched framework and compiler/linker inputs to establish the distribution
-gate above. Record and run the verified Release build command. Do not mark a
-release prepared merely because a packaging command succeeds. At the recorded
-baseline there is no verified distributable EXE build command; resolve that
-build gap within the authorized scope or report it as unfinished work.
+Use a clean build from the full target SHA. `tools/build_release.ps1` calls
+the same setup/generator/guarded configuration as local development, sets the
+release version and enables the tested timing/native-dispatch defaults in the
+EXE itself. It stages notices/resources, inspects DLL imports and packages
+only the binary payload. Double-click launch requires no developer script.
 
-Move required timing/native-dispatch defaults from the developer launcher into
-the release host/configuration as needed and validate them. The downloadable
-EXE must work by double-clicking it; requiring `tools/play_experimental.ps1`
-would leave the distribution incomplete. Set the actual build version instead
-of the current hardcoded `dev`, with commit/toolchain/pin provenance.
+Before tagging, validate the candidate workflow commit with a dry run:
 
-Stage only reviewed release files under a fresh ignored local directory:
+```powershell
+gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref <candidate-ref> -f publish=false
+```
+
+This fetches private inputs and builds the dispatched commit; the release job
+is skipped. A request only to edit this skill does not authorize a CI run or
+publication. For a local build using the same path:
+
+```powershell
+./tools/build_release.ps1 -Version <version> -Rom <private-ROM-path> -CMake <native-Windows-cmake>
+```
+
+The shared build stages only reviewed release files under `local/release-stage`:
 
 - `KirbyDreamCourseRecomp.exe` and its required runtime DLLs.
 - `assets/` launcher resources and `licenses/` with their required notices.
@@ -105,21 +119,24 @@ Stage only reviewed release files under a fresh ignored local directory:
 - A player-facing `README.txt` with ROM placement, launch, controls, settings
   and save locations, plus `build-info.json` describing this exact build.
 
-Inspect native imports to identify required MinGW/SDL/other runtime DLLs;
-copy their corresponding notices as well. Do not ZIP the whole build directory
-or a play session containing ROMs, saves, settings or diagnostics. See the
-project reference for the packager's `build-info.json` contract.
+The framework statically links SDL and MinGW runtimes by default. The staging
+helper walks native imports, copies any required non-system DLLs and bundles
+toolchain notices. Do not ZIP the whole build directory or a play session
+containing ROMs, saves, settings or diagnostics. See the project reference for
+the packager's `build-info.json` contract.
 
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
-python .agents/skills/release/scripts/release.py windows-package --target <full-sha> --version <version> --stage <reviewed-staging-directory>
+python .agents/skills/release/scripts/release.py smoke-windows --archive local/releases/<version>/kirbysdreamcourse-recomp-windows-x64.zip --rom <private-ROM-path>
 ```
 
 The packager requires an x64 PE EXE, resources, notices and matching source
 commit/version metadata, rejects private files and creates
 `local/releases/<version>/kirbysdreamcourse-recomp-windows-x64.zip` with a
-SHA-256. It cannot inspect the provenance of code linked inside the EXE or
-prove every DLL is present: those require the build review and clean test.
+SHA-256. The smoke test extracts the ZIP with a clean PATH, runs 400 no-input
+frames in native and fallback modes, compares direct defaults with explicit
+developer settings and checks wrong-ROM rejection. It keeps diagnostics
+private. These checks do not qualify interactive UI or full-game playability.
 
 Test the extracted ZIP in a clean Windows directory without developer tools
 or a generation step: correct ROM, wrong/missing-ROM handling, launch, audio,
@@ -140,22 +157,28 @@ package type are settled. Check the remote tag and release for the version
 first. A matching existing release is a verification/resume case; conflicting
 tags or assets require investigation, never force pushes or blind retries.
 
-No release workflow existed at the recorded baseline. For that state, publish
-the locally tested artifact directly using explicit repository and tag:
+Tag the tested commit and dispatch the implemented workflow explicitly:
 
 ```powershell
 git tag -a <version> <full-sha> -m 'Kirby Dream Course Recomp <version>'
 git push origin 'refs/tags/<version>'
-gh release create <version> <archive-path> --repo alondero/kirbysdreamcourse-recomp --verify-tag --prerelease --latest=false --title "Kirby's Dream Course Recomp <version> (Windows x64)" --notes-file <notes-path>
+gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref main -f tag=<version> -f publish=true -f prerelease=true
 ```
 
-The example publishes the tested EXE ZIP as a prerelease. Adjust the flags
-to the agreed status; do not inherit the N64 projects' stable flags.
-Before pushing, confirm origin names this repository. If a verified workflow
-now exists, inspect its revision, inputs, permissions, artifact names and ROM
-handling and use its actual contract. Pin both workflow and build target;
-observe its run ID in waits of at most 60 seconds so progress remains visible.
-Replace placeholder notes and bare-tag titles if it creates them.
+The workflow checks out the requested tag for publishing and the dispatched
+commit for dry runs. Confirm the workflow revision contains the tested build
+changes and origin names this repository. Capture the exact run ID and observe
+it in waits of at most 60 seconds so progress remains visible. The expected
+asset is `kirbysdreamcourse-recomp-windows-x64.zip`; there are no Linux/Android
+jobs. A failed build must not publish. Keep prerelease true for the current
+experimental state unless the user requests otherwise.
+
+The workflow creates an initial notes body and a Windows x64 title. Replace
+the body with the complete prepared UTF-8 notes once the build has passed:
+
+```powershell
+gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recomp <version> (Windows x64)" --notes-file <notes-path>
+```
 
 ## 5. Verify the published release
 

@@ -13,8 +13,9 @@ Write separate notes only if the user explicitly requests a source release.
 
 Provide the headerless Kirby's Dream Course (USA) ROM, 1,048,576 bytes.
 SHA-256: `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`.
-The ROM, saves, recordings and generated game-derived output are not included.
-<Confirm this from the build inputs and package before publication.>
+The cartridge ROM, extracted game assets, saves, recordings and generated
+source files are not included. This package contains the compiled recompiled
+EXE, built using private ROM input, plus runtime resources and notices.
 
 ## What's working
 
@@ -57,7 +58,7 @@ location. Link README.md at this tag for the full control/settings guide.>
 - Build/package command: `<exact-command>`
 - Validation: <checks run on this commit and package; disclose skipped checks>
 - Dependencies: <exact framework/UI pins and relevant build flags>
-- Workflow: <run link, or local packaging with no CI release workflow>
+- Workflow: <Build & Release run link and exact build commit>
 
 ## License and attribution
 

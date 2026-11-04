@@ -229,6 +229,53 @@ class ReleaseSkillTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing Windows package"):
             release.windows_files(stage, self.target, self.tag)
 
+    def stage_fixture(self, missing_dll=False):
+        build = self.windows_stage()
+        (build / "CMakeCache.txt").write_text(
+            f"KDC_BUILD_VERSION:STRING={self.tag}\nKDC_RELEASE_DEFAULTS:BOOL=ON\n"
+            f"kdc_recomp_ui_SOURCE_DIR:STATIC={self.root / 'ui'}\nCMAKE_COMMAND:INTERNAL=cmake\n")
+        for name in release.NOTICES:
+            shutil.copy2(build / name, self.root / name)
+        (self.root / "tools").mkdir()
+        (self.root / "tools/release-readme.txt").write_text("Synthetic player instructions")
+        for name in ("gcc", "mingw-w64"):
+            directory = self.root / "toolchain-notices" / name
+            directory.mkdir(parents=True)
+            (directory / "COPYING").write_text("Synthetic notice")
+        if not missing_dll:
+            (build / "SDL3.dll").write_bytes(b"synthetic DLL")
+            (build / "support.dll").write_bytes(b"synthetic transitive dependency")
+        args = SimpleNamespace(target=self.target, version=self.tag, build=str(build),
+                               stage=str(self.root / "stage"), objdump=str(self.root / "bin/objdump.exe"),
+                               toolchain_notices=str(self.root / "toolchain-notices"))
+        def fake_run(*command):
+            if "--show-toplevel" in command:
+                return str(self.root)
+            if "-p" in command:
+                name = Path(command[-1]).name
+                dependencies = {"KirbyDreamCourseRecomp.exe": ["KERNEL32.dll", "SDL3.dll"],
+                                "SDL3.dll": ["support.dll"], "support.dll": ["KERNEL32.dll"]}
+                return "\n".join(f"DLL Name: {item}" for item in dependencies[name])
+            if "--version" in command:
+                return "Synthetic tool 1.0"
+            return self.target
+        with patch.object(release, "run", side_effect=fake_run), redirect_stdout(io.StringIO()):
+            release.stage_windows(args)
+        return self.root / "stage"
+
+    def test_staging_collects_transitive_dlls_and_toolchain_notices(self):
+        stage = self.stage_fixture()
+        self.assertTrue((stage / "SDL3.dll").is_file())
+        self.assertTrue((stage / "support.dll").is_file())
+        self.assertTrue((stage / "licenses/toolchain/gcc/COPYING").is_file())
+        info = json.loads((stage / "build-info.json").read_text())
+        self.assertEqual(info["dependencies"]["SDL3.dll"], ["support.dll"])
+        self.assertEqual(info["source_commit"], self.target)
+
+    def test_staging_fails_when_a_required_runtime_dll_is_missing(self):
+        with self.assertRaisesRegex(ValueError, "Required runtime DLL not found: SDL3.dll"):
+            self.stage_fixture(missing_dll=True)
+
 
 if __name__ == "__main__":
     unittest.main()

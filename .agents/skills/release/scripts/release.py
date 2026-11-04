@@ -3,8 +3,10 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,10 +16,15 @@ import zipfile
 
 REPO = "alondero/kirbysdreamcourse-recomp"
 REPO_URL = f"https://github.com/{REPO}"
-PRIVATE_DIRS = {"local", "generated", "recordings", "saves", "roms", ".git", ".worktrees"}
+PRIVATE_DIRS = {"local", "generated", "recordings", "saves", "roms", "rom-assets", ".git", ".worktrees"}
 PRIVATE_SUFFIXES = {".sfc", ".smc", ".fig", ".bin", ".sav", ".srm", ".state",
                     ".exe", ".dll", ".pdb", ".wav", ".pcm", ".log"}
 NOTICES = {"LICENSE", "LICENSE.snesrecomp", "LICENSE.SDL3.txt", "THIRD_PARTY_ATTRIBUTION.md"}
+WINDOWS_DLLS = set("advapi32 bcrypt cfgmgr32 comctl32 comdlg32 d2d1 d3d11 d3d12 dbghelp "
+                   "dinput8 dwmapi dwrite dxgi gdi32 hid imm32 iphlpapi kernel32 ksuser "
+                   "msimg32 msvcrt ntdll ole32 oleaut32 opengl32 powrprof propsys psapi "
+                   "rpcrt4 secur32 setupapi shell32 shlwapi user32 userenv usp10 uxtheme "
+                   "version winhttp winmm winspool wintrust ws2_32 wtsapi32 xinput1_4".split())
 
 
 def run(*args):
@@ -123,7 +130,7 @@ def source_package(args):
 
 
 def windows_files(stage, target, tag):
-    """Check a reviewed stage, without claiming to prove linked-code provenance."""
+    """Check binary staging; generated source and ROM inputs remain private."""
     required = NOTICES | {"KirbyDreamCourseRecomp.exe", "README.txt", "build-info.json"}
     files = []
     names = set()
@@ -191,7 +198,133 @@ def windows_package(args):
             output.write(candidate.read_bytes())
     print("\n".join(inventory))
     print(f"\nCommit: {target}\nArchive: {path}\nSHA-256: {sha256(path)}")
-    print("Packaging does not certify linked-code provenance or runtime dependencies; review and test before publishing.")
+    print("Test the extracted ZIP before publishing; packaging alone is not a gameplay check.")
+
+
+def stage_windows(args):
+    target = commit(args.target)
+    root = Path(run("git", "rev-parse", "--show-toplevel"))
+    build = Path(args.build).resolve(strict=True)
+    stage = Path(args.stage).resolve()
+    if stage.exists():
+        raise ValueError(f"Refusing to overwrite staging directory {stage}")
+    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    build_version = re.search(r"^KDC_BUILD_VERSION:STRING=(.+)$", cache, re.MULTILINE)
+    if not build_version or build_version[1].strip() != args.version \
+            or not re.search(r"^KDC_RELEASE_DEFAULTS:BOOL=(?:1|ON|TRUE)\s*$", cache, re.MULTILINE):
+        raise ValueError("Build cache must match the release version and enable release defaults")
+    stage.mkdir(parents=True)
+    executable = build / "KirbyDreamCourseRecomp.exe"
+    shutil.copy2(executable, stage / executable.name)
+    for name in ("assets", "licenses"):
+        shutil.copytree(build / name, stage / name)
+    for name in NOTICES:
+        shutil.copy2(root / name, stage / name)
+    for name in ("gcc", "mingw-w64"):
+        shutil.copytree(Path(args.toolchain_notices) / name, stage / "licenses/toolchain" / name)
+    # Inspect import closure; never rely on the compiler's PATH at runtime.
+    dependencies = {}
+    pending = [executable]
+    visited = set()
+    while pending:
+        binary = pending.pop()
+        if binary.name.lower() in visited:
+            continue
+        visited.add(binary.name.lower())
+        imports = re.findall(r"DLL Name:\s*(\S+)", run(args.objdump, "-p", str(binary)), re.IGNORECASE)
+        if not imports:
+            raise ValueError(f"No PE import information from objdump: {binary.name}")
+        dependencies[binary.name] = imports
+        for name in imports:
+            if name.lower().removesuffix(".dll") in WINDOWS_DLLS or name.lower().startswith(("api-ms-win-", "ext-ms-win-")):
+                continue
+            candidates = [build / name, Path(args.objdump).parent / name]
+            source = next((path for path in candidates if path.is_file()), None)
+            if source is None:
+                raise ValueError(f"Required runtime DLL not found: {name}")
+            destination = stage / name
+            if not destination.exists():
+                shutil.copy2(source, destination)
+            pending.append(destination)
+    framework = root / "local/guarded-framework"
+    ui = re.search(r"^kdc_recomp_ui_SOURCE_DIR:STATIC=(.+)$", cache, re.MULTILINE)
+    if not ui:
+        raise ValueError("Cannot find the pinned UI source in CMakeCache.txt")
+    info = {
+        "source_commit": target, "version": args.version,
+        "build_command": f"./tools/build_release.ps1 -Version {args.version} -Rom <private-input>",
+        "toolchain": run(str(Path(args.objdump).parent / "gcc.exe"), "--version").splitlines()[0],
+        "framework_revision": run("git", "-C", str(framework), "rev-parse", "HEAD"),
+        "ui_revision": run("git", "-C", ui[1].strip(), "rev-parse", "HEAD"),
+        "cmake_version": run(re.search(r"^CMAKE_COMMAND:INTERNAL=(.+)$", cache, re.MULTILINE)[1].strip(), "--version").splitlines()[0],
+        "dependencies": dependencies,
+        "release_defaults": True,
+    }
+    (stage / "build-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    shutil.copy2(root / "tools/release-readme.txt", stage / "README.txt")
+    windows_files(stage, target, args.version)
+    print(f"Staged Windows EXE and inspected DLL imports: {stage}")
+
+
+def smoke_windows(args):
+    root = Path(run("git", "rev-parse", "--show-toplevel"))
+    identity = (root / "rom_identity.txt").read_text(encoding="utf-8-sig")
+    expected = re.search(r"^expected_sha256\s*=\s*([0-9a-f]{64})\s*$", identity, re.MULTILINE)[1]
+    rom = Path(args.rom).resolve(strict=True)
+    if sha256(rom) != expected:
+        raise ValueError("ROM SHA-256 mismatch before release smoke test")
+    archive = Path(args.archive).resolve(strict=True)
+    inspect_zip(archive)
+    defaults = {"SNESRECOMP_APU_BEAM_ELAPSED": "1", "SNESRECOMP_APU_HANDOFF": "1",
+                "SNESRECOMP_APU_ABSOLUTE_PREANCHOR": "1", "SNESRECOMP_LLE_BOUNCE": "1"}
+    base = {key: value for key, value in os.environ.items()
+            if not key.startswith(("SNESRECOMP_", "KDC_", "SDL_"))}
+    # Eliminate developer-tool DLL search paths; Windows system libraries stay available.
+    system = Path(os.environ["SystemRoot"])
+    base.update(PATH=os.pathsep.join((str(system / "System32"), str(system))),
+                SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", SNESRECOMP_RUN_FRAMES=str(args.frames))
+    with tempfile.TemporaryDirectory(prefix="release-smoke-", dir=root / "local") as temporary:
+        workspace = Path(temporary)
+        for mode in ("native", "fallback"):
+            logs = []
+            for explicit in (False, True):
+                case = workspace / f"{mode}-{explicit}"
+                with zipfile.ZipFile(archive) as zipped:
+                    zipped.extractall(case)
+                (case / "config.ini").write_text(
+                    "[General]\nSkipLauncher = 1\nAutosave = 0\n"
+                    "[Graphics]\nOutputMethod = SDL-Software\n"
+                    "[Sound]\nEnableAudio = 1\nAudioFreq = 32000\n"
+                    "[Controller]\nSourceP1 = 0\nSourceP2 = 0\n", encoding="utf-8")
+                log = case / "cpu.log"
+                env = {**base, "KDC_FRAME_LOG": str(log)}
+                if explicit:
+                    env.update(defaults)
+                if mode == "fallback":
+                    env["SNESRECOMP_LLE_BOUNCE"] = "0"
+                command = (str(case / "KirbyDreamCourseRecomp.exe"), "--rom", str(rom))
+                result = subprocess.run(command, cwd=case, env=env, capture_output=True, timeout=90)
+                if result.returncode != 0:
+                    raise ValueError(f"{mode} clean-PATH launch failed ({result.returncode}): {result.stderr.decode(errors='replace')}")
+                lines = log.read_text().splitlines()
+                if len(lines) != args.frames:
+                    raise ValueError(f"{mode} expected {args.frames} frames, got {len(lines)}")
+                logs.append(lines)
+            for frame, (direct, explicit) in enumerate(zip(*logs), 1):
+                if direct != explicit:
+                    raise ValueError(f"First direct/default-environment divergence: {mode} frame {frame}")
+            print(f"{mode}: {args.frames} frames; direct defaults match explicit developer settings; clean PATH")
+        invalid = workspace / "wrong.sfc"
+        invalid.write_bytes(b"invalid synthetic ROM")
+        case = workspace / "native-False"
+        invalid_log = workspace / "invalid.log"
+        env = {**base, "KDC_FRAME_LOG": str(invalid_log)}
+        result = subprocess.run((str(case / "KirbyDreamCourseRecomp.exe"), "--no-launcher", "--rom", str(invalid)),
+                                cwd=case, env=env, capture_output=True, timeout=30)
+        if result.returncode == 0 or invalid_log.exists():
+            raise ValueError("Wrong-ROM input was not rejected before guest execution")
+        print("Wrong-ROM input rejected before guest execution")
+    print("Untested here: interactive launcher, physical controllers, audio quality and full-game/reference replay.")
 
 
 def verify_metadata(release, tag, title, prerelease, archive):
@@ -249,6 +382,19 @@ def main():
     windows.add_argument("--version", required=True, type=version)
     windows.add_argument("--stage", required=True)
     windows.set_defaults(action=windows_package)
+    stage = commands.add_parser("stage-windows", help="Stage a guarded build and inspect DLL import closure")
+    stage.add_argument("--target", required=True)
+    stage.add_argument("--version", required=True, type=version)
+    stage.add_argument("--build", required=True)
+    stage.add_argument("--stage", required=True)
+    stage.add_argument("--objdump", required=True)
+    stage.add_argument("--toolchain-notices", required=True)
+    stage.set_defaults(action=stage_windows)
+    smoke = commands.add_parser("smoke-windows", help="Run the packaged EXE with private ROM input and clean PATH")
+    smoke.add_argument("--archive", required=True)
+    smoke.add_argument("--rom", required=True)
+    smoke.add_argument("--frames", type=int, default=400, choices=range(1, 10001), metavar="1..10000")
+    smoke.set_defaults(action=smoke_windows)
     check = commands.add_parser("verify", help="Verify a published ZIP against the tested local archive")
     check.add_argument("--target", required=True)
     check.add_argument("--version", required=True, type=version)
@@ -259,7 +405,7 @@ def main():
     args = parser.parse_args()
     try:
         args.action(args)
-    except (OSError, ValueError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, zipfile.BadZipFile, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         print(f"error: {error}", file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             print(error.stderr.strip(), file=sys.stderr)

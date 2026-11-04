@@ -2,6 +2,8 @@ param(
     [string]$Rom = "Kirby's Dream Course (USA).sfc",
     [Parameter(Mandatory=$true)][string]$CMake,
     [string]$SdlSource = '',
+    [ValidatePattern('^[A-Za-z0-9._+-]+$')][string]$BuildVersion = 'dev',
+    [switch]$ReleaseDefaults,
     [switch]$ApuBoundarySync,
     [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$Name = 'guarded'
 )
@@ -13,6 +15,8 @@ $options = @{
     CMake = $CMake
     SdlSource = $SdlSource
     Name = $Name
+    BuildVersion = $BuildVersion
+    ReleaseDefaults = [bool]$ReleaseDefaults
     CurrentStack = $true
     RasterState = $true
     FieldTiming = $true

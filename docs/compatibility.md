@@ -18,7 +18,7 @@ For this baseline, run `tools/setup.ps1 -CMake 'C:/path/to/native/cmake.exe'` to
 
 Use `python tools/compare_audio.py HOST_PCM REFERENCE_PCM --offset 456 --allow-partial` to reproduce the diagnostic comparison. The offset is explicit and may differ in other scenarios. The tool reports the overlap and first differing stereo sample; it does not resample, infer alignment, or certify timing. Compare repeated captures at offset zero without `--allow-partial` to require equal lengths. A partial comparison cannot prove either capture is complete.
 
-Generated source and runtime outputs are generated locally from the user's ROM and must not be committed or distributed. The project is Windows-oriented; other platforms have not been qualified.
+Generated game source and diagnostic runtime outputs remain private and must not be committed to the public repository or uploaded as artifacts. Release builds may generate source from the verified ROM fetched from a private companion repository and distribute the compiled EXE with dependencies and notices, without the ROM or generated source. The player supplies the runtime ROM. The project is Windows-oriented; other platforms have not been qualified.
 
 ## Reset, state and persistence evidence
 

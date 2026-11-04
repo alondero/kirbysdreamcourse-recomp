@@ -1,7 +1,9 @@
 ﻿param(
     [string]$Rom = "Kirby's Dream Course (USA).sfc",
     [string]$CMake = '',
-    [string]$SdlSource = ''
+    [string]$SdlSource = '',
+    [ValidatePattern('^[A-Za-z0-9._+-]+$')][string]$BuildVersion = 'dev',
+    [switch]$ReleaseDefaults
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -36,7 +38,8 @@ if (-not (Test-Path (Join-Path $framework '.git'))) { throw 'local/snesrecomp is
 $head = git -C $framework rev-parse HEAD
 if ($LASTEXITCODE -ne 0 -or $head -ne $pin) { throw 'local/snesrecomp is not at the required revision.' }
 if (git -C $framework status --porcelain) { throw 'local/snesrecomp has local changes; use a clean pinned checkout.' }
-$options = @{ Rom = $romPath; CMake = $CMake; Name = 'guarded' }
+$options = @{ Rom = $romPath; CMake = $CMake; Name = 'guarded';
+    BuildVersion = $BuildVersion; ReleaseDefaults = [bool]$ReleaseDefaults }
 if ($SdlSource) { $options.SdlSource = $SdlSource }
 & (Join-Path $PSScriptRoot 'prepare_guarded.ps1') @options
 Write-Host 'Build complete. Run: ./tools/play_experimental.ps1'
