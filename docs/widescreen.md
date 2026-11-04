@@ -389,3 +389,82 @@ A separate 12,000-frame zero-SRAM course-1 replay reached the matching cloud/
 cliff scorecard at frame 11999. Visual inspection confirms clean margins in
 that theme as well; this additional capture is visual coverage, not a separate
 reference/state-equivalence claim.
+
+
+## Title, members and course-introduction backgrounds (2026-11-04)
+
+Three bounded scenes now have separate presentation policies in
+`src/course_view.c`. The supported USA ROM hash was verified before capture.
+The live Mode-1 signature requires 8x8 tiles and these registers:
+
+| Scene | BG1/BG2/BG3 maps | Character-base register | Margin policy |
+| --- | --- | --- | --- |
+| Title | `$40/$48/$58` | `$0500` | One centered checkerboard panel; BG2 stars fill the sides |
+| Members/name editor | `$43/$53/$2C` | `$0200` or `$0233` | Center both foreground planes, widen scrolling BG3 |
+| Course introduction | `$50/$58/$3C` | `$0400` | One centered video frame; clean BG2 star wallpaper fills the sides |
+
+The title's BG2 map combines its checkerboard frame with the stars below it.
+Margins reflect the visible star strip (tile rows 17-27) vertically above its
+top edge and reflect the native-width strip horizontally. The native title,
+checkerboard frame, menu lettering and copyright text retain their sources.
+Members and name entry use the native circular BG3 map with live horizontal
+and vertical scroll, avoiding the reflected-strip phase changes documented
+above. Both foreground planes stay bounded so the members popup's subscreen
+rectangle cannot repeat over the extended wallpaper.
+
+The introduction's BG2 map includes a baked-in video aperture and border.
+Its margin source retains the outer wallpaper, completes stars partly hidden
+by that border, and fills the aperture with wallpaper and complete star motifs
+read from the same live VRAM map. The clean large motif is at map column 1,
+row 23 (3x3 tiles); the small motif is at column 6, row 25 (2x2 tiles).
+Only map-coordinate metadata is compiled into the integration. The PPU still
+reads the player's tile graphics and palettes; no extracted artwork, captured
+background or generated source is committed. The resulting clean strip is
+reflected horizontally, so there are no repeated empty video frames. This
+art direction can produce symmetric or paired stars.
+
+The callback rechecks the live signature, preserves native-edge chunks, and
+uses the existing provider API. No new framework patch or dependency is needed.
+Unsupported signatures keep the existing conservative menu policy. Widescreen
+off unregisters the provider and clears the menu policies. Mosaic retains its
+native source during the effect and can temporarily repeat framed artwork.
+Title/introduction BG2 horizontal scroll was zero throughout these captures;
+their reflected artwork is qualified for that stationary case, not animated
+horizontal scrolling or arbitrary scene layouts.
+
+Release compilation passed with native CMake 4.3.1, MinGW GCC 15.2 and Ninja:
+`cmake --build local/menu-build -j 8`. This isolated worktree build reuses the
+previous worktree's patched `local/bg-framework`, the existing guarded generated
+source, SDL/UI sources, and the nine guarded state options documented above.
+The 46-test Python suite passes with seven optional skips and `SNESRECOMP_ROOT`
+pointing to that framework. Extended ROM-free fixtures fail against the previous
+game integration and pass after this change. They cover scene exit/disable,
+live source updates, mosaic fallback, both member character-bank signatures,
+and actual 4bpp rendering at margins 1/43/96/213/272, all eight fine-scroll
+phases and every visible scanline, with unchanged native-center pixels.
+
+Two deterministic routes used the four guarded timing options documented above:
+
+- Registered member: 2,300 frames, retaining 650-2110. Initial SRAM SHA-256
+  `7b73a96f30d67ede6d0b0118618c095df1602bfee6bffd18802cce76c91c88bb`;
+  recording SHA-256 `00cdf646dd828323e73580977bacb4e930aec4c7cd175c50b319caf890b99cc9`.
+  Start at 301/451/651, A at 851/1051/1801/2001, ten frames per hold.
+- New member: 1,100 frames, retaining 290-1099, zero initial SRAM;
+  recording SHA-256 `0802dc54d411b36c914ce75415c443d221b178f2d3b1ea042993e25b331948a2`.
+  Same inputs through frame 1051, reaching name entry rather than selection.
+
+All 2,271 sampled checkpoints have byte-identical WRAM and original-center
+images between the previous build, new disabled-widescreen, 342-column and
+800-column outputs. Native and interpreter-fallback complete 800-column images
+match, and all shared 342-column regions match. A second native 800-column
+registered-member run also matches all 1,461 retained complete images and WRAM.
+There is no first state/center divergence in these comparisons. Visual checks
+confirm the three requested backgrounds and name entry, including animated
+member scroll and transitions through course selection into gameplay. All 860
+complete images sampled during course selection (1122-1888) and gameplay
+(2018-2110) also match the previous 800-column build byte for byte.
+
+No fresh Snes9x comparison was run; the unchanged centers and WRAM do not
+resolve the existing first reference divergence at host 15/reference 16.
+Other member actions, all course-introduction variants, mosaic appearance,
+live resizing, save/load and unsampled frames remain unqualified by these routes.

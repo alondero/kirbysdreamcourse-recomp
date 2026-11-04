@@ -166,6 +166,55 @@ int main(void)
     KdcPrepareCourseView(p, ram, 272);
     assert(KdcIsCourse(p));
     assert(p->wsLayerClamp == 0);
+    /* Members and name entry share animated, naturally tileable BG3.
+     * Keep both foreground planes bounded, including subscreen panels. */
+    p->bgXsc[0] = 0x43; p->bgXsc[1] = 0x53; p->bgXsc[2] = 0x2c;
+    p->bgTileAdr = 0x200;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 3);
+    assert(PpuWidescreenLayerExtra(p, 1, 80, 272) == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 80, 272) == 272);
+    p->bgTileAdr = 0x233;
+    KdcPrepareCourseView(p, ram, 43);
+    assert(p->wsLayerClamp == 3 && p->wsBg3WidenY == 1);
+    p->bgTileAdr = 0x234; /* Unsupported character bank. */
+    KdcPrepareCourseView(p, ram, 43);
+    assert(p->wsLayerClamp == 1 && p->wsBg3WidenY == 0);
+
+    /* Title margins contain only stars: no repeated checkerboard frame.
+     * Source attributes and both reflected axes survive intact. */
+    p->bgXsc[0] = 0x40; p->bgXsc[1] = 0x48; p->bgXsc[2] = 0x58;
+    p->bgTileAdr = 0x500;
+    p->vram[0x4800 + 17 * 32 + 31] = 0x6123;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1 && p->wsBg3WidenY == 0);
+    assert(WsShadowResolveTile8x8(1, 256, 128, 0, 0, 0xffff) == (0x6123 ^ 0xc000));
+    assert(WsShadowResolveTile8x8(1, 256, 136, 0, 0, 0xffff) == (0x6123 ^ 0x4000));
+    assert(WsShadowResolveTile8x8(1, 248, 128, 0, 0, 0x4567) == 0x4567);
+    p->mosaic = 0x12;
+    assert(WsShadowResolveTile8x8(1, 256, 128, 0, 0, 0x4567) == 0x4567);
+    p->mosaic = 0;
+
+    /* Introduction: source the wallpaper from live VRAM, removing the
+     * baked-in video aperture while completing its occluded edge stars. */
+    p->bgXsc[0] = 0x50; p->bgXsc[1] = 0x58; p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    p->vram[0x5800] = 0x2123;
+    p->vram[0x5800 + 23 * 32 + 1] = 0xa234;
+    p->vram[0x5800 + 24 * 32 + 2] = 0x3456;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1 && p->wsBg3WidenY == 0);
+    assert(WsShadowResolveTile8x8(1, -24, 64, 0, 0, 0xffff) == (0x2123 ^ 0x4000));
+    assert(WsShadowResolveTile8x8(1, -56, 40, 0, 0, 0xffff) == (0xa234 ^ 0x4000));
+    assert(WsShadowResolveTile8x8(1, -240, 56, 0, 0, 0xffff) == (0x3456 ^ 0x4000));
+    /* A live write changes the next lookup; there is no saved wallpaper. */
+    p->vram[0x5800] = 0x1234;
+    assert(WsShadowResolveTile8x8(1, -24, 64, 0, 0, 0xffff) == (0x1234 ^ 0x4000));
+    p->bgXsc[0] = 0x51; /* Entering gameplay revokes the menu source. */
+    assert(WsShadowResolveTile8x8(1, -24, 64, 0, 0, 0x5678) == 0x5678);
+    KdcPrepareCourseView(p, ram, 0);
+    assert(p->wsLayerClamp == 0 && p->wsBg3WidenY == 0);
+    assert(!WsShadowHasTileProvider(1));
     free(p);
     return 0;
 }
