@@ -2,11 +2,11 @@
 +++ b/runner/src/snes/ws_shadow.h
 @@ -14,6 +14,8 @@
  };
- 
+
  void WsShadowReset(void);
 +
 +#define WS_SHADOW_TILE_PROVIDER_LAYERS 3
- 
+
  /* Optional direct source for 8x8 background margin tiles. Called at raster
   * time with that line's scroll, before history/fold lookup. Native tiles,
 --- a/runner/src/snes/ws_shadow.c
@@ -18,22 +18,22 @@
 -  s_tileProviderMask = provider ? (layerMask & ((1u << kLayers) - 1)) : 0;
 +  s_tileProviderMask = provider ? (layerMask & ((1u << WS_SHADOW_TILE_PROVIDER_LAYERS) - 1)) : 0;
  }
- 
+
  void WsShadowReset(void) {
 @@ -1284,7 +1284,7 @@
  }
- 
+
  bool WsShadowHasTileProvider(int layerIndex) {
 -  return layerIndex >= 0 && layerIndex < kLayers &&
 +  return layerIndex >= 0 && layerIndex < WS_SHADOW_TILE_PROVIDER_LAYERS &&
        s_tileProvider && (s_tileProviderMask & (1u << layerIndex));
  }
- 
+
 --- a/runner/src/snes/ppu.c
 +++ b/runner/src/snes/ppu.c
 @@ -1645,6 +1645,10 @@
    int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
- 
+
    const uint16 *addr;
 +#define SCENERY_TILE(t) (WsShadowHasTileProvider(layer) ? WsShadowResolveTile8x8( \
 +    layer, (int)(dstz - dstbuf->data) - kPpuExtraLeftRight, y, \
