@@ -16,6 +16,7 @@ int main(void)
 {
     Ppu *p = calloc(1, sizeof(*p));
     assert(p);
+    p->screenEnabled[0] = 2;
     p->bgmode = 1;
     p->bgXsc[0] = 0x51;
     p->bgXsc[1] = 0x59;
@@ -24,6 +25,34 @@ int main(void)
     WsShadowReset();
     KdcPrepareCourseView(p, ram, 272);
     assert(WsShadowHasTileProvider(0));
+    /* Scenery is a separate 32x32 source, including rows occupied by the
+     * native HUD. Cover every margin, fine-scroll phase and wrapped row. */
+    p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    for (unsigned i = 0; i < 1024; ++i) word(0xdadc + 2 * i, i | 0xa400);
+    assert(WsShadowHasTileProvider(2));
+    for (int scroll = 0; scroll < 8; ++scroll) {
+        for (int x = -272; x < 528; ++x) {
+            unsigned row = 1023;
+            int chunk = 8 - (((unsigned)x + scroll) & 7);
+            if (x < 256 && x + chunk > 0)
+                assert(WsShadowResolveTile8x8(2, x, row, scroll, 0, 0x1234) == 0x1234);
+
+        }
+    }
+    const struct { int x, column; bool flip; } seams[] = {
+        {-264, 31, false}, {-256, 31, true}, {-8, 0, true},
+        {256, 31, true}, {504, 0, true}, {512, 0, false},
+    };
+    for (unsigned i = 0; i < sizeof(seams) / sizeof(seams[0]); ++i) {
+        uint16_t tile = 0xa400 | (22 * 32 + seams[i].column);
+        assert(WsShadowResolveTile8x8(2, seams[i].x, 176, 0, 0, 0x1234) ==
+               (tile ^ (seams[i].flip ? 0x4000 : 0)));
+    }
+    p->bgXsc[2] = 0x40; /* Unrecognised map: leave hardware data alone. */
+    assert(WsShadowResolveTile8x8(2, -8, 8, 0, 0, 0x1234) == 0x1234);
+    p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0;
     /* A camera above Y=0 wraps in the PPU's 10-bit scroll register. The
      * next-frame camera may already be zero: use it only to select the
      * 1024-pixel period, preserving the live raster's fine scroll. */
@@ -80,6 +109,63 @@ int main(void)
     KdcPrepareCourseView(p, ram, 43);
     WsShadowReset();
     assert(!WsShadowHasTileProvider(0));
+    /* Course select streams a 3x3-page island and cloud plane. */
+    p->bgmode = 9;
+    p->bgXsc[0] = 0x51; p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x61;
+    p->bgTileAdr = 0x230;
+    word(0x86, 344); word(0x88, 328);
+    p->vScroll[0] = p->vScroll[1] = 328;
+    /* Screen -8 at scroll344 is world tile42, row41: page4. */
+    unsigned select_offset = 2 * (4 * 1024 + 9 * 32 + 10);
+    word(0x10000 + select_offset, 0x8123);
+    word(0x15000 + select_offset, 0x4567);
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 272);
+    assert(WsShadowResolveTile8x8(0, -8, 328, 344, 0, 0xffff) == 0x8123);
+    assert(WsShadowResolveTile8x8(1, -8, 328, 344, 0, 0xffff) == 0x4567);
+    /* Cloud animation swaps character banks without changing the maps. */
+    p->bgTileAdr = 0x240;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 0);
+    assert(WsShadowResolveTile8x8(1, -8, 328, 344, 0, 0xffff) == 0x4567);
+    /* The native course label must not appear in the sky margins. */
+    p->vram[0x6000 + 22 * 32 + 31] = 0x1234;
+    assert(WsShadowResolveTile8x8(2, 256, 176, 256, 0, 0xffff) == (0x1234 ^ 0x4000));
+    assert(WsShadowResolveTile8x8(2, 0, 176, 256, 0, 0xffff) == 0xffff);
+    /* Leaving selection restores bounded menu policy. */
+    p->bgXsc[2] = 0x60;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 0);
+    KdcPrepareCourseView(p, ram, 0);
+    assert(p->wsLayerClamp == 0);
+    assert(!WsShadowHasTileProvider(2));
+    p->bgXsc[2] = 0x3c; p->bgTileAdr = 0x400;
+    KdcPrepareCourseView(p, ram, 43);
+    assert(p->wsLayerClamp == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 43) == 43);
+    /* Scorecard preserves course maps/characters but disables terrain BG2.
+     * Its foreground must stay bounded while BG3 scenery remains wide. */
+    p->screenEnabled[0] = 0x15;
+    p->screenEnabled[1] = 0;
+    p->hScroll[0] = p->hScroll[1] = 0;
+    p->vScroll[0] = 0; p->vScroll[1] = 256;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(!KdcIsCourse(p));
+    assert(p->wsLayerClamp == 1);
+    assert(PpuWidescreenLayerExtra(p, 0, 1, 272) == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 272);
+    assert(WsShadowResolveTile8x8(0, 256, 0, 0, 0, 0x1234) == 0x1234);
+    /* A live subscreen terrain plane still qualifies as gameplay. */
+    p->screenEnabled[1] = 2;
+    assert(KdcIsCourse(p));
+    p->screenEnabled[1] = 0;
+    /* Returning to paired terrain clears the foreground clamp. */
+    p->screenEnabled[0] = 0x17;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(KdcIsCourse(p));
+    assert(p->wsLayerClamp == 0);
     free(p);
     return 0;
 }

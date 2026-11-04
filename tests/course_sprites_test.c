@@ -55,6 +55,7 @@ int main(void)
     KdcInitializeSprites();
     assert(hooks[0xe55e] && hooks[0x8c12] && hooks[0x82ca]);
     ppu->bgmode = 1;
+    ppu->screenEnabled[0] = 2;
     ppu->bgXsc[0] = 0x51;
     ppu->bgXsc[1] = 0x59;
     PpuSetExtraSpace(ppu, 272);

@@ -33,6 +33,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ws_shadow.h" KDC_TILE_PROVIDER_
 if(NOT KDC_TILE_PROVIDER_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-widescreen-tile-provider.patch; tools/setup.ps1 includes it")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ws_shadow.h" KDC_SCENERY_PROVIDER_API
+     REGEX "^#define WS_SHADOW_TILE_PROVIDER_LAYERS 3$" LIMIT_COUNT 1)
+if(NOT KDC_SCENERY_PROVIDER_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-scenery-provider.patch after the widescreen tile provider patch")
+endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_OBJECT_PROVIDER_API
      REGEX "PpuSetExtraObjectProvider" LIMIT_COUNT 1)
 if(NOT KDC_OBJECT_PROVIDER_API)

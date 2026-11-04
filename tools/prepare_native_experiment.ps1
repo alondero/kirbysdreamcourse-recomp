@@ -90,6 +90,7 @@ if ($SdlSource) { $SdlSource = (Resolve-Path -LiteralPath $SdlSource).Path }
 $patches = @(
     'snesrecomp-launcher-with-rom.patch',
     'snesrecomp-widescreen-tile-provider.patch',
+    'snesrecomp-scenery-provider.patch',
     'snesrecomp-extra-object-provider.patch',
     'snesrecomp-apu-rate-experiment.patch',
     'snesrecomp-preanchor-experiment.patch',
