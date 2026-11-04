@@ -26,11 +26,12 @@ the token interactively. Never put a token value in a shell command, source
 file or log. No token from another project's Actions secrets can be read back
 and copied by the release skill.
 
-At the 2026-11-04 inspection Kirby had neither setting, and the conventional
-`alondero/kirbysdreamcourse-recomp-assets` repository was not accessible.
-Choose/configure the intended private repository before the first CI run.
-Creating this skill does not create a private repository, transfer a ROM,
-provision credentials or publish a game release.
+The private companion `alondero/kirbysdreamcourse-recomp-assets` and both Actions
+settings were configured on 2026-11-04. Its supported ROM was hash-verified
+before upload and the uploaded Git blob checked against the local input.
+Fork maintainers must configure their own private repository and credentials.
+The build workflow uses existing private inputs; it does not create the
+companion repository, transfer an input there or provision credentials.
 
 The workflow persists no checkout credentials. It uses private inputs for
 generation/compilation, then removes the private checkout and generated game
@@ -115,9 +116,8 @@ body. Never overwrite conflicting tags/assets while resuming a failed run.
   download-artifact: `d3f86a106a0bac45b974a628896c90dbdf5c8093`.
   Their v4 refs and MIT licenses were inspected at these exact revisions.
 
-Local build/smoke results are recorded when established below. A GitHub-hosted
-run remains unverified until the private-input settings are configured and a
-dry run is explicitly requested.
+Local and GitHub-hosted build/smoke results are recorded below. Publication
+itself remains untested because the verified CI run used `publish=false`.
 
 ## Local verification, 2026-11-04
 
@@ -126,7 +126,8 @@ Release EXE at source commit `a0f752b0ba174eb30b2d31831112537ad5a65e79`, using
 GCC 15.2.0, native CMake 4.3.1, Ninja 1.13.2 and fetched SDL 3.4.10. Staging
 initially exposed an incorrect cache-field assumption; using the project's
 actual `RECOMP_UI_ROOT` field fixed it. Staging and ZIP packaging then passed
-on that compiled EXE. The complete single-command CI build has not been run.
+on that compiled EXE. The complete shared command was subsequently verified
+by the GitHub-hosted dry run below.
 
 The local validation version is `v0.0.0-private-input-validation`, with ZIP
 SHA-256 `6430ffb6229374ade556fa0ce8e8a524439bf40a6cb38db3e5dfbd1f6a4aa892`.
@@ -146,5 +147,27 @@ divergence in `docs/compatibility.md` remains open.
 The helper tests, PowerShell parsing, skill validation and actionlint 1.7.12
 workflow validation also passed. Actionlint was downloaded from its official
 release and checked against the published SHA-256 list. The pinned CI
-CMake/Ninja Windows wheels were confirmed available on PyPI. GitHub-hosted
-checkout/build/publishing remains untested pending companion-repo settings.
+CMake/Ninja Windows wheels were confirmed available on PyPI.
+
+## GitHub-hosted verification, 2026-11-04
+
+[Dry run 41882419218](https://github.com/alondero/kirbysdreamcourse-recomp/actions/runs/41882419218)
+passed at source commit `85c76d5d72797338061bca249b1c6c279cf712c4`. It fetched
+the private input, checked the ROM hash, generated and compiled with the
+shared build command, ran tests, removed private inputs/generated source and
+uploaded exactly one binary ZIP artifact. The release job was skipped.
+
+The GitHub runner used MinGW GCC 16.2.0 and CMake 4.3.1. All 46 tests completed:
+40 passed and 6 opt-in checks were skipped. Native and fallback packaged-EXE
+checks each ran 400 no-input frames with a clean PATH, matching explicit
+developer settings throughout. A correctly sized ROM with the wrong SHA-256
+was rejected before guest execution. The first CI attempt exposed Windows
+8.3 path aliases in TEMP; staging now resolves its root before checking child
+paths, and tests cover aliases, relative roots and rejection of internal links.
+
+The downloaded ZIP passed integrity, notice/resource inventory, build metadata
+and SHA-256 verification against the checksum printed by the successful CI
+build. It is 5,754,748 bytes with 38 files, SHA-256
+`67c3486def88defdc0eb7199dd9d8151d8bb66579c59edf892864e9986a04fb6`.
+This dry run does not qualify the publication job or the interactive/full-game
+paths excluded from the local validation above.
