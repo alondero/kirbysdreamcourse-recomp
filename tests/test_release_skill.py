@@ -233,7 +233,7 @@ class ReleaseSkillTests(unittest.TestCase):
         build = self.windows_stage()
         (build / "CMakeCache.txt").write_text(
             f"KDC_BUILD_VERSION:STRING={self.tag}\nKDC_RELEASE_DEFAULTS:BOOL=ON\n"
-            f"kdc_recomp_ui_SOURCE_DIR:STATIC={self.root / 'ui'}\nCMAKE_COMMAND:INTERNAL=cmake\n")
+            f"RECOMP_UI_ROOT:PATH={self.root / 'ui'}\nCMAKE_COMMAND:INTERNAL=cmake\n")
         for name in release.NOTICES:
             shutil.copy2(build / name, self.root / name)
         (self.root / "tools").mkdir()

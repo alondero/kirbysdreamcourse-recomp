@@ -247,7 +247,7 @@ def stage_windows(args):
                 shutil.copy2(source, destination)
             pending.append(destination)
     framework = root / "local/guarded-framework"
-    ui = re.search(r"^kdc_recomp_ui_SOURCE_DIR:STATIC=(.+)$", cache, re.MULTILINE)
+    ui = re.search(r"^RECOMP_UI_ROOT:PATH=(.+)$", cache, re.MULTILINE)
     if not ui:
         raise ValueError("Cannot find the pinned UI source in CMakeCache.txt")
     info = {
@@ -315,14 +315,15 @@ def smoke_windows(args):
                     raise ValueError(f"First direct/default-environment divergence: {mode} frame {frame}")
             print(f"{mode}: {args.frames} frames; direct defaults match explicit developer settings; clean PATH")
         invalid = workspace / "wrong.sfc"
-        invalid.write_bytes(b"invalid synthetic ROM")
+        invalid.write_bytes(bytes(1048576))  # Correct length, deliberately wrong SHA-256.
         case = workspace / "native-False"
         invalid_log = workspace / "invalid.log"
         env = {**base, "KDC_FRAME_LOG": str(invalid_log)}
         result = subprocess.run((str(case / "KirbyDreamCourseRecomp.exe"), "--no-launcher", "--rom", str(invalid)),
                                 cwd=case, env=env, capture_output=True, timeout=30)
-        if result.returncode == 0 or invalid_log.exists():
-            raise ValueError("Wrong-ROM input was not rejected before guest execution")
+        if (result.returncode == 0 or invalid_log.exists()
+                or "headerless 1 MiB" not in result.stderr.decode(errors="replace")):
+            raise ValueError("Wrong-ROM input was not clearly rejected before guest execution")
         print("Wrong-ROM input rejected before guest execution")
     print("Untested here: interactive launcher, physical controllers, audio quality and full-game/reference replay.")
 

@@ -118,3 +118,33 @@ body. Never overwrite conflicting tags/assets while resuming a failed run.
 Local build/smoke results are recorded when established below. A GitHub-hosted
 run remains unverified until the private-input settings are configured and a
 dry run is explicitly requested.
+
+## Local verification, 2026-11-04
+
+The shared `tools/build_release.ps1` path generated and compiled the actual
+Release EXE at source commit `a0f752b0ba174eb30b2d31831112537ad5a65e79`, using
+GCC 15.2.0, native CMake 4.3.1, Ninja 1.13.2 and fetched SDL 3.4.10. Staging
+initially exposed an incorrect cache-field assumption; using the project's
+actual `RECOMP_UI_ROOT` field fixed it. Staging and ZIP packaging then passed
+on that compiled EXE. The complete single-command CI build has not been run.
+
+The local validation version is `v0.0.0-private-input-validation`, with ZIP
+SHA-256 `6430ffb6229374ade556fa0ce8e8a524439bf40a6cb38db3e5dfbd1f6a4aa892`.
+Its import inventory contains only Windows system DLLs. The ZIP contains the
+EXE, 11 launcher resources, provenance/readme and project/UI/toolchain notices;
+no ROM, generated source, saves or recordings are included.
+
+The extracted ZIP completed 400 no-input frames in native mode and 400 in
+fallback mode with developer tools removed from PATH. Each mode's direct
+defaults matched the CPU logs produced with explicit developer settings over
+all 400 frames; no divergence occurred in those comparisons. A wrong-ROM
+input was rejected before guest execution. These tests did not rerun the
+pinned reference comparison or qualify interactive UI, physical controllers,
+audible output, fresh-process saves or full-game paths. The existing reference
+divergence in `docs/compatibility.md` remains open.
+
+The helper tests, PowerShell parsing, skill validation and actionlint 1.7.12
+workflow validation also passed. Actionlint was downloaded from its official
+release and checked against the published SHA-256 list. The pinned CI
+CMake/Ninja Windows wheels were confirmed available on PyPI. GitHub-hosted
+checkout/build/publishing remains untested pending companion-repo settings.

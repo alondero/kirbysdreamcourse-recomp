@@ -50,11 +50,12 @@ a tag-binding defect. Diagnose actual metadata instead of deleting releases.
 
 ## Notes precedent
 
-Use the existing source releases for package-type precedent. Their brief body
-is not a reason to omit player-facing changes, coverage or build provenance.
-The release-note template adds those sections without claiming new binary or
-platform support. Do not copy the N64 template's claim that a recompiled
-executable contains no original game code: audit the actual build inputs.
+Use previous source-release tags as a change-list base where appropriate.
+Current notes must describe the EXE download and player-supplied runtime ROM,
+with observed coverage and build provenance. Keep source-build instructions
+out of the binary setup path. Do not copy the N64 template's claim that a
+recompiled executable contains no original game code: describe the actual
+compiled artifact and exclude raw ROMs/generated source files from the ZIP.
 
 ## Windows staging contract
 

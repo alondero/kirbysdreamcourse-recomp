@@ -79,6 +79,7 @@ jobs:
 
       - name: Install Windows build tools
         run: |
+          git config --global core.longpaths true
           choco install mingw -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'MinGW install failed.' }
           python -m pip install cmake==4.3.1 ninja==1.13.0
