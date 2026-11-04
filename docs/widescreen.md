@@ -258,3 +258,79 @@ X=111 becomes X=127 at screen X=400 when scroll changes 0 to 1). Static
 fine-scroll correctness is tested, but that does not prove temporal continuity.
 If a scene animates BG3 horizontal scroll, it needs separate qualification or
 a pixel-level extension policy before claiming smooth scrolling support.
+
+
+## Course-select island and sky (2026-11-04)
+
+The course-select screen uses three planes: a large island on BG1, a cloud
+plane on BG2, and sky plus a raster-switched course label on BG3. The previous
+non-course policy clipped BG1 and BG3 to the native field. The resulting
+margins showed the green backdrop and occasional wrapped cloud fragments.
+Removing the clamp alone is insufficient: the VRAM maps contain only the
+currently streamed portion of the island/cloud planes.
+
+The verified USA source maps are retained in WRAM:
+
+| Plane | Source | Layout |
+| --- | --- | --- |
+| BG1 island | `$7F:0000` | Nine 32x32-tile pages, three pages across |
+| BG2 clouds | `$7F:5000` | Same page layout, separate allocation |
+| BG3 clean sky | Render VRAM word `$6000` | First 32x32 tilemap page |
+
+Each complete world plane is 96x96 tiles (768x768 pixels). For `(x,y)` in tile
+coordinates, the page is `(y/32)*3+x/32`; its entry is `(y%32)*32+x%32`.
+Coordinates outside the nine-page plane return the transparent tile instead
+of wrapping into another island. At the inspected selection checkpoint all
+1,518 sampled native BG1/BG2 entries matched these source maps (759 per layer).
+Decoded local previews show one intact island and its complete cloud plane.
+These previews and all extracted data stay under ignored `local/`.
+
+The presentation opts in only with Mode 1, 8x8 BG tiles, BG maps `$51/$59/$61`
+and character-base register `$0230` or `$0240` (the cloud animation swaps
+character banks). The callback checks the live raster
+signature. BG1/BG2 use the existing live-scroll/WRAM-period reconstruction and
+read the complete maps; native-edge chunks retain real VRAM. BG3 reflects the
+clean sky page into the margins, using the existing scenery policy. The native
+field keeps the raster's switch to the second page for the bottom course label,
+so the label stays centered. Palette, priority, transparency, windows and color
+math remain with the PPU. No camera, selection state or generated code changes.
+
+The layer clamp is now assigned explicitly for every prepared frame: clear
+for course/select world scenes and disabled widescreen, set for bounded menus.
+This also prevents a menu clamp from persisting when changing scene. The
+source layout and selection signature are game-specific assumptions, kept out
+of the generic runtime. No additional framework patch or dependency is needed.
+
+ROM-free regressions check every source page's corners in both planes, negative
+and out-of-bounds coordinates, independent layer data, selection dispatch,
+clean sky versus the course-label map, and policy reset when leaving selection,
+disabling widescreen or returning to gameplay. The selection regression fails
+against the preceding implementation and passes after this change.
+
+
+Release compilation passes with `cmake --build local/bg-build -j 8` using the
+same native CMake/MinGW/Ninja setup as above. The 46-test Python suite passes
+with seven optional skips and `SNESRECOMP_ROOT` set to `local/bg-framework`.
+The navigation recording starts from the completed-course SRAM used below,
+presses Start at frames 301/451/651 and A at 851/1051 (ten frames each), then
+Down at 1801 and Up at 1901 (ten frames each). It runs 2,000 frames and retains
+1780-1999. The timing options are the four documented guarded defaults.
+
+- Initial SRAM SHA-256: `60a2567bfa895abd404fef9c1c25eac5a9e9c9f9a2715b2b56245d4595b52511`.
+- Recording SHA-256: `3606de88b1c2740c2db753ca8bd28b5fd92f24bc25daadfe16f2d1c5d4c06744`.
+
+All 220 checkpoints match WRAM and native-center pixels between the previous
+build, disabled widescreen, 342-column, 800-column, repeated 800-column and
+interpreter-fallback runs. Complete 800-column repeat/fallback images match,
+as do the 342-column regions shared with the wider output. There is no first
+state/center divergence in this interval. The replay covers 35 distinct camera
+positions, selects courses 1 and 2, and exercises both cloud character banks.
+Visual inspection shows the formerly clipped island edges and complete clouds
+against sky, with one centered course label and no green side borders.
+
+The original fixed `$0230` prototype re-clipped when the cloud animation
+switched to `$0240`; the longer replay caught this and the final signature and
+regression cover both. No fresh Snes9x comparison was run: the unchanged center
+and state do not resolve the existing baseline reference divergences. Extra
+and two-player selection layouts, other menu/ending screens, mosaic effects,
+all course unlock states and unsampled scene transitions remain unqualified.

@@ -13,6 +13,18 @@ static inline uint16_t KdcReadWord(const uint8_t *ram, unsigned address)
     return (uint16_t)(ram[address] | (unsigned)ram[address + 1] << 8);
 }
 
+/* Course select's complete island/cloud planes: 3x3 SNES tilemap pages
+ * (32x32 tiles per page), with separate $5000-byte source allocations. */
+static inline uint16_t KdcCourseSelectTile(const uint8_t *ram, unsigned layer,
+                                          int column, int row)
+{
+    if (layer > 1 || column < 0 || column >= 96 || row < 0 || row >= 96)
+        return 0;
+    unsigned page = (unsigned)(row / 32) * 3 + (unsigned)(column / 32);
+    unsigned index = page * 1024 + (unsigned)(row & 31) * 32 + (unsigned)(column & 31);
+    return KdcReadWord(ram, 0x10000 + layer * 0x5000 + 2 * index);
+}
+
 /* USA ROM $80:BC3E and $80:BE17: inclusive row bounds, packed word
  * offsets, and two parallel tile layers. See docs/widescreen.md. */
 static inline uint16_t KdcCourseTile(const uint8_t *ram, unsigned layer,

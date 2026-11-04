@@ -108,6 +108,42 @@ int main(void)
     KdcPrepareCourseView(p, ram, 43);
     WsShadowReset();
     assert(!WsShadowHasTileProvider(0));
+    /* Course select streams a 3x3-page island and cloud plane. */
+    p->bgmode = 9;
+    p->bgXsc[0] = 0x51; p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x61;
+    p->bgTileAdr = 0x230;
+    word(0x86, 344); word(0x88, 328);
+    p->vScroll[0] = p->vScroll[1] = 328;
+    /* Screen -8 at scroll344 is world tile42, row41: page4. */
+    unsigned select_offset = 2 * (4 * 1024 + 9 * 32 + 10);
+    word(0x10000 + select_offset, 0x8123);
+    word(0x15000 + select_offset, 0x4567);
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 272);
+    assert(WsShadowResolveTile8x8(0, -8, 328, 344, 0, 0xffff) == 0x8123);
+    assert(WsShadowResolveTile8x8(1, -8, 328, 344, 0, 0xffff) == 0x4567);
+    /* Cloud animation swaps character banks without changing the maps. */
+    p->bgTileAdr = 0x240;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 0);
+    assert(WsShadowResolveTile8x8(1, -8, 328, 344, 0, 0xffff) == 0x4567);
+    /* The native course label must not appear in the sky margins. */
+    p->vram[0x6000 + 22 * 32 + 31] = 0x1234;
+    assert(WsShadowResolveTile8x8(2, 256, 176, 256, 0, 0xffff) == (0x1234 ^ 0x4000));
+    assert(WsShadowResolveTile8x8(2, 0, 176, 256, 0, 0xffff) == 0xffff);
+    /* Leaving selection restores bounded menu policy. */
+    p->bgXsc[2] = 0x60;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 0);
+    KdcPrepareCourseView(p, ram, 0);
+    assert(p->wsLayerClamp == 0);
+    assert(!WsShadowHasTileProvider(2));
+    p->bgXsc[2] = 0x3c; p->bgTileAdr = 0x400;
+    KdcPrepareCourseView(p, ram, 43);
+    assert(p->wsLayerClamp == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 43) == 43);
     free(p);
     return 0;
 }

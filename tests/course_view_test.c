@@ -37,5 +37,24 @@ int main(void)
     assert(KdcCourseTile(ram, 0, 0xffff, 7) == 0);
     memset(ram, 0, sizeof(ram));
     assert(KdcCourseTile(ram, 0, 0, 0) == 0);
+    /* Selection maps use page-major, not linear-row or circular layout. */
+    for (unsigned layer = 0; layer < 2; ++layer) {
+        for (int page_y = 0; page_y < 3; ++page_y) {
+            for (int page_x = 0; page_x < 3; ++page_x) {
+                unsigned page = page_y * 3 + page_x;
+                unsigned base = 0x10000 + layer * 0x5000 + page * 0x800;
+                uint16_t first = 0x8100 + layer * 16 + page;
+                uint16_t last = 0x4200 + layer * 16 + page;
+                word(base, first); word(base + 0x7fe, last);
+                assert(KdcCourseSelectTile(ram, layer, page_x * 32, page_y * 32) == first);
+                assert(KdcCourseSelectTile(ram, layer, page_x * 32 + 31, page_y * 32 + 31) == last);
+            }
+        }
+        assert(KdcCourseSelectTile(ram, layer, -1, 0) == 0);
+        assert(KdcCourseSelectTile(ram, layer, 0, -1) == 0);
+        assert(KdcCourseSelectTile(ram, layer, 96, 0) == 0);
+        assert(KdcCourseSelectTile(ram, layer, 0, 96) == 0);
+    }
+    assert(KdcCourseSelectTile(ram, 2, 0, 0) == 0);
     return 0;
 }
