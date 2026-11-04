@@ -19,6 +19,9 @@ class CourseSpritesTest(unittest.TestCase):
     def test_uncovered_native_margin_pixels_survive(self):
         self.run_fixture('course_sprites_review_test.c', 'margins')
 
+    def test_margin_sprites_follow_wrapped_camera_scroll(self):
+        self.run_fixture('course_sprites_review_test.c', 'scroll')
+
     def run_fixture(self, fixture, *arguments):
         root = Path(__file__).resolve().parents[1]
         compiler = shutil.which('gcc')

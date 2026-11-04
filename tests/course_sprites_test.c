@@ -122,8 +122,8 @@ int main(void)
     Queue(&cpu, -16, 10, 0x1500, 1);
     Finish(&cpu);
     assert(displayed.invalid);
-    KdcPrepareSprites(ppu, 272);
-    PrepareLine(ppu, 10, NULL);
+    KdcPrepareSprites(ppu, ram, 272);
+    PrepareLine(ppu, 10, ram);
     assert(ppu->extraObjectCount == 0);
 
     /* Raster-time palette/VRAM, opaque black, flips, original-center mask,
@@ -137,20 +137,20 @@ int main(void)
     ppu->hScroll[0] = 400; ppu->vScroll[0] = 200;
     ppu->vram[0] = 0x00ff; /* 4bpp color 1 across row zero */
     ppu->cgram[0xc1] = 0; /* opaque black, OBJ palette 4 */
-    KdcPrepareSprites(ppu, 272);
-    ppu->extraObjectProvider(ppu, 16, NULL);
+    KdcPrepareSprites(ppu, ram, 272);
+    ppu->extraObjectProvider(ppu, 16, ppu->extraObjectContext);
     assert(ppu->extraObjectCount == 2);
     assert(objects[0].x == -4 && objects[0].math == 1 && objects[0].priority == 2);
     assert(pixels[0][0] == 0x8000 && pixels[0][4] == 0);
     assert(left_pixels == 4 && right_pixels == 8);
     ppu->cgram[0xc1] = 0x1f;
     ppu->hScroll[0] = 402;
-    PrepareLine(ppu, 16, NULL);
+    PrepareLine(ppu, 16, ram);
     assert(objects[0].x == -6 && pixels[0][0] == 0x801f);
     ppu->vram[0] = 0;
-    PrepareLine(ppu, 16, NULL);
+    PrepareLine(ppu, 16, ram);
     assert(pixels[0][0] == 0);
-    KdcPrepareSprites(ppu, 0);
+    KdcPrepareSprites(ppu, ram, 0);
     assert(!ppu->extraObjectProvider && !ppu->extraObjectCount);
     KdcResetSprites(ppu);
     assert(!displayed.count && !building.count && !request_count);

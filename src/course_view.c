@@ -123,14 +123,6 @@ static uint16_t MenuTile(const Ppu *ppu, int screen_x, uint32_t scrolled_y,
            (flip ? 0x4000 : 0) ^ (flip_y ? 0x8000 : 0);
 }
 
-static int CourseScroll(uint16_t raster, uint16_t camera)
-{
-    /* PPU scroll registers retain only ten bits. WRAM selects the world
-     * period, but may stage the next frame: keep all ten live raster bits. */
-    int origin = (int16_t)camera;
-    return origin + (int)(((unsigned)raster - (unsigned)origin + 512) & 1023) - 512;
-}
-
 static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
                             uint16_t scroll_x, uint16_t native_tile, void *context)
 {
@@ -170,10 +162,10 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
     }
     if (!selection && !KdcIsCourse(source->ppu)) return native_tile;
     /* Keep live raster fine scroll; WRAM only disambiguates its period. */
-    int x = CourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;
+    int x = KdcCourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;
     int raster_y = source->ppu->vScroll[layer];
     int y = (int)scrolled_y - raster_y +
-            CourseScroll(raster_y, KdcReadWord(source->ram, 0x88));
+            KdcCourseScroll(raster_y, KdcReadWord(source->ram, 0x88));
     return selection ? KdcCourseSelectTile(source->ram, layer, TileCoordinate(x), TileCoordinate(y)) :
                        KdcCourseTile(source->ram, layer, TileCoordinate(x), TileCoordinate(y));
 }

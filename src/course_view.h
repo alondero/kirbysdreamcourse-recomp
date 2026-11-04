@@ -14,6 +14,14 @@ static inline uint16_t KdcReadWord(const uint8_t *ram, unsigned address)
     return (uint16_t)(ram[address] | (unsigned)ram[address + 1] << 8);
 }
 
+/* PPU scroll retains ten bits. WRAM selects the nearest world period, but
+ * may stage the next frame: preserve all ten live raster bits. */
+static inline int KdcCourseScroll(uint16_t raster, uint16_t camera)
+{
+    int origin = (int16_t)camera;
+    return origin + (int)(((unsigned)raster - (unsigned)origin + 512) & 1023) - 512;
+}
+
 /* Course select's complete island/cloud planes: 3x3 SNES tilemap pages
  * (32x32 tiles per page), with separate $5000-byte source allocations. */
 static inline uint16_t KdcCourseSelectTile(const uint8_t *ram, unsigned layer,

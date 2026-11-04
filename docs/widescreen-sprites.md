@@ -1,5 +1,54 @@
 # Widescreen sprite investigation
 
+## Wrapped camera correction (2026-11-04)
+
+Recovered pieces retained signed world coordinates, but their raster placement
+subtracted the PPU's unsigned ten-bit scroll directly. A vertical camera of -1
+is stored as 1023, displacing recovered pieces by 1,024 pixels and rejecting
+every margin row. Native OAM still drew the original center, leaving characters
+cut sharply at its edges. Horizontal wrapping had the equivalent defect.
+
+Sprites now share terrain's `KdcCourseScroll` conversion. Live WRAM selects the
+nearest world period; all ten raster bits remain authoritative, including when
+WRAM already stages the next frame. The sprite provider receives the same RAM
+as terrain explicitly. Native OAM, the center mask, guest state and generated
+code are unchanged.
+
+The synthetic regression failed before the fix and passes afterward. It covers
+both edge-crossing and wholly offscreen pieces, negative X/Y, coordinates
+beyond one period, valid positive scroll above 511, and pending-camera changes.
+The Release build succeeds in `local/sprite-build`, using the existing guarded
+framework pin and state options. The 47-test suite passes with seven optional
+checks skipped; independent Standards and Spec reviews found no code issues.
+
+Two zero-input developer starts (`extra:3:3` and `normal:5:3`) each retained
+frames 450-599. All 150 center images and WRAM dumps per scene match the old
+build, including widescreen-disabled runs. Repeated complete images match;
+342-, 396- and 800-column native/fallback captures match over their shared
+width. The positive-camera scene is visually unchanged; the negative-camera
+scene restores margin objects. Its camera Y is -31 and PPU scroll is 993.
+
+A 14,600-frame prefix of the existing 17,000-frame hole-1-2 recording
+(original SHA-256 `537d4c7c310d82ca3353d35fe78442698107b56f51d004d94242e962ac6d18fa`)
+used zero initial SRAM and the four guarded timing options in
+`tools/play_experimental.ps1`. All 110 retained center images and WRAM dumps
+at frames 14490-14599 match before/after. The first intended margin change is
+frame 14546: live vertical scroll changes from 0 to 1023 while staged WRAM
+camera Y is already -2. At frame 14550 a tree and enemy previously cut at the
+native edges render completely. This reproduces the reported visual pattern;
+the exact state from the supplied screenshot was not available.
+
+The fixed EXE SHA-256 is
+`5030f6404f8f18fe49584dda7601e32b87d771436fe36f931ebec911d1589096`.
+A fresh pinned Snes9x 1.63 replay of the same prefix compared reference frames
+14547/14600 with host 14546/14599. Reference WRAM still differs at 500/526 bytes,
+first address `$0022`; 408/56 center pixels differ by more than eight RGB levels.
+Both old and fixed host builds have identical centers and WRAM at those frames,
+so these baseline reference differences are unchanged by this correction.
+Other courses, camera rotations, two-player scenes and the exact supplied
+screenshot state remain unqualified. Captures, replay inputs and generated
+content stay ignored under `local/`.
+
 Status: horizontal-margin implementation, 2026-11-01. The investigation below
 motivates the implementation and validation recorded at the end of this file.
 Whole-hole viewing and complete object/effect coverage remain unqualified.

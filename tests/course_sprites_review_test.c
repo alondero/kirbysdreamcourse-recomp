@@ -116,6 +116,54 @@ static void NativeMargins(Ppu *ppu)
                    256 * sizeof(PpuZbufType)));
 }
 
+static void WrappedScroll(CpuState *cpu, Ppu *ppu)
+{
+    /* Real scroll writes retain ten bits, while sprite requests retain full
+     * world positions. Test both edge-crossing and wholly offscreen pieces. */
+    static const int cameras[][2] = {
+        {400, 200}, {-1, 200}, {400, -31}, {-1, -1},
+        {1024, 1024}, {600, 600}, {-1025, -1025}
+    };
+    static const int positions[] = {-60, -4, 252, 300};
+    ppu->bgmode = 1;
+    ppu->screenEnabled[0] = 2;
+    ppu->bgXsc[0] = 0x51;
+    ppu->bgXsc[1] = 0x59;
+    PpuSetExtraSpace(ppu, 272);
+    ppu->vram[0] = 0x00ff;
+    ppu->cgram[0x81] = 0x1f;
+    for (unsigned c = 0; c < sizeof(cameras) / sizeof(cameras[0]); ++c) {
+        KdcResetSprites(ppu);
+        Word(0x86, cameras[c][0]);
+        Word(0x88, cameras[c][1]);
+        for (unsigned i = 0; i < 4; ++i) {
+            Word(0xc0, 0x1000);
+            Word(0xc2, positions[i]);
+            cpu->A = i;
+            cpu->Y = 16;
+            KdcObserveSprites(cpu, 0x808b09);
+        }
+        KdcObserveSprites(cpu, 0x808c12);
+        KdcObserveSprites(cpu, 0x8082ca);
+        assert(!displayed.invalid && displayed.count == 4);
+        ppu->hScroll[0] = cameras[c][0] & 1023;
+        ppu->vScroll[0] = cameras[c][1] & 1023;
+        /* Next-frame staging must not replace the live raster's fine bits. */
+        Word(0x86, cameras[c][0] + 2);
+        Word(0x88, cameras[c][1] + 2);
+        KdcPrepareSprites(ppu, ram, 272);
+        ppu->extraObjectProvider(ppu, 16, ppu->extraObjectContext);
+        assert(ppu->extraObjectCount == 4);
+        for (unsigned i = 0; i < 4; ++i) {
+            assert(objects[i].x == positions[i]);
+            for (unsigned column = 0; column < 8; ++column) {
+                int x = positions[i] + column;
+                assert(pixels[i][column] == (x < 0 || x >= 256 ? 0x801f : 0));
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -130,6 +178,7 @@ int main(int argc, char **argv)
     if (!strcmp(argv[1], "queue")) QueueClear(&cpu);
     else if (!strcmp(argv[1], "bank")) DataBank(&cpu);
     else if (!strcmp(argv[1], "margins")) NativeMargins(ppu);
+    else if (!strcmp(argv[1], "scroll")) WrappedScroll(&cpu, ppu);
     else assert(false);
     ppu_free(ppu);
     return 0;
