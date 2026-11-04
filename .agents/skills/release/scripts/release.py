@@ -1,4 +1,4 @@
-"""Read-only GitHub release helpers and local source packaging; no publishing."""
+"""Local Windows/source packaging and read-only GitHub release verification."""
 
 import argparse
 import hashlib
@@ -122,6 +122,78 @@ def source_package(args):
     print(f"\nCommit: {target}\nArchive: {path}\nSHA-256: {sha256(path)}")
 
 
+def windows_files(stage, target, tag):
+    """Check a reviewed stage, without claiming to prove linked-code provenance."""
+    required = NOTICES | {"KirbyDreamCourseRecomp.exe", "README.txt", "build-info.json"}
+    files = []
+    names = set()
+    for path in sorted(stage.rglob("*")):
+        if path.is_symlink() or path.resolve() != stage / path.relative_to(stage):
+            raise ValueError(f"Links are not permitted in Windows staging: {path}")
+        if path.is_dir():
+            continue
+        name = path.relative_to(stage)
+        lower_parts = {part.lower() for part in name.parts}
+        if (lower_parts & PRIVATE_DIRS
+                or path.suffix.lower() in PRIVATE_SUFFIXES - {".exe", ".dll"}
+                or re.search(r"\.state\d+$", path.name, re.IGNORECASE)
+                or name.as_posix().lower().startswith("assets/extracted/")):
+            raise ValueError(f"Private/generated content in Windows staging: {name}")
+        root_file = len(name.parts) == 1 and (name.name in required or path.suffix.lower() == ".dll")
+        resource = len(name.parts) > 1 and name.parts[0] in {"assets", "licenses"}
+        if not (root_file or resource) or (resource and path.suffix.lower() in {".exe", ".dll"}):
+            raise ValueError(f"Unreviewed Windows staging path: {name}")
+        names.add(name.as_posix())
+        files.append(path)
+    missing = required - names
+    if missing or not any(name.startswith("assets/") for name in names) \
+            or not any(name.startswith("licenses/") for name in names):
+        raise ValueError(f"Missing Windows package files/resources/notices: {sorted(missing)}")
+    with (stage / "KirbyDreamCourseRecomp.exe").open("rb") as executable:
+        if executable.read(2) != b"MZ":
+            raise ValueError("Expected a Windows x64 PE executable")
+        executable.seek(0x3C)
+        offset = int.from_bytes(executable.read(4), "little")
+        executable.seek(offset)
+        header = executable.read(26)
+        characteristics = int.from_bytes(header[22:24], "little")
+        if (len(header) != 26 or header[:6] != b"PE\0\0\x64\x86"
+                or header[24:26] != b"\x0b\x02" or not characteristics & 2 or characteristics & 0x2000):
+            raise ValueError("Expected a Windows x64 PE executable")
+    info = json.loads((stage / "build-info.json").read_text(encoding="utf-8-sig"))
+    if info.get("source_commit") != target or info.get("version") != tag:
+        raise ValueError("Windows build metadata does not match the target commit/version")
+    for field in ("build_command", "toolchain", "framework_revision", "ui_revision"):
+        if not isinstance(info.get(field), str) or not info[field].strip():
+            raise ValueError(f"Missing Windows build metadata: {field}")
+    return files
+
+
+def windows_package(args):
+    target = commit(args.target)
+    stage = Path(args.stage).resolve(strict=True)
+    if not stage.is_dir():
+        raise ValueError("Windows stage must be a directory")
+    files = windows_files(stage, target, args.version)
+    root = Path(run("git", "rev-parse", "--show-toplevel"))
+    destination = root / "local" / "releases" / args.version
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / "kirbysdreamcourse-recomp-windows-x64.zip"
+    if path.exists():
+        raise ValueError(f"Refusing to overwrite {path}")
+    with tempfile.TemporaryDirectory(prefix="kdc-windows-") as temporary:
+        candidate = Path(temporary) / path.name
+        with zipfile.ZipFile(candidate, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file in files:
+                archive.write(file, file.relative_to(stage).as_posix())
+        inventory = inspect_zip(candidate)
+        with path.open("xb") as output:
+            output.write(candidate.read_bytes())
+    print("\n".join(inventory))
+    print(f"\nCommit: {target}\nArchive: {path}\nSHA-256: {sha256(path)}")
+    print("Packaging does not certify linked-code provenance or runtime dependencies; review and test before publishing.")
+
+
 def verify_metadata(release, tag, title, prerelease, archive):
     expected_url = f"{REPO_URL}/releases/tag/{tag}"
     if release.get("tag_name") != tag or release.get("html_url") != expected_url:
@@ -172,6 +244,11 @@ def main():
     package.add_argument("--target", required=True)
     package.add_argument("--version", required=True, type=version)
     package.set_defaults(action=source_package)
+    windows = commands.add_parser("windows-package", help="ZIP a reviewed, prebuilt Windows x64 EXE stage")
+    windows.add_argument("--target", required=True)
+    windows.add_argument("--version", required=True, type=version)
+    windows.add_argument("--stage", required=True)
+    windows.set_defaults(action=windows_package)
     check = commands.add_parser("verify", help="Verify a published ZIP against the tested local archive")
     check.add_argument("--target", required=True)
     check.add_argument("--version", required=True, type=version)

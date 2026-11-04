@@ -1,11 +1,12 @@
 # Release notes template
 
 Save the filled body as UTF-8 under ignored `local/releases/`. Replace all
-angle-bracket placeholders and remove instructions for the unused package type.
-Every claim must hold for the tagged commit and the actual archive.
+angle-bracket placeholders. This template is for the default Windows EXE
+distribution. Every claim must hold for the tagged commit and actual archive.
+Write separate notes only if the user explicitly requests a source release.
 
 ```markdown
-> Experimental <source / Windows binary> release for testing and feedback.
+> Experimental Windows x64 release for testing and feedback.
 > <State the observed quality and the most relevant remaining limits.>
 
 ## You must supply your own ROM
@@ -13,9 +14,7 @@ Every claim must hold for the tagged commit and the actual archive.
 Provide the headerless Kirby's Dream Course (USA) ROM, 1,048,576 bytes.
 SHA-256: `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`.
 The ROM, saves, recordings and generated game-derived output are not included.
-
-<For source: This archive contains source and build tools. It requires local
-generation and compilation; it is not a ready-to-run executable.>
+<Confirm this from the build inputs and package before publication.>
 
 ## What's working
 
@@ -39,17 +38,13 @@ captures out of public reports.
 
 ## How to run
 
-<For source: Extract the ZIP into a fresh directory. Install Git, Python 3.11+,
-CMake 3.20+, Ninja and 64-bit MinGW GCC/G++ on PATH. Place your supported ROM
-at the project root, then run the commands below in PowerShell. Setup needs
-network access for pinned dependencies. Validate these steps from this ZIP.>
+1. Extract `kirbysdreamcourse-recomp-windows-x64.zip` into a fresh directory.
+2. Place your supported `Kirby's Dream Course (USA).sfc` beside the EXE.
+3. Double-click `KirbyDreamCourseRecomp.exe`.
 
-    ./tools/setup.ps1
-    ./tools/play_experimental.ps1
-
-<For a permitted Windows binary instead: name the archive, executable, ROM
-placement, required bundled files and any system prerequisites verified from
-the clean-package test. Do not require a local compiler or developer launcher.>
+Keep the bundled DLLs, `assets/` and `licenses/` in place. No compiler or local
+generation step is required. <Confirm these steps from the extracted ZIP;
+name any verified Windows/runtime prerequisites.>
 
 <Document tested controls, native/fallback selection, settings and save
 location. Link README.md at this tag for the full control/settings guide.>
@@ -57,7 +52,7 @@ location. Link README.md at this tag for the full control/settings guide.>
 ## Build provenance
 
 - Commit: `<full-sha>`
-- Package: `<asset-name>` (<source / Windows x64 binary>)
+- Package: `kirbysdreamcourse-recomp-windows-x64.zip` (Windows x64 binary)
 - SHA-256: `<archive-sha256>`
 - Build/package command: `<exact-command>`
 - Validation: <checks run on this commit and package; disclose skipped checks>

@@ -1,9 +1,10 @@
-"""ROM-free checks for source packaging and published-release verification."""
+"""ROM-free checks for Windows/source packaging and release verification."""
 
 from contextlib import redirect_stdout
 import copy
 import importlib.util
 import io
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -152,6 +153,81 @@ class ReleaseSkillTests(unittest.TestCase):
         self.assertNotEqual(repeated.returncode, 0)
         self.assertIn("Refusing to overwrite", repeated.stderr)
         self.assertEqual(release.sha256(archive), digest)
+
+    def windows_stage(self):
+        stage = self.root / "windows-stage"
+        stage.mkdir()
+        for name in release.NOTICES | {"README.txt", "assets/launcher.txt", "licenses/ui.txt"}:
+            path = stage / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Synthetic fixture\n", encoding="utf-8")
+        # Header fixture only, not a runnable executable or a gameplay test.
+        header = bytearray(154)
+        header[:2] = b"MZ"
+        header[0x3C:0x40] = (128).to_bytes(4, "little")
+        header[128:134] = b"PE\0\0\x64\x86"
+        header[150:152] = (2).to_bytes(2, "little")
+        header[152:154] = b"\x0b\x02"
+        (stage / "KirbyDreamCourseRecomp.exe").write_bytes(header)
+        self.build_info = {"source_commit": self.target, "version": self.tag,
+                           "build_command": "synthetic test fixture", "toolchain": "test",
+                           "framework_revision": "f" * 40, "ui_revision": "e" * 40}
+        (stage / "build-info.json").write_text(json.dumps(self.build_info), encoding="utf-8")
+        return stage
+
+    def test_windows_package_contains_exe_resources_notices_and_provenance(self):
+        stage = self.windows_stage()
+        args = SimpleNamespace(target=self.target, version=self.tag, stage=str(stage))
+        def fake_run(*command):
+            return str(self.root) if "--show-toplevel" in command else self.target
+        with patch.object(release, "run", side_effect=fake_run), redirect_stdout(io.StringIO()):
+            release.windows_package(args)
+            archive = self.root / "local/releases" / self.tag / "kirbysdreamcourse-recomp-windows-x64.zip"
+            names = release.inspect_zip(archive)
+            self.assertIn("KirbyDreamCourseRecomp.exe", names)
+            self.assertIn("build-info.json", names)
+            self.assertIn("assets/launcher.txt", names)
+            self.assertIn("licenses/ui.txt", names)
+            self.assertTrue(release.NOTICES.issubset(names))
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+                release.windows_package(args)
+
+    def test_windows_stage_rejects_game_data_and_session_settings(self):
+        stage = self.windows_stage()
+        for name in ("game.sfc", "save.srm", "slot.state1", "config.ini", "other.exe",
+                     "generated/compiled.c", "assets/extracted/tile.png"):
+            with self.subTest(name=name):
+                path = stage / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("Synthetic fixture", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Private/generated|Unreviewed"):
+                    release.windows_files(stage, self.target, self.tag)
+                path.unlink()
+
+    def test_windows_stage_rejects_missing_exe_and_wrong_architecture(self):
+        stage = self.windows_stage()
+        exe = stage / "KirbyDreamCourseRecomp.exe"
+        content = exe.read_bytes()
+        for replacement in (b"not a Windows program", content[:132] + b"\x4c\x01" + content[134:]):
+            exe.write_bytes(replacement)
+            with self.assertRaisesRegex(ValueError, "x64 PE"):
+                release.windows_files(stage, self.target, self.tag)
+        exe.unlink()
+        with self.assertRaisesRegex(ValueError, "Missing Windows package"):
+            release.windows_files(stage, self.target, self.tag)
+
+    def test_windows_stage_rejects_stale_metadata_and_missing_resources(self):
+        stage = self.windows_stage()
+        info_path = stage / "build-info.json"
+        for field, value in (("source_commit", "b" * 40), ("version", "v0.0.0"), ("build_command", "")):
+            with self.subTest(field=field):
+                info_path.write_text(json.dumps({**self.build_info, field: value}), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "metadata"):
+                    release.windows_files(stage, self.target, self.tag)
+        info_path.write_text(json.dumps(self.build_info), encoding="utf-8")
+        (stage / "assets/launcher.txt").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing Windows package"):
+            release.windows_files(stage, self.target, self.tag)
 
 
 if __name__ == "__main__":
