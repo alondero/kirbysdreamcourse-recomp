@@ -39,6 +39,18 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
      * their hardware source during the effect instead of changing a group. */
     if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
         return native_tile;
+    if (layer == 2) {
+        /* USA course scenery: the decompressed 32x32 map survives in WRAM
+         * before the HUD is composited into VRAM. Repeat that clean map,
+         * not the HUD-bearing display map. Keep live raster scroll/palette. */
+        if (source->ppu->bgXsc[2] != 0x3c ||
+            PPU_bgTileAdr(source->ppu, 2) != 0x4000 ||
+            PPU_bigTiles(source->ppu, 2)) return native_tile;
+        unsigned column = ((unsigned)scroll_x + (unsigned)screen_x) >> 3;
+        unsigned row = scrolled_y >> 3;
+        return KdcReadWord(source->ram,
+                          0xdadc + 2 * ((row & 31) * 32 + (column & 31)));
+    }
     /* Keep live raster fine scroll; WRAM only disambiguates its period. */
     int x = CourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;
     int raster_y = source->ppu->vScroll[layer];
@@ -51,8 +63,8 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
 {
     static const uint8_t no_hints[16] = {0};
     view = (CourseView){ppu, ram};
-    WsShadowSetTileProvider(3, extra ? CourseTile : NULL, &view);
-    /* In streamed courses BG3 is scenery; the HUD is made of objects.
+    WsShadowSetTileProvider(7, extra ? CourseTile : NULL, &view);
+    /* In streamed courses BG3 combines scenery and a tile-based HUD.
      * The runtime otherwise assumes BG3 is a centered status bar. Visible
      * SNES scanlines start at 1; zero disables the widening policy. */
     PpuSetWidescreenBg3Widen(ppu, extra && KdcIsCourse(ppu) ? 1 : 0);

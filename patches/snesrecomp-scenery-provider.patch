@@ -1,0 +1,79 @@
+--- a/runner/src/snes/ws_shadow.h
++++ b/runner/src/snes/ws_shadow.h
+@@ -14,6 +14,8 @@
+ };
+ 
+ void WsShadowReset(void);
++
++#define WS_SHADOW_TILE_PROVIDER_LAYERS 3
+ 
+ /* Optional direct source for 8x8 background margin tiles. Called at raster
+  * time with that line's scroll, before history/fold lookup. Native tiles,
+--- a/runner/src/snes/ws_shadow.c
++++ b/runner/src/snes/ws_shadow.c
+@@ -168,7 +168,7 @@
+                              void *context) {
+   s_tileProvider = provider;
+   s_tileProviderContext = context;
+-  s_tileProviderMask = provider ? (layerMask & ((1u << kLayers) - 1)) : 0;
++  s_tileProviderMask = provider ? (layerMask & ((1u << WS_SHADOW_TILE_PROVIDER_LAYERS) - 1)) : 0;
+ }
+ 
+ void WsShadowReset(void) {
+@@ -1284,7 +1284,7 @@
+ }
+ 
+ bool WsShadowHasTileProvider(int layerIndex) {
+-  return layerIndex >= 0 && layerIndex < kLayers &&
++  return layerIndex >= 0 && layerIndex < WS_SHADOW_TILE_PROVIDER_LAYERS &&
+       s_tileProvider && (s_tileProviderMask & (1u << layerIndex));
+ }
+ 
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1645,6 +1645,10 @@
+   int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
+ 
+   const uint16 *addr;
++#define SCENERY_TILE(t) (WsShadowHasTileProvider(layer) ? WsShadowResolveTile8x8( \
++    layer, (int)(dstz - dstbuf->data) - kPpuExtraLeftRight, y, \
++    (uint16_t)(ppu->hScroll[layer] + ws_bias[windex]), \
++    (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -1660,7 +1664,7 @@
+     if (x & 7) {
+       int curw = IntMin(8 - (x & 7), w);
+       w -= curw;
+-      uint32 tile = *tp;
++      uint32 tile = SCENERY_TILE(*tp);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1680,7 +1684,7 @@
+     }
+     // Handle full tiles in the middle
+     while (w >= 8) {
+-      uint32 tile = *tp;
++      uint32 tile = SCENERY_TILE(*tp);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1699,7 +1703,7 @@
+     }
+     // Handle remaining clipped part
+     if (w) {
+-      uint32 tile = *tp;
++      uint32 tile = SCENERY_TILE(*tp);
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+       uint32 bits = READ_BITS(ta, tile & 0x3ff);
+@@ -1713,6 +1717,7 @@
+       }
+     }
+   }
++#undef SCENERY_TILE
+ #undef NEXT_TP
+ #undef READ_BITS
+ #undef DO_PIXEL

@@ -2,7 +2,7 @@
 
 Widescreen is an optional presentation enhancement. Enable `[Graphics] Widescreen = 1` or the launcher's Mods > Widescreen setting. It defaults to off. The View aspect option follows the drawable by default, or selects a fixed 16:9, 21:9 or 32:9 view; fixed views are letterboxed as needed. The pinned host sizes an even-width raster using the selected view and configured SNES pixel aspect. With the default pixel shape, 16:9 uses 342 columns, 21:9 uses 448, and 32:9 uses 682. The existing runtime capacity is 800 columns; ratios beyond that capacity are letterboxed rather than stretched. Portrait/narrow windows retain the original field in automatic mode.
 
-`src/main.c` supplies adaptive geometry. `src/course_view.c` supplies presentation-only terrain through a direct tile-provider callback. `src/course_sprites.c` recovers presentation draw requests before viewport rejection and supplies horizontal-margin sprites through the PPU's extra-object compositor. Guest sprite emission/culling, collision and camera simulation retain their original behavior. The PPU owns priority, windows, palettes and color math. Course BG3 scenery fills the sides; the object-based HUD remains centered. Bounded menu foregrounds remain centered while BG2/backdrop can fill the sides. See [sprite implementation and validation](widescreen-sprites.md) for the additional hook configuration, runtime patch and remaining coverage limits.
+`src/main.c` supplies adaptive geometry. `src/course_view.c` supplies presentation-only terrain through a direct tile-provider callback. `src/course_sprites.c` recovers presentation draw requests before viewport rejection and supplies horizontal-margin sprites through the PPU's extra-object compositor. Guest sprite emission/culling, collision and camera simulation retain their original behavior. The PPU owns priority, windows, palettes and color math. Course BG3 scenery fills the sides from its clean source map; the tile-based HUD and its object elements remain centered. Bounded menu foregrounds remain centered while BG2/backdrop can fill the sides. See [sprite implementation and validation](widescreen-sprites.md) for the additional hook configuration, runtime patch and remaining coverage limits.
 
 ## Source evidence
 
@@ -72,7 +72,8 @@ sign-extending ten bits would incorrectly negate valid coordinates above 511.
 
 A separate persistent cutoff came from the runtime's default centered BG3
 policy. In the captured streamed course, the BG3 tilemap contains decorative
-islands and windmills; the HUD is drawn with objects. Course preparation now
+islands and windmills. The original investigation incorrectly classified the
+HUD as object-only; its panel is also composited into BG3 (see below). Course preparation now
 widens BG3 from visible scanline 1 and explicitly disables that policy when
 leaving the course or disabling widescreen. BG3 uses its native circular
 tilemap; the packed terrain provider remains restricted to BG1/BG2.
@@ -111,3 +112,86 @@ raster camera. Abrupt larger jumps, other courses' BG3 usage, all menu and
 save/rewind transitions, and unsampled frames remain unqualified by this
 replay. The existing moving-camera center comparison above remains relevant
 because the correction retains the live raster's complete ten-bit phase.
+
+
+## Clean scenery extension (2026-11-04)
+
+The USA ROM retains a complete 32x32 scenery tilemap at WRAM `$7E:DADC`
+through `$7E:E2DB`. The display tilemap at VRAM word `$3C00` combines this
+scenery with the HUD panel. Widening that display map repeated the panel in
+both margins. The source buffer contains the actual scenery underneath it:
+no painting, mirrored screen edges, image stretching, or extracted asset pack
+is needed. Repeating the clean map preserves the original pattern, tile flips,
+palette selection and priority at any requested margin width.
+
+`CourseTile` now supplies BG3 from this clean buffer when the live course
+signature, map `$3C` and character base `$4000` match. BG1/BG2 retain their
+world-data provider; non-course screens keep their existing presentation.
+The source is read from current WRAM, so there is no captured-frame history
+or persistent scenery cache to invalidate on load/reset. The 8x8 chunks that
+overlap the original 256 columns still use real VRAM. Both main and sub screen
+rendering retain the PPU's palette, window and color-math composition.
+
+`patches/snesrecomp-scenery-provider.patch` extends the existing generic
+margin callback to the third layer and the normal 2bpp drawer. It does not
+expand the terrain-history store or add game addresses to the runtime.
+Apply it after `snesrecomp-widescreen-tile-provider.patch`; the setup sequence
+includes it and CMake rejects older provider APIs. Both patches apply to the
+clean existing framework pin, without changing its license or revision.
+
+Source evidence: after verifying the architecture's ROM SHA-256, deterministic
+developer starts `normal:1:1` through `normal:8:1` were captured at frame 599.
+All eight scenery maps occupy the same WRAM address. In seven captures, the
+VRAM and WRAM maps differ only in rows 22-26, which contain the HUD panel;
+course two had not yet displayed that panel at this checkpoint. Decoding the
+source maps confirms complete scenery rather than blank HUD-sized holes.
+All dumps and decoded artwork remain under ignored `local/`.
+
+ROM-free tests exercise the real 2bpp drawer at margins 1, 43, 96, 213 and
+272 with every fine-scroll phase, including chunks crossing the original
+viewport boundaries. The provider fixture covers wrapped rows, negative X,
+source tile attributes, unsupported signatures and the separate terrain path.
+
+This uses the artwork's original 256-pixel repeating motif rather than
+inventing unique panoramic landmarks. Automatic sizing accepts arbitrary
+window ratios within the existing 800-column raster capacity; larger ratios
+are letterboxed, and narrow windows retain the native field. Mosaic effects
+still use the native tile source, including its HUD, during the effect.
+Menu/title artwork and unsupported rendering signatures are not reauthored.
+
+
+Validation: the Release build passes with native CMake 4.3.1, MinGW GCC 15.2,
+Ninja, the existing guarded generated source and nine guarded state options.
+Use the native MinGW resource compiler as well as its C/C++ compilers; an
+MSYS `windres` earlier failed preprocessing the Windows manifest. The final
+build command was `cmake --build local/bg-build -j 8`. The Python suite passes
+46 tests with seven optional checks skipped and `SNESRECOMP_ROOT` pointing
+to `local/bg-framework`. The new renderer fixture fails against the old
+provider and passes with this patch. `git diff --check` and patch application
+against the clean pin plus the preceding provider patch pass.
+
+Fresh deterministic developer starts used `SNESRECOMP_APU_BEAM_ELAPSED=1`,
+`SNESRECOMP_APU_HANDOFF=1`, `SNESRECOMP_APU_ABSOLUTE_PREANCHOR=1` and
+`SNESRECOMP_LLE_BOUNCE=1`, zero SRAM and no controller input. Each ran 600
+frames, retaining frames 590-599. For each of eight normal courses' first
+holes, native 256-column, 342-column, 800-column and repeated 800-column runs
+have byte-identical WRAM and original-center images. The complete repeated
+800-column images match, and their shared 342-column region matches the
+342-column run. No first divergence occurs in these 80 sampled checkpoints.
+The initial cross-build exploratory runs used mismatched timing defaults and
+are not used as state-equivalence evidence.
+
+Native-versus-800-column checks also match at all ten retained checkpoints
+for `extra:1:1`, `extra:8:1`, `multi:1:1`, `multi:4:1`, and ordinary boot to
+the title screen. Interpreter fallback (`SNESRECOMP_LLE_BOUNCE=0`) matches
+normal course 1's complete 800-column image and WRAM at frame 599. Visual
+inspection confirms that course margins contain scenery rather than HUD
+panels, including the two-player layout. The title retains its existing
+repeating framed/stars background; it has not received new artwork.
+
+No fresh Snes9x comparison was run for this presentation-only change; the
+unchanged centers and WRAM do not resolve the previously documented first
+reference divergence at host 15/reference 16. These samples do not establish
+all holes, course changes, menu/ending scenes, mosaic effects, live resizing,
+or save/load transitions. The clean map's address and scene signature remain
+USA-game-specific assumptions, not generic SNES hardware behavior.

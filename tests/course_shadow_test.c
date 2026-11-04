@@ -24,6 +24,25 @@ int main(void)
     WsShadowReset();
     KdcPrepareCourseView(p, ram, 272);
     assert(WsShadowHasTileProvider(0));
+    /* Scenery is a separate 32x32 source, including rows occupied by the
+     * native HUD. Cover every margin, fine-scroll phase and wrapped row. */
+    p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    for (unsigned i = 0; i < 1024; ++i) word(0xdadc + 2 * i, i | 0xa400);
+    assert(WsShadowHasTileProvider(2));
+    for (int scroll = 0; scroll < 8; ++scroll) {
+        for (int x = -272; x < 528; ++x) {
+            unsigned row = 1023;
+            int chunk = 8 - (((unsigned)x + scroll) & 7);
+            uint16_t expected = x < 256 && x + chunk > 0 ? 0x1234 :
+                (uint16_t)(0xa400 | 31 * 32 | ((((unsigned)x + scroll) >> 3) & 31));
+            assert(WsShadowResolveTile8x8(2, x, row, scroll, 0, 0x1234) == expected);
+        }
+    }
+    p->bgXsc[2] = 0x40; /* Unrecognised map: leave hardware data alone. */
+    assert(WsShadowResolveTile8x8(2, -8, 8, 0, 0, 0x1234) == 0x1234);
+    p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0;
     /* A camera above Y=0 wraps in the PPU's 10-bit scroll register. The
      * next-frame camera may already be zero: use it only to select the
      * 1024-pixel period, preserving the live raster's fine scroll. */

@@ -51,21 +51,37 @@ int main(void)
     p->bgTileAdr = 0x400;
     p->screenEnabled[0] = 4;
     for (int i = 0; i < 1024; ++i) p->vram[0x3c00 + i] = 1;
+    for (int i = 0; i < 1024; ++i) {
+        ram[0xdadc + 2 * i] = 2; /* Clean scenery differs from the HUD map. */
+        ram[0xdadc + 2 * i + 1] = 0;
+    }
     for (int i = 0; i < 8; ++i) p->vram[0x4008 + i] = 0xffff;
-    for (int extra = 43; extra <= 272; extra += 229) {
-        PpuPixelPrioBufs baseline, actual;
-        PpuSetExtraSpace(p, extra);
-        PpuSetWidescreenBg3Widen(p, 0);
-        ClearBackdrop(p, &baseline);
-        PpuDrawBackground_2bpp(p, &baseline, 1, false, 2, 0xb100, 0x7100);
-        KdcPrepareCourseView(p, ram, extra);
-        ClearBackdrop(p, &actual);
-        PpuDrawBackground_2bpp(p, &actual, 1, false, 2, 0xb100, 0x7100);
-        assert(memcmp(baseline.data + kPpuExtraLeftRight,
-                      actual.data + kPpuExtraLeftRight,
-                      256 * sizeof(PpuZbufType)) == 0);
-        for (int x = -extra; x < 256 + extra; ++x)
-            assert(actual.data[kPpuExtraLeftRight + x] == 0x7103);
+    for (int i = 0; i < 8; ++i) p->vram[0x4010 + i] = 0x00ff;
+    const int widths[] = {1, 43, 96, 213, 272};
+    for (unsigned i = 0; i < sizeof(widths) / sizeof(widths[0]); ++i) {
+        int extra = widths[i];
+        for (int scroll = 0; scroll < 8; ++scroll) {
+            PpuPixelPrioBufs baseline, actual;
+            p->hScroll[2] = scroll;
+            PpuSetExtraSpace(p, extra);
+            WsShadowSetTileProvider(0, NULL, NULL);
+            PpuSetWidescreenBg3Widen(p, 1);
+            ClearBackdrop(p, &baseline);
+            PpuDrawBackground_2bpp(p, &baseline, 185, false, 2, 0xb100, 0x7100);
+            KdcPrepareCourseView(p, ram, extra);
+            ClearBackdrop(p, &actual);
+            PpuDrawBackground_2bpp(p, &actual, 185, false, 2, 0xb100, 0x7100);
+            assert(memcmp(baseline.data + kPpuExtraLeftRight,
+                          actual.data + kPpuExtraLeftRight,
+                          256 * sizeof(PpuZbufType)) == 0);
+            for (int x = -extra; x < 256 + extra; ++x) {
+                /* Whole tiles overlapping the native field retain VRAM. */
+                int tile_start = x - (((unsigned)x + scroll) & 7);
+                bool native = tile_start < 256 && tile_start + 8 > 0;
+                assert(actual.data[kPpuExtraLeftRight + x] ==
+                       (native ? 0x7103 : 0x7101));
+            }
+        }
     }
     KdcPrepareCourseView(p, ram, 0);
     assert(PpuWidescreenLayerExtra(p, 2, 1, 43) == 0);
