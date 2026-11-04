@@ -9,12 +9,21 @@ typedef struct CourseView {
 
 static CourseView view;
 
-bool KdcIsCourse(const Ppu *ppu)
+static bool HasCourseLayout(const Ppu *ppu)
 {
     /* The preview uses bounded $50/$58 maps, not the streamed course. */
     return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x51 &&
            ppu->bgXsc[1] == 0x59 && (ppu->bgTileAdr & 0xff) == 0 &&
            !PPU_bigTiles(ppu, 0) && !PPU_bigTiles(ppu, 1);
+}
+
+bool KdcIsCourse(const Ppu *ppu)
+{
+    /* The scorecard reuses the course maps and character base, but replaces
+     * BG1 graphics and disables the second terrain plane. Map addresses
+     * alone cannot authorize terrain lookup or recovered gameplay sprites. */
+    return HasCourseLayout(ppu) &&
+           ((ppu->screenEnabled[0] | ppu->screenEnabled[1]) & 2) != 0;
 }
 
 static bool IsCourseSelect(const Ppu *ppu)
@@ -44,7 +53,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
 {
     const CourseView *source = context;
     bool selection = IsCourseSelect(source->ppu);
-    if (!selection && !KdcIsCourse(source->ppu)) return native_tile;
+    if (!selection && !HasCourseLayout(source->ppu)) return native_tile;
     /* Mosaic groups may span several tiles and the native boundary. Keep
      * their hardware source during the effect instead of changing a group. */
     if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
@@ -76,6 +85,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
         /* Toggle, rather than set: source artwork already uses flips. */
         return tile ^ (reflected ? 0x4000 : 0);
     }
+    if (!selection && !KdcIsCourse(source->ppu)) return native_tile;
     /* Keep live raster fine scroll; WRAM only disambiguates its period. */
     int x = CourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;
     int raster_y = source->ppu->vScroll[layer];
@@ -94,7 +104,9 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
      * The runtime otherwise assumes BG3 is a centered status bar. Visible
      * SNES scanlines start at 1; zero disables the widening policy. */
     bool world_scene = KdcIsCourse(ppu) || IsCourseSelect(ppu);
-    PpuSetWidescreenBg3Widen(ppu, extra && world_scene ? 1 : 0);
+    /* Scorecards retain course scenery even though terrain is not live. */
+    bool scenery = HasCourseLayout(ppu) || IsCourseSelect(ppu);
+    PpuSetWidescreenBg3Widen(ppu, extra && scenery ? 1 : 0);
     /* This ROM still emits ordinary signed 9-bit OAM coordinates. Do not
      * reinterpret left-edge sprites as right-margin objects, or include
      * hidden left-side objects in the hardware sprite budget. */

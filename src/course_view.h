@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 struct Ppu;
+/* Live terrain, excluding scorecards that reuse the course layout. */
 bool KdcIsCourse(const struct Ppu *ppu);
 void KdcPrepareCourseView(struct Ppu *ppu, const uint8_t *ram, int extra);
 

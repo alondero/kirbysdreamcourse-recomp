@@ -16,6 +16,7 @@ int main(void)
 {
     Ppu *p = calloc(1, sizeof(*p));
     assert(p);
+    p->screenEnabled[0] = 2;
     p->bgmode = 1;
     p->bgXsc[0] = 0x51;
     p->bgXsc[1] = 0x59;
@@ -144,6 +145,27 @@ int main(void)
     KdcPrepareCourseView(p, ram, 43);
     assert(p->wsLayerClamp == 0);
     assert(PpuWidescreenLayerExtra(p, 2, 1, 43) == 43);
+    /* Scorecard preserves course maps/characters but disables terrain BG2.
+     * Its foreground must stay bounded while BG3 scenery remains wide. */
+    p->screenEnabled[0] = 0x15;
+    p->screenEnabled[1] = 0;
+    p->hScroll[0] = p->hScroll[1] = 0;
+    p->vScroll[0] = 0; p->vScroll[1] = 256;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(!KdcIsCourse(p));
+    assert(p->wsLayerClamp == 1);
+    assert(PpuWidescreenLayerExtra(p, 0, 1, 272) == 0);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 272);
+    assert(WsShadowResolveTile8x8(0, 256, 0, 0, 0, 0x1234) == 0x1234);
+    /* A live subscreen terrain plane still qualifies as gameplay. */
+    p->screenEnabled[1] = 2;
+    assert(KdcIsCourse(p));
+    p->screenEnabled[1] = 0;
+    /* Returning to paired terrain clears the foreground clamp. */
+    p->screenEnabled[0] = 0x17;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(KdcIsCourse(p));
+    assert(p->wsLayerClamp == 0);
     free(p);
     return 0;
 }

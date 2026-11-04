@@ -334,3 +334,58 @@ regression cover both. No fresh Snes9x comparison was run: the unchanged center
 and state do not resolve the existing baseline reference divergences. Extra
 and two-player selection layouts, other menu/ending screens, mosaic effects,
 all course unlock states and unsampled scene transitions remain unqualified.
+
+
+## Between-hole scorecard classification (2026-11-04)
+
+The scorecard reuses the gameplay map registers `$51/$59/$3C` and character
+base `$0400`. It replaces BG1's character graphics with scorecard graphics
+while disabling terrain BG2 on both main and sub screens. The earlier
+map-only gameplay predicate therefore continued reading packed terrain entries
+for the margins and decoding them with scorecard graphics, producing the
+reported green/red garbage tiles. Recovered gameplay margin sprites were also
+still eligible under that predicate.
+
+`HasCourseLayout` now identifies the shared background layout separately from
+`KdcIsCourse`, which additionally requires BG2 to be enabled on at least one
+screen. Only live terrain authorizes the packed-map source and recovered
+sprites. A scorecard retains the clean reflected BG3 scenery but clamps its
+BG1 foreground to the original field. The tile callback checks the live layer
+enables before resolving terrain; no guest RAM, VRAM, palette or generated code
+is changed. Course-select classification and its full-map sources are unchanged.
+
+A synthetic transition regression fails against the former predicate and passes
+with the correction. It covers the shared map signature with BG2 disabled,
+centered foreground plus widened scenery, terrain-provider fallback, return to
+gameplay, and a terrain plane enabled only on the subscreen. Sprite fixtures
+now explicitly enable their terrain plane instead of relying on a map-only
+scene assumption.
+
+
+The deterministic course-2 first-hole route reproduced the screenshot's
+corruption. The main-screen enable changed from `$17` to `$15` at frame 5431
+while the maps and character-base register remained unchanged. That frame is
+black during the transition; the first visible corrected margin is frame 5433.
+At frame 5549 the scorecard is surrounded by clean scenery rather than terrain
+indices decoded as scorecard tiles.
+
+Release compilation succeeds in `local/score-fixed/` (a separate output path
+because Windows had the previous executable locked). The 46-test suite passes
+with seven optional skips. All 200 retained frames 5350-5549 match native-center
+pixels and WRAM between the previous build, disabled widescreen, 342-column and
+800-column runs. Their shared 342-column region matches exactly. Repeated and
+interpreter-fallback 800-column images and states also match all 200 frames.
+There is no first state/center divergence in these sampled comparisons.
+
+This replay runs 5,550 frames with the four guarded timing options documented
+above, initial SRAM SHA-256 `60a2567bfa895abd404fef9c1c25eac5a9e9c9f9a2715b2b56245d4595b52511`,
+and input-recording SHA-256 `9a30298f51e855cbd64fd5224f165eb20d91ad1cfca026638aeeb89c5fafd78d`.
+The original route remains private under `local/`; no recordings or extracted
+content are committed. No fresh reference-emulator comparison was run. Other
+scorecard layouts and unobserved cases where gameplay temporarily hides BG2
+remain unqualified; the conservative fallback keeps the native field intact.
+
+A separate 12,000-frame zero-SRAM course-1 replay reached the matching cloud/
+cliff scorecard at frame 11999. Visual inspection confirms clean margins in
+that theme as well; this additional capture is visual coverage, not a separate
+reference/state-equivalence claim.
