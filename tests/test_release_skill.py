@@ -437,6 +437,68 @@ class LinuxReleaseTests(unittest.TestCase):
                 release.verify_metadata({**metadata, "assets": assets}, self.tag,
                                         "Both platforms", True, windows, [linux])
 
+    def test_linux_packaging_rejects_links_before_private_bytes_can_be_copied(self):
+        build = self.stage / "build"
+        (build / "assets").mkdir(parents=True)
+        (build / "licenses").mkdir()
+        shutil.copy2(self.stage / "KirbyDreamCourseRecomp", build)
+        private = self.stage / "private.sfc"
+        private.write_bytes(b"Synthetic private input")
+        try:
+            (build / "assets/font.ttf").symlink_to(private)
+        except OSError:
+            self.skipTest("Symlink creation is unavailable")
+        (build / "licenses/notice.txt").write_text("Notice", encoding="utf-8")
+        (build / "CMakeCache.txt").write_text(
+            f"KDC_BUILD_VERSION:STRING={self.tag}\nKDC_RELEASE_DEFAULTS:BOOL=ON\n"
+            "SDL_SHARED:BOOL=OFF\nSDL_STATIC:BOOL=ON\nCMAKE_C_COMPILER:FILEPATH=gcc\n"
+            "SNESRECOMP_ROOT:PATH=framework\nRECOMP_UI_ROOT:PATH=ui\nCMAKE_COMMAND:INTERNAL=cmake\n",
+            encoding="utf-8")
+        (self.stage / "tools").mkdir()
+        for name in ("linux-start.sh", "release-readme-linux.txt"):
+            (self.stage / "tools" / name).write_text("Fixture", encoding="utf-8")
+
+        def fake_run(*args):
+            if args[:3] == ("git", "rev-parse", "--show-toplevel"):
+                return str(self.stage)
+            if args[0] == "readelf":
+                return "(NEEDED) Shared library: [libc.so.6]"
+            if args[0] == "objdump":
+                return "(GLIBC_2.38) symbol"
+            return "Synthetic tool/revision"
+
+        args = SimpleNamespace(target=self.target, version=self.tag, build=str(build),
+                               stage=str(self.stage / "output"))
+        with patch.object(release, "commit", return_value=self.target), \
+                patch.object(release, "run", side_effect=fake_run), \
+                self.assertRaisesRegex(ValueError, "Links are not allowed"):
+            release.package_linux(args)
+        # The private target's contents must never have become a regular file.
+        staged = self.stage / "output/assets/font.ttf"
+        self.assertTrue(staged.is_symlink())
+        self.assertFalse((self.stage / "local/releases").exists())
+        # copytree's symlinks flag only preserves children, not a linked source
+        # directory itself. Exercise both resource-root links too.
+        (build / "assets/font.ttf").unlink()
+        private_dir = self.stage / "private-directory"
+        private_dir.mkdir()
+        (private_dir / "font.ttf").write_bytes(private.read_bytes())
+        for index, name in enumerate(("assets", "licenses")):
+            with self.subTest(linked_root=name):
+                directory = build / name
+                ordinary = build / (name + "-original")
+                directory.rename(ordinary)
+                directory.symlink_to(private_dir, target_is_directory=True)
+                args.stage = str(self.stage / f"output-root-{index}")
+                try:
+                    with patch.object(release, "commit", return_value=self.target), \
+                            patch.object(release, "run", side_effect=fake_run), \
+                            self.assertRaisesRegex(ValueError, "Links are not allowed"):
+                        release.package_linux(args)
+                finally:
+                    directory.unlink()
+                    ordinary.rename(directory)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -341,7 +341,11 @@ def package_linux(args):
     shutil.copy2(executable, stage / executable.name)
     (stage / executable.name).chmod(0o755)
     for name in ("assets", "licenses"):
-        shutil.copytree(build / name, stage / name)
+        if (build / name).is_symlink():
+            raise ValueError(f"Links are not allowed in Linux build resources: {build / name}")
+        # Keep source links visible to linux_files; dereferencing here could
+        # smuggle private bytes into an otherwise permitted resource filename.
+        shutil.copytree(build / name, stage / name, symlinks=True)
     for name in NOTICES:
         shutil.copy2(root / name, stage / name)
     shutil.copy2(root / "tools/linux-start.sh", stage / "start.sh")

@@ -53,8 +53,11 @@ opened a real audio callback and opened/resumed in-game settings through
 injected keyboard input. Audible output was confirmed by the owner. A direct
 SSH launch initially remained behind Steam's interface, and controller routing
 requires a normal Steam launch; window capture alone does not qualify Gaming
-Mode input. Physical controls, sound quality, completed courses, long sessions
-and cross-build save-state reload remain unqualified by these automated checks.
+Mode input. After authorizing a backed-up non-Steam shortcut installation, the
+owner played the native build through Gaming Mode and confirmed it looked good.
+This qualifies that hands-on control/rendering path. Sound quality, the physical
+settings shortcut, completed courses, long sessions and cross-build save-state
+reload remain unqualified by these checks.
 
 ## Reset, state and persistence evidence
 

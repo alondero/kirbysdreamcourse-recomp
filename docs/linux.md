@@ -61,6 +61,10 @@ generated source, then uploads only the Linux ZIP. Publication waits for both
 Windows and Linux builds. A `publish=false` dispatch validates both without
 creating a release or tag.
 
+The optional startup tests exercise launcher skipping using a real SDL video
+driver. On CI they run under `xvfb-run` (Xvfb and xauth), rather than SDL's
+dummy driver, which would bypass the launcher decision automatically.
+
 ## Steam Deck
 
 Build on the workstation or CI and transfer only the binary package plus the
