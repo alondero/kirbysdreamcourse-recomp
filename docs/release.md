@@ -116,8 +116,8 @@ body. Never overwrite conflicting tags/assets while resuming a failed run.
   download-artifact: `d3f86a106a0bac45b974a628896c90dbdf5c8093`.
   Their v4 refs and MIT licenses were inspected at these exact revisions.
 
-Local and GitHub-hosted build/smoke results are recorded below. Publication
-itself remains untested because the verified CI run used `publish=false`.
+Local and GitHub-hosted build/smoke results are recorded below. Publication is
+recorded in the section after the dry-run evidence.
 
 ## Local verification, 2026-11-04
 
@@ -171,3 +171,32 @@ build. It is 5,754,748 bytes with 38 files, SHA-256
 `67c3486def88defdc0eb7199dd9d8151d8bb66579c59edf892864e9986a04fb6`.
 This dry run does not qualify the publication job or the interactive/full-game
 paths excluded from the local validation above.
+
+## Publication, 2026-11-05
+
+`v0.1.0` was published from tag `v0.1.0`, peeled commit
+`ff0649da58643fc8ef0d3a0a30d4b31e433492d4`, by
+[run 41937752098](https://github.com/alondero/kirbysdreamcourse-recomp/actions/runs/41937752098).
+It is a full release rather than a prerelease, so GitHub's `/releases/latest`
+now resolves to it. The asset is
+`kirbysdreamcourse-recomp-windows-x64.zip`, 5,755,912 bytes, SHA-256
+`c2e75047bfca352b0e0763b653a6ab06695afcfa020cb2148ff7d53a0555bde0`.
+The published body was replaced with the reviewed notes and the title was set
+to `Kirby's Dream Course Recompiled v0.1.0 (Windows x64)`.
+
+The first attempt at this publication failed in the release job before any
+release object existed. `$flags = if (...) { @('--latest') } else { ... }`
+assigned the flags through a pipeline, which unrolls a single-element array
+into a string, so `@flags` splatted `--latest` one character at a time and
+PowerShell stopped with `no matches found for '-'`. The two-flag prerelease
+branch stayed an array, so only the latest-release path was affected, and
+every earlier run had used `publish=false`. The workflow now assigns the
+array directly, and `tests/test_release_skill.py` runs the workflow's own
+flag selection to check the arguments `gh` receives.
+
+Verification after publication re-checked the remote tag's peeled commit,
+tag-bound URL, title, published and non-prerelease state, exact asset
+inventory, uploaded size, ZIP integrity and the downloaded SHA-256 against the
+tested archive. The interactive launcher, physical controllers, audible output
+and full-game reference replay remain unqualified, and the reference
+divergence in `docs/compatibility.md` is still open.
