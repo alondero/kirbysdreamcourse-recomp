@@ -7,6 +7,9 @@ import unittest
 
 
 class CourseSpritesTest(unittest.TestCase):
+    def test_orbit_projection_provenance_and_screen_pieces(self):
+        self.run_fixture('course_orbit_sprites_test.c')
+
     def test_recovery_and_raster_composition(self):
         self.run_fixture('course_sprites_test.c')
 

@@ -14,12 +14,25 @@ typedef struct {
     bool *widescreen;
     int pending_widescreen;
     int pending_aspect;
+    int pending_orbit;
     const char *expected_rom_hash;
     const char *last_error;
 } KdcLauncherSettingsState;
 
 static const char *const aspect_values[] = {"auto", "16:9", "21:9", "32:9"};
 static int aspect = -1;
+static int orbit = -1;
+
+bool KdcOrbitEnabled(void)
+{
+    if (orbit < 0) {
+        FILE *file = fopen("kdc-camera.cfg", "r");
+        int value = file ? fgetc(file) : '1';
+        if (file) fclose(file);
+        orbit = value != '0';
+    }
+    return orbit != 0;
+}
 
 int KdcWidescreenAspect(void)
 {
@@ -58,6 +71,18 @@ static int Count(void *ctx)
     return 1;
 }
 
+static int FeatureCount(void *ctx)
+{
+    (void)ctx;
+    return 2;
+}
+
+static int IsOrbit(const char *package, const char *feature)
+{
+    return package && feature && !strcmp(package, "kdc.presentation") &&
+           !strcmp(feature, "orbit");
+}
+
 static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
 {
     const KdcLauncherSettingsState *state = ctx;
@@ -67,14 +92,14 @@ static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
     snprintf(out->version, sizeof(out->version), "1.0.0");
     snprintf(out->name, sizeof(out->name), "Kirby's Dream Course presentation");
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
-    out->enabled = state->pending_widescreen;
+    out->enabled = state->pending_widescreen || state->pending_orbit;
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
     const KdcLauncherSettingsState *state = ctx;
-    if (index != 0 || !out) return 0;
+    if (index < 0 || index >= 2 || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
@@ -89,12 +114,26 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
     out->enabled = state->pending_widescreen;
     out->option_count = 1;
     out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
+    if (index == 1) {
+        snprintf(out->id, sizeof(out->id), "orbit");
+        snprintf(out->name, sizeof(out->name), "Orbit camera");
+        snprintf(out->description, sizeof(out->description),
+                 "On a hole: right stick left/right orbits; up/down zooms; "
+                 "stick click restores the original view. Keyboard: keypad "
+                 "4/6, 8/2 and 5. The camera starts in the original view.");
+        out->enabled = state->pending_orbit;
+        out->option_count = 0;
+    }
     return 1;
 }
 
 static int EnableFeature(void *ctx, const char *package, const char *feature, int enabled)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsOrbit(package, feature)) {
+        state->pending_orbit = enabled != 0;
+        return 1;
+    }
     if (!IsFeature(package, feature)) return 0;
     state->pending_widescreen = enabled != 0;
     return 1;
@@ -190,6 +229,16 @@ static int Commit(void *ctx, const char *rom)
         }
         aspect = state->pending_aspect;
     }
+    if (state->pending_orbit != KdcOrbitEnabled()) {
+        FILE *file = fopen("kdc-camera.cfg", "w");
+        int ok = file && fprintf(file, "%d\n", state->pending_orbit) > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) {
+            state->last_error = "Could not save camera settings.";
+            return 0;
+        }
+        orbit = state->pending_orbit;
+    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     *state->widescreen = state->pending_widescreen != 0;
@@ -212,7 +261,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .package_get = GetPackage,
         .commit = Commit,
         .last_error = LastError,
-        .feature_count = Count,
+        .feature_count = FeatureCount,
         .feature_get = GetFeature,
         .feature_enable = EnableFeature,
         .feature_option_get = GetOption,
@@ -225,6 +274,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .widescreen = widescreen,
         .pending_widescreen = *widescreen,
         .pending_aspect = KdcWidescreenAspect(),
+        .pending_orbit = KdcOrbitEnabled(),
         .expected_rom_hash = rom_sha256,
     };
     return &provider;

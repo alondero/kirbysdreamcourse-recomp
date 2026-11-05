@@ -92,6 +92,7 @@ $patches = @(
     'snesrecomp-widescreen-tile-provider.patch',
     'snesrecomp-scenery-provider.patch',
     'snesrecomp-extra-object-provider.patch',
+    'snesrecomp-camera-input.patch',
     'snesrecomp-apu-rate-experiment.patch',
     'snesrecomp-preanchor-experiment.patch',
     'snesrecomp-beam-apu-clock-experiment.patch',
@@ -153,7 +154,8 @@ foreach ($patchName in $patches) {
 }
 $config = Join-Path $project 'recomp'
 New-Item -ItemType Directory -Path $config | Out-Null
-Copy-Item -LiteralPath (Join-Path $root 'recomp/bank00.cfg') -Destination $config
+Get-ChildItem -LiteralPath (Join-Path $root 'recomp') -Filter 'bank*.cfg' -File |
+    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $config }
 $symbols = [IO.File]::ReadAllText((Join-Path $root 'recomp/symbols.toml'))
 $pattern = '(?ms)(\[\[func\]\]\s*\r?\nname\s*=\s*"I_RESET".*?\r?\nemit\s*=\s*)false'
 if ([regex]::Matches($symbols, $pattern).Count -ne 1) { throw 'Expected one disabled I_RESET symbol.' }
