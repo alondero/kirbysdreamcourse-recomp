@@ -1,4 +1,4 @@
-"""Local Windows/source packaging and read-only GitHub release verification."""
+"""Local binary/source packaging and read-only GitHub release verification."""
 
 import argparse
 import hashlib
@@ -268,7 +268,116 @@ def stage_windows(args):
     print(f"Staged Windows EXE and inspected DLL imports: {stage}")
 
 
+def linux_files(stage, target, tag):
+    """Allow only reviewed runtime resources, notices and an x86-64 ELF."""
+    stage = stage.resolve(strict=True)
+    required = NOTICES | {"KirbyDreamCourseRecomp", "start.sh", "README.txt", "build-info.json"}
+    files = []
+    names = set()
+    forbidden = PRIVATE_SUFFIXES | {".c", ".h", ".cpp", ".o", ".a", ".so"}
+    for path in sorted(stage.rglob("*")):
+        if path.is_symlink() or path.resolve() != path.absolute():
+            raise ValueError(f"Links are not allowed in Linux staging: {path}")
+        if path.is_dir():
+            continue
+        name = path.relative_to(stage)
+        resource = len(name.parts) > 1 and name.parts[0] in {"assets", "licenses"}
+        if ({part.lower() for part in name.parts} & PRIVATE_DIRS
+                or path.suffix.lower() in forbidden
+                or re.search(r"\.state\d+$", path.name, re.IGNORECASE)
+                or name.as_posix().lower().startswith("assets/extracted/")
+                or not (name.as_posix() in required or resource)):
+            raise ValueError(f"Unreviewed/private Linux staging path: {name}")
+        names.add(name.as_posix())
+        files.append(path)
+    if required - names or not any(n.startswith("assets/") for n in names) \
+            or not any(n.startswith("licenses/") for n in names):
+        raise ValueError("Missing Linux package files/resources/notices")
+    header = (stage / "KirbyDreamCourseRecomp").read_bytes()[:20]
+    if (len(header) != 20 or header[:6] != b"\x7fELF\x02\x01"
+            or header[16:18] not in (b"\x02\0", b"\x03\0") or header[18:20] != b"\x3e\0"):
+        raise ValueError("Expected a Linux x86-64 ELF executable")
+    info = json.loads((stage / "build-info.json").read_text(encoding="utf-8"))
+    if info.get("source_commit") != target or info.get("version") != tag:
+        raise ValueError("Linux build metadata does not match the target commit/version")
+    for field in ("build_command", "toolchain", "framework_revision", "ui_revision", "required_glibc"):
+        if not isinstance(info.get(field), str) or not info[field].strip():
+            raise ValueError(f"Missing Linux build metadata: {field}")
+    return files
+
+
+def package_linux(args):
+    target = commit(args.target)
+    root = Path(run("git", "rev-parse", "--show-toplevel"))
+    build = Path(args.build).resolve(strict=True)
+    stage = Path(args.stage).resolve()
+    if stage.exists():
+        raise ValueError(f"Refusing to overwrite staging directory {stage}")
+    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+
+    def setting(name):
+        match = re.search(rf"^{name}:[^=]+=(.+)$", cache, re.MULTILINE)
+        if not match:
+            raise ValueError(f"Missing build cache setting: {name}")
+        return match[1].strip()
+
+    if setting("KDC_BUILD_VERSION") != args.version or setting("KDC_RELEASE_DEFAULTS") not in {"ON", "1", "TRUE"}:
+        raise ValueError("Build cache must match the release version and enable release defaults")
+    if setting("SDL_SHARED") != "OFF" or setting("SDL_STATIC") != "ON":
+        raise ValueError("Linux release requires the pinned static SDL3 build")
+    executable = build / "KirbyDreamCourseRecomp"
+    dynamic = run("readelf", "-d", str(executable))
+    dependencies = re.findall(r"\(NEEDED\).*?\[(.+?)\]", dynamic)
+    # Everything else must be resolved deliberately before we can ship it.
+    allowed = {"libGL.so.1", "libOpenGL.so.0", "libGLX.so.0", "libstdc++.so.6",
+               "libgcc_s.so.1", "libm.so.6", "libc.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1"}
+    if not dependencies or set(dependencies) - allowed or "RPATH" in dynamic or "RUNPATH" in dynamic:
+        raise ValueError(f"Unreviewed ELF dependencies/search path: {dynamic}")
+    symbols = run("objdump", "-T", str(executable))
+    versions = re.findall(r"\bGLIBC_([0-9.]+)\b", symbols)
+    if not versions:
+        raise ValueError("Cannot determine required glibc symbol version")
+    stage.mkdir(parents=True)
+    shutil.copy2(executable, stage / executable.name)
+    (stage / executable.name).chmod(0o755)
+    for name in ("assets", "licenses"):
+        shutil.copytree(build / name, stage / name)
+    for name in NOTICES:
+        shutil.copy2(root / name, stage / name)
+    shutil.copy2(root / "tools/linux-start.sh", stage / "start.sh")
+    (stage / "start.sh").chmod(0o755)
+    shutil.copy2(root / "tools/release-readme-linux.txt", stage / "README.txt")
+    info = {
+        "source_commit": target, "version": args.version,
+        "build_command": f"python3 tools/build_release.py --version {args.version} --rom <private-input>",
+        "toolchain": run(setting("CMAKE_C_COMPILER"), "--version").splitlines()[0],
+        "framework_revision": run("git", "-C", setting("SNESRECOMP_ROOT"), "rev-parse", "HEAD"),
+        "ui_revision": run("git", "-C", setting("RECOMP_UI_ROOT"), "rev-parse", "HEAD"),
+        "cmake_version": run(setting("CMAKE_COMMAND"), "--version").splitlines()[0],
+        "required_glibc": max(versions, key=lambda v: tuple(map(int, v.split(".")))),
+        "dependencies": dependencies, "release_defaults": True,
+    }
+    (stage / "build-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    files = linux_files(stage, target, args.version)
+    destination = root / "local/releases" / args.version
+    destination.mkdir(parents=True, exist_ok=True)
+    archive_path = destination / "kirbysdreamcourse-recomp-linux-x64.zip"
+    with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file in files:
+            archive.write(file, file.relative_to(stage).as_posix())
+    inspect_zip(archive_path)
+    print(f"Archive: {archive_path}\nSHA-256: {sha256(archive_path)}\n" + json.dumps(info, indent=2))
+
+
 def smoke_windows(args):
+    smoke_binary(args, windows=True)
+
+
+def smoke_linux(args):
+    smoke_binary(args, windows=False)
+
+
+def smoke_binary(args, windows):
     root = Path(run("git", "rev-parse", "--show-toplevel"))
     identity = (root / "rom_identity.txt").read_text(encoding="utf-8-sig")
     expected = re.search(r"^expected_sha256\s*=\s*([0-9a-f]{64})\s*$", identity, re.MULTILINE)[1]
@@ -282,9 +391,14 @@ def smoke_windows(args):
     base = {key: value for key, value in os.environ.items()
             if not key.startswith(("SNESRECOMP_", "KDC_", "SDL_"))}
     # Eliminate developer-tool DLL search paths; Windows system libraries stay available.
-    system = Path(os.environ["SystemRoot"])
-    base.update(PATH=os.pathsep.join((str(system / "System32"), str(system))),
-                SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", SNESRECOMP_RUN_FRAMES=str(args.frames))
+    if windows:
+        system = Path(os.environ["SystemRoot"])
+        base["PATH"] = os.pathsep.join((str(system / "System32"), str(system)))
+    else:
+        base["PATH"] = "/usr/bin:/bin"
+        base.pop("LD_LIBRARY_PATH", None)
+    base.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", SNESRECOMP_RUN_FRAMES=str(args.frames))
+    binary_name = "KirbyDreamCourseRecomp" + (".exe" if windows else "")
     with tempfile.TemporaryDirectory(prefix="release-smoke-", dir=root / "local") as temporary:
         workspace = Path(temporary)
         for mode in ("native", "fallback"):
@@ -293,6 +407,8 @@ def smoke_windows(args):
                 case = workspace / f"{mode}-{explicit}"
                 with zipfile.ZipFile(archive) as zipped:
                     zipped.extractall(case)
+                if not windows:
+                    (case / binary_name).chmod(0o755)
                 (case / "config.ini").write_text(
                     "[General]\nSkipLauncher = 1\nAutosave = 0\n"
                     "[Graphics]\nOutputMethod = SDL-Software\n"
@@ -304,7 +420,7 @@ def smoke_windows(args):
                     env.update(defaults)
                 if mode == "fallback":
                     env["SNESRECOMP_LLE_BOUNCE"] = "0"
-                command = (str(case / "KirbyDreamCourseRecomp.exe"), "--rom", str(rom))
+                command = (str(case / binary_name), "--rom", str(rom))
                 result = subprocess.run(command, cwd=case, env=env, capture_output=True, timeout=90)
                 if result.returncode != 0:
                     raise ValueError(f"{mode} clean-PATH launch failed ({result.returncode}): {result.stderr.decode(errors='replace')}")
@@ -321,7 +437,7 @@ def smoke_windows(args):
         case = workspace / "native-False"
         invalid_log = workspace / "invalid.log"
         env = {**base, "KDC_FRAME_LOG": str(invalid_log)}
-        result = subprocess.run((str(case / "KirbyDreamCourseRecomp.exe"), "--no-launcher", "--rom", str(invalid)),
+        result = subprocess.run((str(case / binary_name), "--no-launcher", "--rom", str(invalid)),
                                 cwd=case, env=env, capture_output=True, timeout=30)
         if (result.returncode == 0 or invalid_log.exists()
                 or "headerless 1 MiB" not in result.stderr.decode(errors="replace")):
@@ -330,7 +446,7 @@ def smoke_windows(args):
     print("Untested here: interactive launcher, physical controllers, audio quality and full-game/reference replay.")
 
 
-def verify_metadata(release, tag, title, prerelease, archive):
+def verify_metadata(release, tag, title, prerelease, archive, extra_archives=()):
     expected_url = f"{REPO_URL}/releases/tag/{tag}"
     if release.get("tag_name") != tag or release.get("html_url") != expected_url:
         raise ValueError("Release is not bound to the expected tag URL")
@@ -339,16 +455,20 @@ def verify_metadata(release, tag, title, prerelease, archive):
     if release.get("name") != title:
         raise ValueError("Unexpected release title")
     assets = release.get("assets", [])
-    if len(assets) != 1 or assets[0].get("name") != archive.name:
-        raise ValueError("Expected exactly the tested ZIP asset; unexpected or missing assets")
-    asset = assets[0]
-    if asset.get("state") != "uploaded" or asset.get("size") != archive.stat().st_size:
-        raise ValueError("Asset upload state or size differs from the tested archive")
+    archives = [archive, *extra_archives]
+    if len(assets) != len(archives) or {a.get("name") for a in assets} != {a.name for a in archives}:
+        raise ValueError("Expected exactly the tested ZIP assets; unexpected or missing assets")
+    for path in archives:
+        asset = next(a for a in assets if a.get("name") == path.name)
+        if asset.get("state") != "uploaded" or asset.get("size") != path.stat().st_size:
+            raise ValueError("Asset upload state or size differs from the tested archive")
 
 
 def verify(args):
     archive = Path(args.archive).resolve(strict=True)
-    inspect_zip(archive)
+    extra_archives = [Path(p).resolve(strict=True) for p in getattr(args, "extra_archive", [])]
+    for path in [archive, *extra_archives]:
+        inspect_zip(path)
     target = commit(args.target)
     refs = run("git", "ls-remote", "--tags", f"{REPO_URL}.git",
                f"refs/tags/{args.version}", f"refs/tags/{args.version}^{{}}")
@@ -357,16 +477,17 @@ def verify(args):
     if remote_sha != target:
         raise ValueError(f"Remote tag commit {remote_sha} differs from expected {target}")
     release = api(f"repos/{REPO}/releases/tags/{quote(args.version, safe='')}")
-    verify_metadata(release, args.version, args.title, args.prerelease == "true", archive)
+    verify_metadata(release, args.version, args.title, args.prerelease == "true", archive, extra_archives)
     with tempfile.TemporaryDirectory(prefix="kdc-release-") as temporary:
-        run("gh", "release", "download", args.version, "--repo", REPO, "--pattern", archive.name,
-            "--dir", temporary)
-        downloaded = Path(temporary) / archive.name
-        inspect_zip(downloaded)
-        digest = sha256(archive)
-        if sha256(downloaded) != digest:
-            raise ValueError("Downloaded asset SHA-256 differs from the tested archive")
-    print(f"Verified: {release['html_url']}\nCommit: {target}\nAsset: {archive.name}\nSHA-256: {digest}")
+        for path in [archive, *extra_archives]:
+            run("gh", "release", "download", args.version, "--repo", REPO, "--pattern", path.name,
+                "--dir", temporary)
+            downloaded = Path(temporary) / path.name
+            inspect_zip(downloaded)
+            digest = sha256(path)
+            if sha256(downloaded) != digest:
+                raise ValueError("Downloaded asset SHA-256 differs from the tested archive")
+            print(f"Verified: {release['html_url']}\nCommit: {target}\nAsset: {path.name}\nSHA-256: {digest}")
 
 
 def main():
@@ -393,6 +514,17 @@ def main():
     stage.add_argument("--objdump", required=True)
     stage.add_argument("--toolchain-notices", required=True)
     stage.set_defaults(action=stage_windows)
+    linux = commands.add_parser("package-linux", help="Stage, inspect ELF dependencies and ZIP a guarded Linux build")
+    linux.add_argument("--target", required=True)
+    linux.add_argument("--version", required=True, type=version)
+    linux.add_argument("--build", required=True)
+    linux.add_argument("--stage", required=True)
+    linux.set_defaults(action=package_linux)
+    linux_smoke = commands.add_parser("smoke-linux", help="Run the packaged Linux executable with private ROM input")
+    linux_smoke.add_argument("--archive", required=True)
+    linux_smoke.add_argument("--rom", required=True)
+    linux_smoke.add_argument("--frames", type=int, default=400, choices=range(1, 10001), metavar="1..10000")
+    linux_smoke.set_defaults(action=smoke_linux)
     smoke = commands.add_parser("smoke-windows", help="Run the packaged EXE with private ROM input and clean PATH")
     smoke.add_argument("--archive", required=True)
     smoke.add_argument("--rom", required=True)
@@ -402,6 +534,7 @@ def main():
     check.add_argument("--target", required=True)
     check.add_argument("--version", required=True, type=version)
     check.add_argument("--archive", required=True)
+    check.add_argument("--extra-archive", action="append", default=[])
     check.add_argument("--title", required=True)
     check.add_argument("--prerelease", required=True, choices=("true", "false"))
     check.set_defaults(action=verify)

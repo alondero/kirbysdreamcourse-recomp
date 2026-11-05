@@ -1,10 +1,10 @@
-﻿# Architecture plan
+# Architecture plan
 
 Status: proposed, 2026-10-28. The experimental native-dispatch and interpreter modes complete recorded first and second courses, reload their saves, and reach course three; known divergences and incomplete gates are recorded in [docs/compatibility.md](docs/compatibility.md). Research and source links: [docs/research.md](docs/research.md). Decisions below remain hypotheses until the gates pass.
 
 ## Goal and scope
 
-Build a reproducible desktop recompilation of Kirby's Dream Course (USA), preserving original game behavior first. Translate the main 65816 CPU code to native C where analysis is sound, while retaining an interpreter for unresolved execution and a hardware runtime for the rest of the SNES. A playable program, accurate saves, and repeatable comparisons matter more than translation percentage. Start with Windows and design for portable C and CMake; add other hosts when tested. Enhancements are optional and follow baseline fidelity.
+Build a reproducible desktop recompilation of Kirby's Dream Course (USA), preserving original game behavior first. Translate the main 65816 CPU code to native C where analysis is sound, while retaining an interpreter for unresolved execution and a hardware runtime for the rest of the SNES. A playable program, accurate saves, and repeatable comparisons matter more than translation percentage. Use portable C and CMake; Linux build and Steam Deck evidence are recorded in [Linux support](docs/linux.md). Enhancements are optional and follow baseline fidelity.
 
 ## Input identity
 
@@ -50,7 +50,7 @@ Establish a reference emulator and exact version, identical ROM, initial SRAM/re
 Release distribution uses the private-input pattern from the Lamborghini and
 AeroGauge projects: a private companion repository supplies the verified ROM
 to an explicitly dispatched CI build, generated game source stays on the
-runner, and the compiled Windows EXE, dependencies and notices form the public
+runner, and the compiled Windows/Linux executables, dependencies and notices form the public
 package. ROMs, extracted game assets and generated source are excluded from
 public commits and artifacts. Players supply their own matching runtime ROM.
 This packaging model does not establish full-game compatibility or change the

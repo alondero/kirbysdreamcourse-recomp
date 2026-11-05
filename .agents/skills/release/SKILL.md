@@ -1,13 +1,13 @@
 ---
 name: release
-description: Build, package, publish and verify a downloadable Windows EXE release of Kirby's Dream Course Recomp.
+description: Build, package, publish and verify Windows and Linux binary releases of Kirby's Dream Course Recomp.
 ---
 
 # Kirby's Dream Course release
 
-Release `alondero/kirbysdreamcourse-recomp` as a **ready-to-run Windows x64 ZIP**
-containing `KirbyDreamCourseRecomp.exe`, its runtime dependencies, launcher
-resources and notices. The player supplies the ROM and launches the EXE
+Release `alondero/kirbysdreamcourse-recomp` as **ready-to-run Windows and Linux x64 ZIPs**
+containing the native executable, its runtime dependencies, launcher
+resources and notices. The player supplies the ROM and launches the game
 without Python, CMake, Ninja, a compiler or a generation step. This is the
 default meaning of release/ship/distribution for this skill.
 
@@ -89,7 +89,7 @@ release tag. State the package type, supported ROM, setup, controls, observed
 coverage, first known divergence and untested paths. Distinguish the GitHub
 prerelease flag from prose such as "experimental quality".
 
-## 3. Build the EXE, package and test before tagging
+## 3. Build, package and test before tagging
 
 Use a clean build from the full target SHA. `tools/build_release.ps1` calls
 the same setup/generator/guarded configuration as local development, sets the
@@ -110,6 +110,21 @@ publication. For a local build using the same path:
 ```powershell
 ./tools/build_release.ps1 -Version <version> -Rom <private-ROM-path> -CMake <native-Windows-cmake>
 ```
+
+For Linux x86-64, build on Ubuntu 24.04 with the dependencies and commands in
+[Linux support](../../../docs/linux.md). Both platforms use `tools/setup.py`
+for the same guarded patch order and generation settings. Linux keeps the
+pinned framework's portable frame/audio implementations and static SDL3;
+the package records required glibc and system-library dependencies.
+
+```bash
+python3 tools/build_release.py --version <version> --rom <private-ROM-path>
+python3 .agents/skills/release/scripts/release.py smoke-linux --archive local/releases/<version>/kirbysdreamcourse-recomp-linux-x64.zip --rom <private-ROM-path>
+```
+
+`package-linux` inspects ELF dependencies and stages only the executable,
+`start.sh`, resources, notices, readme and build metadata. Test the extracted
+archive on the target Linux host; report headless and visible checks separately.
 
 The shared build stages only reviewed release files under `local/release-stage`:
 
@@ -169,21 +184,22 @@ The workflow checks out the requested tag for publishing and the dispatched
 commit for dry runs. Confirm the workflow revision contains the tested build
 changes and origin names this repository. Capture the exact run ID and observe
 it in waits of at most 60 seconds so progress remains visible. The expected
-asset is `kirbysdreamcourse-recomp-windows-x64.zip`; there are no Linux/Android
-jobs. A failed build must not publish. Keep prerelease true for the current
+assets are `kirbysdreamcourse-recomp-windows-x64.zip` and
+`kirbysdreamcourse-recomp-linux-x64.zip`. Both platform jobs must pass and agree
+on commit/version before publishing. Keep prerelease true for the current
 experimental state unless the user requests otherwise.
 
-The workflow creates an initial notes body and a Windows x64 title. Replace
+The workflow creates an initial notes body and a Windows & Linux x64 title. Replace
 the body with the complete prepared UTF-8 notes once the build has passed:
 
 ```powershell
-gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recompiled <version> (Windows x64)" --notes-file <notes-path>
+gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recompiled <version> (Windows & Linux x64)" --notes-file <notes-path>
 ```
 
 ## 5. Verify the published release
 
 ```powershell
-python .agents/skills/release/scripts/release.py verify --version <version> --target <full-sha> --archive <tested-archive-path> --title "Kirby's Dream Course Recompiled <version> (Windows x64)" --prerelease true
+python .agents/skills/release/scripts/release.py verify --version <version> --target <full-sha> --archive <tested-windows-archive> --extra-archive <tested-linux-archive> --title "Kirby's Dream Course Recompiled <version> (Windows & Linux x64)" --prerelease true
 ```
 
 The helper checks the remote tag's peeled commit (including annotated tags),

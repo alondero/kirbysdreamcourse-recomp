@@ -1,10 +1,10 @@
 ﻿# Kirby's Dream Course recompilation experiment
 
-An experimental Windows build of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled EXE, runtime dependencies and notices; they require your matching ROM at runtime.
+Experimental Windows and Linux builds of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled executable, runtime dependencies and notices; they require your matching ROM at runtime.
 
 The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`. The build and launcher verify its hash. Do not share the ROM, extracted game assets or generated source.
 
-## Windows binary releases
+## Binary releases
 
 Extract `kirbysdreamcourse-recomp-windows-x64.zip`, place your matching
 `Kirby's Dream Course (USA).sfc` beside `KirbyDreamCourseRecomp.exe`, and launch
@@ -12,15 +12,23 @@ the EXE. Keep its DLLs, `assets/` and `licenses/` directories in place. Binary
 packages do not require a compiler or a code-generation step. The older
 `*-source-*.zip` releases require the source-build steps below.
 
+On Linux, extract `kirbysdreamcourse-recomp-linux-x64.zip`, put your ROM beside
+`KirbyDreamCourseRecomp`, and run `./start.sh`. Keep `assets/` and `licenses/`
+in place. If your extractor loses executable permissions, run
+`chmod +x start.sh KirbyDreamCourseRecomp` first. Linux builds target x86-64,
+Ubuntu 24.04 or newer and SteamOS; SDL3 is included in the executable. System
+OpenGL and C++ runtime libraries are required. See [Linux support](docs/linux.md)
+for build commands and Steam Deck verification limits.
+
 Maintainers use the `Build & Release` workflow and the repository's release
 skill. The workflow fetches build inputs from a private companion repository
 via `ROM_ASSETS_REPO` and `ROM_ASSETS_PAT`, verifies the ROM hash, generates and
-compiles on the runner, and uploads only the reviewed binary ZIP. See
+compiles on each platform's runner, and uploads only the reviewed binary ZIPs. See
 [release setup](docs/release.md) for configuration, dry runs and validation.
 
 ## Build and play on Windows
 
-Install Git, Python 3.11 or newer, CMake 3.20 or newer, Ninja, and a 64-bit MinGW GCC/G++ toolchain; put them on PATH. CMake downloads the pinned SDL 3.4.10 source if an SDL3 package is not installed, plus the pinned recomp-ui launcher. Setup also needs network access to fetch the pinned SNESRecomp revision.
+Install Git, Python 3.11 or newer, Rust/Cargo, CMake 3.20 or newer, Ninja, and a 64-bit MinGW GCC/G++ toolchain; put them on PATH. CMake downloads the pinned SDL 3.4.10 source if an SDL3 package is not installed, plus the pinned recomp-ui launcher. Setup also needs network access to fetch the pinned SNESRecomp revision.
 
 Place your ROM at the project root as `Kirby's Dream Course (USA).sfc`, or pass its path with `-Rom`. In PowerShell, from the repository root:
 

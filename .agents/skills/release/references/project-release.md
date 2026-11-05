@@ -1,5 +1,10 @@
 # Project release baseline
 
+Linux support was added on 2026-11-05. The current workflow builds Windows and
+Linux x64 ZIPs, requires both jobs before publication and verifies both assets.
+Use [Linux support](../../../../docs/linux.md) for commands and platform limits;
+the historical Windows baseline and evidence below remain useful provenance.
+
 Inspected 2026-11-04 at `8fb46c67b57489f8a2b5b970ba31e2bc2a90457d`.
 Recheck these facts against the selected release commit and live GitHub state.
 

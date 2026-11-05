@@ -1,12 +1,12 @@
 # Release notes template
 
 Save the filled body as UTF-8 under ignored `local/releases/`. Replace all
-angle-bracket placeholders. This template is for the default Windows EXE
+angle-bracket placeholders. This template is for the default Windows/Linux binary
 distribution. Every claim must hold for the tagged commit and actual archive.
 Write separate notes only if the user explicitly requests a source release.
 
 ```markdown
-> Experimental Windows x64 release for testing and feedback.
+> Experimental Windows and Linux x64 release for testing and feedback.
 > <State the observed quality and the most relevant remaining limits.>
 
 ## You must supply your own ROM
@@ -15,7 +15,7 @@ Provide the headerless Kirby's Dream Course (USA) ROM, 1,048,576 bytes.
 SHA-256: `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`.
 The cartridge ROM, extracted game assets, saves, recordings and generated
 source files are not included. This package contains the compiled recompiled
-EXE, built using private ROM input, plus runtime resources and notices.
+executables, built using private ROM input, plus runtime resources and notices.
 
 ## What's working
 
@@ -43,6 +43,10 @@ captures out of public reports.
 2. Place your supported `Kirby's Dream Course (USA).sfc` beside the EXE.
 3. Double-click `KirbyDreamCourseRecomp.exe`.
 
+On Linux, extract `kirbysdreamcourse-recomp-linux-x64.zip`, place the ROM beside
+`KirbyDreamCourseRecomp`, and run `./start.sh`. If needed, restore executable
+permissions with `chmod +x start.sh KirbyDreamCourseRecomp`.
+
 Keep the bundled DLLs, `assets/` and `licenses/` in place. No compiler or local
 generation step is required. <Confirm these steps from the extracted ZIP;
 name any verified Windows/runtime prerequisites.>
@@ -54,6 +58,7 @@ location. Link README.md at this tag for the full control/settings guide.>
 
 - Commit: `<full-sha>`
 - Package: `kirbysdreamcourse-recomp-windows-x64.zip` (Windows x64 binary)
+- Package: `kirbysdreamcourse-recomp-linux-x64.zip` (Linux x64 binary)
 - SHA-256: `<archive-sha256>`
 - Build/package command: `<exact-command>`
 - Validation: <checks run on this commit and package; disclose skipped checks>

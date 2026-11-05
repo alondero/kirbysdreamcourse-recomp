@@ -1,4 +1,4 @@
-"""ROM-free checks for Windows/source packaging and release verification."""
+"""ROM-free checks for binary/source packaging and release verification."""
 
 from contextlib import chdir, redirect_stdout
 import copy
@@ -350,7 +350,8 @@ class WorkflowPublishTests(unittest.TestCase):
             with self.subTest(prerelease=prerelease), tempfile.TemporaryDirectory() as temporary:
                 (Path(temporary) / "dist").mkdir()
                 environment = {**os.environ, "PRERELEASE": prerelease,
-                               "RELEASE_TAG": "v0.1.0", "SOURCE_SHA": "a" * 40}
+                               "RELEASE_TAG": "v0.1.0", "SOURCE_SHA": "a" * 40,
+                               "LINUX_VERSION": "v0.1.0", "LINUX_SOURCE_SHA": "a" * 40}
                 result = subprocess.run((shell, "-NoProfile", "-Command", probe), cwd=temporary,
                                         env=environment, capture_output=True, encoding="utf-8")
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -358,9 +359,83 @@ class WorkflowPublishTests(unittest.TestCase):
 
     def test_publish_title_matches_the_documented_title(self):
         script = "\n".join(self.release_script())
-        self.assertIn("Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows x64)", script)
+        self.assertIn("Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows & Linux x64)", script)
         skill = self.SKILL.read_text(encoding="utf-8")
-        self.assertIn("Kirby's Dream Course Recompiled <version> (Windows x64)", skill)
+        self.assertIn("Kirby's Dream Course Recompiled <version> (Windows & Linux x64)", skill)
+
+
+class LinuxReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.stage = Path(self.temporary.name)
+        self.target = "a" * 40
+        self.tag = "v0.1.2"
+        for name in release.NOTICES | {"start.sh", "README.txt"}:
+            (self.stage / name).write_text("Synthetic fixture\n", encoding="utf-8")
+        header = bytearray(64)
+        header[:6] = b"\x7fELF\x02\x01"
+        header[16:20] = b"\x03\0\x3e\0"
+        (self.stage / "KirbyDreamCourseRecomp").write_bytes(header)
+        for name in ("assets/font.ttf", "licenses/notice.txt"):
+            path = self.stage / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("Synthetic fixture\n", encoding="utf-8")
+        self.info = {"source_commit": self.target, "version": self.tag,
+                     "build_command": "python3 tools/build_release.py", "toolchain": "gcc",
+                     "framework_revision": "b" * 40, "ui_revision": "c" * 40, "required_glibc": "2.39"}
+        self.metadata = self.stage / "build-info.json"
+        self.metadata.write_text(json.dumps(self.info), encoding="utf-8")
+
+    def test_linux_stage_requires_elf_notices_and_matching_provenance(self):
+        release.linux_files(self.stage, self.target, self.tag)
+        for field in ("source_commit", "version", "required_glibc", "framework_revision"):
+            with self.subTest(field=field):
+                self.metadata.write_text(json.dumps({**self.info, field: ""}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    release.linux_files(self.stage, self.target, self.tag)
+        self.metadata.write_text(json.dumps(self.info), encoding="utf-8")
+        binary = self.stage / "KirbyDreamCourseRecomp"
+        original = binary.read_bytes()
+        for offset, replacement in ((0, b"MZ"), (4, b"\x01"), (18, b"\xb7\0")):
+            with self.subTest(offset=offset):
+                damaged = bytearray(original)
+                damaged[offset:offset + len(replacement)] = replacement
+                binary.write_bytes(damaged)
+                with self.assertRaisesRegex(ValueError, "x86-64 ELF"):
+                    release.linux_files(self.stage, self.target, self.tag)
+        binary.write_bytes(original)
+        (self.stage / "assets/font.ttf").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing Linux"):
+            release.linux_files(self.stage, self.target, self.tag)
+
+    def test_linux_stage_rejects_private_content_source_and_session_settings(self):
+        for name in ("game.sfc", "config.ini", "save.state2", "rom.cfg", "assets/extracted/tile.dat",
+                     "assets/game.c", "assets/library.so", "licenses/game.srm"):
+            with self.subTest(name=name):
+                path = self.stage / name
+                path.parent.mkdir(exist_ok=True, parents=True)
+                path.write_text("Private synthetic fixture", encoding="utf-8")
+                try:
+                    with self.assertRaisesRegex(ValueError, "Unreviewed/private"):
+                        release.linux_files(self.stage, self.target, self.tag)
+                finally:
+                    path.unlink()
+
+    def test_two_platform_release_requires_both_exact_assets(self):
+        windows = self.stage / "windows.zip"
+        linux = self.stage / "linux.zip"
+        windows.write_bytes(b"windows")
+        linux.write_bytes(b"linux")
+        metadata = {"tag_name": self.tag, "html_url": f"{release.REPO_URL}/releases/tag/{self.tag}",
+                    "draft": False, "prerelease": True, "name": "Both platforms",
+                    "assets": [{"name": p.name, "size": p.stat().st_size, "state": "uploaded"}
+                               for p in (windows, linux)]}
+        release.verify_metadata(metadata, self.tag, "Both platforms", True, windows, [linux])
+        for assets in (metadata["assets"][:1], metadata["assets"] * 2):
+            with self.subTest(assets=assets), self.assertRaises(ValueError):
+                release.verify_metadata({**metadata, "assets": assets}, self.tag,
+                                        "Both platforms", True, windows, [linux])
 
 
 if __name__ == "__main__":

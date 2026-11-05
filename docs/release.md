@@ -1,9 +1,15 @@
-# Windows binary releases
+# Binary releases
 
 The release deliverable is `kirbysdreamcourse-recomp-windows-x64.zip` containing
 `KirbyDreamCourseRecomp.exe`, launcher resources, required DLLs and notices.
 Players provide the supported ROM beside the EXE. They do not need a compiler,
 Python or code generation.
+
+Linux releases add `kirbysdreamcourse-recomp-linux-x64.zip`, containing the
+native x86-64 executable, `start.sh`, the same launcher resources and notices.
+Build prerequisites, system-library requirements and Steam Deck verification
+are recorded in [Linux support](linux.md). Both platforms use `tools/setup.py`
+for the guarded patch stack; Windows retains its PowerShell entry points.
 
 ## Private build inputs
 
@@ -87,7 +93,7 @@ gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref
 ```
 
 A dry run builds the dispatched commit with a `v0.0.0-dryrun-<sha>` version,
-uploads the tested EXE ZIP and skips publication. It uses private inputs and
+uploads the tested Windows and Linux ZIPs and skips publication. It uses private inputs and
 CI minutes. Editing the release skill alone does not authorize dispatch.
 
 After a tested commit is tagged and the tag pushed:
@@ -97,10 +103,11 @@ gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref
 ```
 
 Publication builds the requested tag, rather than whichever main commit is
-current when a runner starts. The build job has read-only public-repo access;
+current when a runner starts. Both build jobs have read-only public-repo access;
 only the release job receives `contents: write`. A build or smoke-check failure
-prevents publication. The release job publishes the tested ZIP with initial
-notes and verifies the remote tag commit, metadata and downloaded SHA-256.
+prevents publication. The release job requires both platforms to agree on the
+source commit/version, publishes both tested ZIPs with initial notes and verifies
+the remote tag commit, exact asset inventory and each downloaded SHA-256.
 Use the release skill to replace the initial notes with the complete reviewed
 body. Never overwrite conflicting tags/assets while resuming a failed run.
 
