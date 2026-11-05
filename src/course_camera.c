@@ -27,20 +27,81 @@ void KdcCameraStep(KdcCourseCamera *camera, int horizontal, int vertical,
     camera->zoom = fmax(0.25, fmin(4.0, camera->zoom * exp2(-y * seconds)));
 }
 
+/* Rotate a horizontal cell offset into screen-aligned (horizontal, depth)
+ * pixels of the original projection. */
+static void Rotate(const KdcCourseCamera *camera, double x, double y,
+                   double *horizontal, double *depth)
+{
+    double right = 32 * (x + y), forward = 32 * (x - y);
+    double c = cos(camera->yaw), s = sin(camera->yaw);
+    *horizontal = c * right - s * forward;
+    *depth = s * right + c * forward;
+}
+
+/* Screen origin of the pivot: the view center, displaced by the rotated
+ * but unmagnified original framing offset. */
+static void Pivot(const KdcCourseCamera *camera, int width, int height,
+                  double *x, double *y)
+{
+    double horizontal, depth;
+    Rotate(camera, camera->lead_x, camera->lead_y, &horizontal, &depth);
+    *x = width * 0.5 - horizontal;
+    *y = height * 0.5 - depth * 0.5;
+}
+
 KdcCameraPoint KdcCameraProject(const KdcCourseCamera *camera,
                                double x, double y, double z,
                                int width, int height)
 {
-    x -= camera->target_x;
-    y -= camera->target_y;
+    double horizontal, depth, origin_x, origin_y;
     z -= camera->target_z;
-    double right = 32 * (x + y), forward = 32 * (x - y);
-    double c = cos(camera->yaw), s = sin(camera->yaw);
-    double horizontal = c * right - s * forward;
-    double depth = s * right + c * forward;
+    Rotate(camera, x - camera->target_x, y - camera->target_y, &horizontal, &depth);
+    Pivot(camera, width, height, &origin_x, &origin_y);
     return (KdcCameraPoint){
-        width * 0.5 + camera->zoom * horizontal,
-        height * 0.5 + camera->zoom * (depth * 0.5 - 16 * z),
+        origin_x + camera->zoom * horizontal,
+        origin_y + camera->zoom * (depth * 0.5 - 16 * z),
         depth + 8 * z,
     };
+}
+
+static void World(const KdcCourseCamera *camera, double horizontal,
+                  double depth, double *x, double *y)
+{
+    double c = cos(camera->yaw), s = sin(camera->yaw);
+    double right = c * horizontal + s * depth;
+    double forward = -s * horizontal + c * depth;
+    *x = camera->target_x + (right + forward) / 64;
+    *y = camera->target_y + (right - forward) / 64;
+}
+
+bool KdcCameraUnproject(const KdcCourseCamera *camera, double screen_x,
+                        double screen_y, double depth, int width, int height,
+                        double *x, double *y, double *z)
+{
+    if (!(camera->zoom > 0) || !isfinite(depth)) return false;
+    double origin_x, origin_y;
+    Pivot(camera, width, height, &origin_x, &origin_y);
+    double horizontal = (screen_x - origin_x) / camera->zoom;
+    double vertical = (screen_y - origin_y) / camera->zoom;
+    /* vertical = d/2 - 16z and depth = d + 8z, relative to the target. */
+    double relative_z = (depth * 0.5 - vertical) / 20;
+    World(camera, horizontal, depth - 8 * relative_z, x, y);
+    *z = camera->target_z + relative_z;
+    return true;
+}
+
+bool KdcCameraUnprojectPlane(const KdcCourseCamera *camera, double screen_x,
+                             double screen_y, double z, int width, int height,
+                             double *x, double *y, double *depth)
+{
+    if (!(camera->zoom > 0) || !isfinite(z)) return false;
+    double origin_x, origin_y;
+    Pivot(camera, width, height, &origin_x, &origin_y);
+    double horizontal = (screen_x - origin_x) / camera->zoom;
+    double vertical = (screen_y - origin_y) / camera->zoom;
+    double relative_z = z - camera->target_z;
+    double planar = 2 * (vertical + 16 * relative_z);
+    World(camera, horizontal, planar, x, y);
+    *depth = planar + 8 * relative_z;
+    return true;
 }

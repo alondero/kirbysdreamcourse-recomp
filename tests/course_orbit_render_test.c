@@ -5,8 +5,10 @@
 #include "snes/snes.h"
 #include "snes/cart.h"
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 enum { width = 256, height = 224, padding = 4, stride = width + padding };
@@ -22,6 +24,10 @@ static uint32_t native_field[342 * height];
 static bool course = true;
 static bool draw_ground;
 static double world_height = 3;
+/* Scenario sprites replace the default scene when enabled. */
+static KdcOrbitSprite custom[4];
+static unsigned custom_count;
+static bool use_custom;
 
 bool KdcIsCourse(const Ppu *value) { return value == &ppu && course; }
 bool KdcOrbitEnabled(void) { return true; }
@@ -30,8 +36,12 @@ void KdcVisitOrbitSprites(const Ppu *value, const uint8_t *ram,
                          KdcOrbitSpriteVisitor visitor, void *context)
 {
     assert(value == &ppu && ram == g_ram);
+    if (use_custom) {
+        for (unsigned i = 0; i < custom_count; ++i) visitor(&custom[i], context);
+        return;
+    }
     KdcOrbitSprite world = {.x = 3, .y = 2, .z = world_height,
-        .attributes = 1, .world = true};
+        .attributes = 0x3001, .world = true};
     KdcOrbitSprite hud = {.offset_x = 20, .offset_y = 200,
         .attributes = 0x202, .world = false};
     if (draw_ground) {
@@ -39,7 +49,7 @@ void KdcVisitOrbitSprites(const Ppu *value, const uint8_t *ram,
          * raised body's screen rectangle, but must remain behind it even
          * when its draw request follows the body's in reverse OBJ order. */
         KdcOrbitSprite ground = {.x = 3, .y = 2, .z = 1,
-            .offset_y = -32, .attributes = 0x403, .world = true, .ground = true};
+            .offset_y = -32, .attributes = 0x3403, .world = true, .ground = true};
         visitor(&ground, context);
     }
     visitor(&world, context);
@@ -124,6 +134,271 @@ static void QuarterTurn(void)
     for (int i = 0; i < 60; ++i) KdcOrbitInput(32767, 0, false);
 }
 
+static void Ball(double x, double y, unsigned elevation)
+{
+    /* Player one's U/V are signed integer cells with 16-bit fractions. */
+    Word(0xd8ae, (unsigned)(int)floor(x));
+    Word(0xd8aa, (unsigned)((x - floor(x)) * 65536));
+    Word(0xd8b6, (unsigned)(int)floor(y));
+    Word(0xd8b2, (unsigned)((y - floor(y)) * 65536));
+    BallElevation(elevation);
+}
+
+static void Scroll(int x, int y)
+{
+    Word(0x86, (uint16_t)x);
+    Word(0x88, (uint16_t)y);
+    ppu.hScroll[0] = (uint16_t)(x & 1023);
+    ppu.vScroll[0] = (uint16_t)(y & 1023);
+}
+
+static void Snapshot(void)
+{
+    memcpy(saved_ram, g_ram, sizeof(g_ram));
+    saved_ppu = ppu;
+}
+
+static unsigned Bounds(const uint32_t *buffer, unsigned w, uint32_t color,
+                       int *left, int *top, int *right, int *bottom)
+{
+    unsigned count = 0;
+    *left = *top = 1 << 30;
+    *right = *bottom = -1;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < (int)w; ++x) {
+            if (buffer[y * (w + padding) + x] != color) continue;
+            ++count;
+            if (x < *left) *left = x;
+            if (x > *right) *right = x;
+            if (y < *top) *top = y;
+            if (y > *bottom) *bottom = y;
+        }
+    }
+    return count;
+}
+
+static void Zoom(int vertical, int frames)
+{
+    for (int i = 0; i < frames; ++i) KdcOrbitInput(0, vertical, false);
+}
+
+static int failures;
+#define EXPECT(c) do { if (!(c)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #c); ++failures; } } while (0)
+
+static const uint32_t red = 0xffff0000, cyan = 0xff00ffff, blue = 0xff0000ff,
+                      green = 0xff00ff00, white = 0xffffffff;
+
+static KdcOrbitSprite Body(double x, double y, double z, int offset_y)
+{
+    return (KdcOrbitSprite){.x = x, .y = y, .z = z, .offset_x = -4,
+        .offset_y = offset_y, .attributes = 0x3001, .world = true};
+}
+
+/* Scenarios share one fixture and run in order; a scenario that changes the
+ * map, scroll or camera state restores or resets what the next one needs. */
+static int Scenarios(void)
+{
+    int left, top, right, bottom;
+    double cx, cy, first_x, first_y;
+    use_custom = true;
+
+    /* Zooming in keeps the subject in view. The original camera frames the
+     * ball 80 pixels left of center; that look-ahead must not be magnified
+     * 4x with the course, pushing the player off screen. */
+    Ball(3, 2, 1);
+    custom[0] = Body(3, 2, 1, -8);
+    custom_count = 1;
+    Scroll(112, 40);
+    Snapshot();
+    NativeAngle();
+    Zoom(-32768, 150);
+    Draw();
+    unsigned count = CountColor(pixels, red, &cx, &cy);
+    EXPECT(count == 64 * 16);
+    EXPECT(fabs(cx - 128) < 100 && fabs(cy - 112) < 70);
+    first_x = cx;
+    first_y = cy;
+    /* In flight the pivot stays on the ground beneath the ball, so bounces
+     * do not shake the course. Zoomed in, a high ball would then leave the
+     * top of the screen: the view rises just enough to keep it in frame. */
+    Ball(3, 2, 7);
+    custom[0] = Body(3, 2, 7, -8);
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64 * 16);
+    EXPECT(cx == first_x && cy - 16 >= 0);
+    /* Back on the ground, the view returns to the ground pivot. */
+    Ball(3, 2, 1);
+    custom[0] = Body(3, 2, 1, -8);
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64 * 16);
+    EXPECT(cx == first_x && cy == first_y);
+    /* Zoomed out, the look-ahead shrinks with the course, so the course
+     * stays centered around the original view instead of drifting away. */
+    KdcOrbitInput(0, 0, true);
+    NativeAngle();
+    Zoom(32767, 150);
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) > 0);
+    EXPECT(fabs(cx - 128) < 25 && fabs(cy - 112) < 15);
+    /* Turned away from the original angle, its look-ahead points at an
+     * unrelated part of the screen; it fades out and centers the player.
+     * The body's center is four pixels above its ground anchor. */
+    KdcOrbitInput(0, 0, true);
+    NativeAngle();
+    QuarterTurn();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    EXPECT(fabs(cx - 127.5) < 1 && fabs(cy - 107.5) < 1);
+
+    /* After the ball reaches another elevation, the orbit pivot follows the
+     * ground beneath it rather than the tee's height. */
+    Ball(3, 2, 1);
+    custom[0] = Body(3, 2, 1, -8);
+    Scroll(32, -1);
+    Snapshot();
+    NativeAngle();
+    QuarterTurn();
+    Draw();
+    EXPECT(CountColor(pixels, red, &first_x, &first_y) == 64);
+    TerrainElevation(4);
+    Ball(3, 2, 5);
+    custom[0] = Body(3, 2, 5, -8);
+    Scroll(32, -65);
+    Zoom(0, 60);
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    EXPECT(fabs(cx - first_x) <= 1 && fabs(cy - first_y) <= 1);
+    TerrainElevation(0);
+    Ball(3, 2, 1);
+    Scroll(32, -1);
+
+    /* An original sprite extends below its ground anchor (e.g. the hole,
+     * shadows and feet). Those rows rest on the ground instead of being
+     * buried by it, including when the guest height is quantized slightly
+     * below the reconstructed surface. */
+    for (unsigned below = 0; below < 2; ++below) {
+        custom[0] = Body(2, 2, below ? 0.97 : 1, -4);
+        Snapshot();
+        NativeAngle();
+        QuarterTurn();
+        Draw();
+        EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    }
+    /* A sprite a full step below the surface remains hidden. */
+    custom[0] = Body(2, 2, 0, -4);
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
+
+    /* Ground decals keep the original image at the native angle, then turn
+     * with the course: a quarter turn exchanges its screen-space width and
+     * height relationship, as for the terrain artwork beneath it. */
+    custom[0] = (KdcOrbitSprite){.x = 2, .y = 2, .z = 1, .offset_x = -4,
+        .offset_y = -4, .attributes = 0x3403, .world = true, .ground = true};
+    NativeAngle();
+    Draw();
+    EXPECT(Bounds(pixels, width, cyan, &left, &top, &right, &bottom) == 64);
+    EXPECT(right - left == 7 && bottom - top == 7);
+    QuarterTurn();
+    Draw();
+    EXPECT(Bounds(pixels, width, cyan, &left, &top, &right, &bottom) > 48);
+    EXPECT(right - left >= 14 && bottom - top <= 6);
+    /* A raised body always stands in front of its decal. */
+    custom[1] = Body(2, 2, 1, -4);
+    custom_count = 2;
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    /* Zoomed out to half size the decal is filtered, not dropped: its
+     * 64 source pixels cover about a quarter as many output pixels. */
+    custom_count = 1;
+    NativeAngle();
+    Zoom(32767, 60);
+    Draw();
+    unsigned decal = Bounds(pixels, width, cyan, &left, &top, &right, &bottom);
+    EXPECT(decal >= 12 && decal <= 20);
+    EXPECT(right - left <= 4 && bottom - top <= 4);
+
+    /* Outer cliffs end at the base elevation, as in the original artwork:
+     * the 4x4 course spans 128 rows down its center plus one 16-row wall. */
+    custom_count = 0;
+    Scroll(0, 0);
+    Snapshot();
+    NativeAngle();
+    Draw();
+    unsigned column = 0;
+    for (unsigned y = 0; y < height; ++y)
+        column += pixels[y * stride + 128] != blue;
+    EXPECT(column >= 142 && column <= 146);
+
+    /* Wide scenery margins use the PR #23 reflection of the clean map, not
+     * a 256-pixel wrap. Row 12 has an opaque tile only in column 31. */
+    Word(0xdadc + 2 * (12 * 32 + 31), 0x0c02);
+    ppu.cgram[13] = 0x7fff;
+    Snapshot();
+    Fill(wide_pixels, sizeof(wide_pixels) / sizeof(*wide_pixels));
+    assert(KdcOrbitDraw((uint8_t *)wide_pixels, (342 + padding) * 4, NULL, 342, height, 1));
+    EXPECT(wide_pixels[100 * (342 + padding) + 43 + 260] == white);
+    EXPECT(wide_pixels[100 * (342 + padding) + 43 - 5] == blue);
+    Word(0xdadc + 2 * (12 * 32 + 31), 0);
+    ppu.cgram[13] = 0;
+
+    /* OBJ priority masks follow the original artwork at every angle: e.g.
+     * the cup's priority-0 interior shows only through the transparent
+     * hole in the floor tiles. (2,2,1) projects natively to (128,96), so
+     * this 8x8 piece covers terrain tiles 15-16 in rows 11-12. */
+    static const unsigned masks[][3] = {
+        /* tile word, OBJ priority, visible */
+        {0x0001, 0, 0}, {0x0000, 0, 1}, {0x0001, 1, 0}, {0x0001, 2, 1},
+        {0x2001, 2, 0}, {0x2001, 3, 1},
+    };
+    for (unsigned m = 0; m < sizeof(masks) / sizeof(masks[0]); ++m) {
+        for (unsigned row = 11; row <= 12; ++row)
+            for (unsigned c = 15; c <= 16; ++c)
+                Word(0x13000 + (row * 64 + c) * 2, masks[m][0]);
+        custom[0] = Body(2, 2, 1, -4);
+        custom[0].attributes = (uint16_t)(masks[m][1] << 12 | 1);
+        custom_count = 1;
+        Snapshot();
+        NativeAngle();
+        Draw();
+        EXPECT(CountColor(pixels, red, &cx, &cy) == 64 * masks[m][2]);
+        QuarterTurn();
+        Draw();
+        EXPECT(CountColor(pixels, red, &cx, &cy) == 64 * masks[m][2]);
+    }
+    for (unsigned row = 11; row <= 12; ++row)
+        for (unsigned c = 15; c <= 16; ++c)
+            Word(0x13000 + (row * 64 + c) * 2, 1);
+    custom_count = 0;
+
+    /* Zoomed out, each output pixel covers several texels. Average them
+     * rather than point-sampling one, which shimmers on fine patterns. */
+    ppu.cgram[3] = 0x7fff;
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[16 + y] = 0xaaff;
+    Snapshot();
+    NativeAngle();
+    Zoom(32767, 150);
+    Draw();
+    unsigned mixed = 0, terrain = 0;
+    for (unsigned y = 0; y < height; ++y) {
+        for (unsigned x = 0; x < width; ++x) {
+            uint32_t p = pixels[y * stride + x];
+            if (p == blue || p == 0xffffff00 || p == 0xffff00ff) continue;
+            ++terrain;
+            mixed += p != green && p != white;
+        }
+    }
+    EXPECT(terrain > 500 && mixed > terrain / 2);
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[16 + y] = 0x00ff;
+    ppu.cgram[3] = 0;
+    Snapshot();
+    use_custom = false;
+    return failures != 0;
+}
+
 int main(void)
 {
     cart.rom = rom;
@@ -134,6 +409,7 @@ int main(void)
     Word(0x8b94, 4);
     Word(0x8b9e, 112);
     memset(g_ram + 0x6b90, 1, 16); /* Flat cells, synthetic selector table zero. */
+    Ball(3, 2, 0); /* Player one's ball beneath the red original body. */
     /* A green terrain plane, made from one uniformly opaque 4bpp tile. */
     for (unsigned row = 0; row < 64; ++row) {
         Word(0x93b0 + row * 2, 0);
@@ -199,7 +475,9 @@ int main(void)
     for (int i = 0; i < 30; ++i) KdcOrbitInput(32767, 0, false);
     Draw();
     assert(CountColor(pixels, 0xffff0000, &other_x, &other_y) > 40);
-    assert(other_x < red_x - 20); /* Actual world orbit, not a menu setting. */
+    /* Actual world orbit, not a menu setting: 45 degrees about the ball's
+     * ground point, with the original look-ahead scaled by cos(45). */
+    assert(other_x == red_x - 15 && other_y == red_y + 8);
     assert(memcmp(first, pixels, sizeof(first)));
     assert(pixels[200 * stride + 20] == 0xffffff00);
     assert(pixels[191 * stride + 16] == 0xffff00ff);
@@ -327,5 +605,5 @@ int main(void)
     Draw();
     assert(CountColor(pixels, 0xffff0000, &other_x, &other_y) == 64);
     assert(other_x == red_x && other_y == red_y);
-    return 0;
+    return Scenarios();
 }

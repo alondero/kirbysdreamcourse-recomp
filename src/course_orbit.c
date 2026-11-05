@@ -47,6 +47,21 @@ void KdcOrbitReset(void)
     focus_player = ~0u;
 }
 
+/* Player ball U/V: signed integer cells with 16-bit fractions. */
+static double BallCoordinate(unsigned player, unsigned low)
+{
+    return (int16_t)KdcReadWord(g_ram, low + 4 + player) +
+           KdcReadWord(g_ram, low + player) / 65536.0;
+}
+
+/* Player ball height in elevation steps: a 16.16 value at $D8BE/$D8BA in
+ * which one terrain step is $5A82 (23170) units, as in course_geometry.c. */
+static double BallHeight(unsigned player)
+{
+    return ((int16_t)KdcReadWord(g_ram, 0xd8be + player) * 65536.0 +
+            KdcReadWord(g_ram, 0xd8ba + player)) / 23170.0;
+}
+
 void KdcOrbitInput(int horizontal, int vertical, bool reset)
 {
     if (!g_snes || !g_snes->ppu || !KdcIsCourse(g_snes->ppu)) {
@@ -58,31 +73,39 @@ void KdcOrbitInput(int horizontal, int vertical, bool reset)
         KdcOrbitReset();
         map_id = current;
     }
+    const double seconds = 1.0 / 60.0988;
     bool was_active = camera.active;
-    KdcCameraStep(&camera, horizontal, vertical, reset, 1.0 / 60.0988);
+    KdcCameraStep(&camera, horizontal, vertical, reset, seconds);
     if (reset || (!was_active && camera.active)) focus_ready = false;
     unsigned player = KdcReadWord(g_ram, 0x1803);
-    if (camera.active && (!focus_ready || player != focus_player)) {
-        /* Orbit at the player's elevation, not the zero-height plane far
-         * below an elevated course. Keep it fixed during airborne shots;
-         * the original camera still supplies the horizontal tracking. */
-        if (player == 0 || player == 2) {
-            unsigned proxy = KdcReadWord(g_ram, 0x6b4e);
-            bool ball_ready = (int16_t)KdcReadWord(g_ram, 0x87e + player) >= 0;
-            bool proxy_ready = proxy < 128 && !(proxy & 1) &&
-                               KdcReadWord(g_ram, 0x4e1c + proxy) == 0x1a;
-            /* Course PPU registers appear before the hole loader has
-             * initialized the ball. Do not freeze a zero-height pivot. */
-            if (!ball_ready && !proxy_ready) return;
-            double z = ((int16_t)KdcReadWord(g_ram, 0xd8be + player) * 65536.0 +
-                        KdcReadWord(g_ram, 0xd8ba + player)) / 23170.0;
-            if (z >= -2 && z <= 200) {
-                focus_height = z;
-                focus_ready = true;
-                focus_player = player;
-            }
-        }
-    }
+    if (!camera.active || (player != 0 && player != 2)) return;
+    unsigned proxy = KdcReadWord(g_ram, 0x6b4e);
+    bool ball_ready = (int16_t)KdcReadWord(g_ram, 0x87e + player) >= 0;
+    bool proxy_ready = proxy < 128 && !(proxy & 1) &&
+                       KdcReadWord(g_ram, 0x4e1c + proxy) == 0x1a;
+    /* Course PPU registers appear before the hole loader has initialized
+     * the ball. Do not adopt its temporary zero-height pivot. */
+    if (!ball_ready && !proxy_ready) return;
+    /* Orbit at the ground beneath the player, not the zero-height plane
+     * far below an elevated course or the tee's height after a shot to
+     * another level. Ground (not ball) height keeps bounces from shaking
+     * the course; easing hides cliff steps. Over void, keep the last. */
+    double z = BallHeight(player), ground;
+    KdcCourseGeometry geometry;
+    if (g_snes->cart && KdcCourseGeometryInit(&geometry, g_ram, sizeof(g_ram),
+            g_snes->cart->rom, g_snes->cart->romImageSize) &&
+        KdcCourseGeometrySample(&geometry, BallCoordinate(player, 0xd8aa),
+                                BallCoordinate(player, 0xd8b2), &ground))
+        z = ground;
+    else if (focus_ready && player == focus_player)
+        z = focus_height;
+    if (!(z >= -2 && z <= 200)) return;
+    if (!focus_ready || player != focus_player)
+        focus_height = z;
+    else
+        focus_height += (z - focus_height) * (1 - exp(-seconds / 0.1));
+    focus_ready = true;
+    focus_player = player;
 }
 
 static uint32_t Color(unsigned rgb15)
@@ -122,6 +145,13 @@ static uint32_t TerrainColor(const Render *render, double u, double v,
     return Color(render->ppu->cgram[((words[layer] >> 10) & 7) * 16 + pixels[layer]]);
 }
 
+/* Texel footprint per output pixel, rounded: near 1x (above about 0.67x)
+ * pixel art stays point-sampled and sharp; at most a 4x4 grid. */
+static int Samples(double scale)
+{
+    return scale > 0 ? (int)fmax(1, fmin(4, floor(1 / scale + 0.5))) : 1;
+}
+
 static double Edge(KdcCameraPoint a, KdcCameraPoint b, double x, double y)
 {
     return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
@@ -141,6 +171,10 @@ static void Triangle(Render *render, Vertex a, Vertex b, Vertex c,
     int right = (int)fmin(render->width - 1, ceil(fmax(p[0].x, fmax(p[1].x, p[2].x))));
     int top = (int)fmax(0, floor(fmin(p[0].y, fmin(p[1].y, p[2].y))));
     int bottom = (int)fmin(render->height - 1, ceil(fmax(p[0].y, fmax(p[1].y, p[2].y))));
+    /* Zoomed out, one output pixel spans several source texels. Average a
+     * grid across its footprint instead of point-sampling one, which makes
+     * fine checkerboards shimmer. The texture is affine in screen space. */
+    int samples = textured ? Samples(camera.zoom) : 1;
     for (int y = top; y <= bottom; ++y) {
         uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
         for (int x = left; x <= right; ++x) {
@@ -152,15 +186,36 @@ static void Triangle(Render *render, Vertex a, Vertex b, Vertex c,
             unsigned index = y * render->width + x;
             if (depth < render->depth[index]) continue;
             render->depth[index] = (float)depth;
-            row[x] = textured ? TerrainColor(render,
-                w0 * a.texture_x + w1 * b.texture_x + w2 * c.texture_x,
-                w0 * a.texture_y + w1 * b.texture_y + w2 * c.texture_y, color) : color;
+            if (!textured) { row[x] = color; continue; }
+            if (samples == 1) {
+                row[x] = TerrainColor(render,
+                    w0 * a.texture_x + w1 * b.texture_x + w2 * c.texture_x,
+                    w0 * a.texture_y + w1 * b.texture_y + w2 * c.texture_y, color);
+                continue;
+            }
+            unsigned r = 0, g = 0, blue = 0;
+            for (int j = 0; j < samples; ++j) {
+                for (int i = 0; i < samples; ++i) {
+                    double sx = x + (i + 0.5) / samples, sy = y + (j + 0.5) / samples;
+                    double v0 = Edge(p[1], p[2], sx, sy) / area;
+                    double v1 = Edge(p[2], p[0], sx, sy) / area, v2 = 1 - v0 - v1;
+                    uint32_t sample = TerrainColor(render,
+                        v0 * a.texture_x + v1 * b.texture_x + v2 * c.texture_x,
+                        v0 * a.texture_y + v1 * b.texture_y + v2 * c.texture_y, color);
+                    r += (sample >> 16) & 255; g += (sample >> 8) & 255; blue += sample & 255;
+                }
+            }
+            unsigned n = (unsigned)(samples * samples);
+            row[x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | blue / n;
         }
     }
 }
 
 static void Terrain(Render *render)
 {
+    /* Outer and void-facing cliffs end at elevation zero, where the
+     * original projected cliff artwork ends (measured against native 1-1). */
+    const double base_height = 0;
     static const double corners[5][2] = {{0,0},{1,0},{1,1},{0,1},{0.5,0.5}};
     static const int neighbor_x[4] = {0,1,0,-1};
     static const int neighbor_y[4] = {-1,0,1,0};
@@ -176,8 +231,10 @@ static void Terrain(Render *render)
                 int nx = (int)x + neighbor_x[edge], ny = (int)y + neighbor_y[edge];
                 if (nx >= 0 && ny >= 0 && KdcCourseCellHeight(&render->geometry,
                     nx, ny, x + u - nx, y + v - ny, &neighbor)) continue;
+                if (z <= base_height) continue;
                 double sx, sy;
-                KdcCourseGeometryProject(&render->geometry, x + u, y + v, z - 2, &sx, &sy);
+                KdcCourseGeometryProject(&render->geometry, x + u, y + v,
+                                         (z + base_height) * 0.5, &sx, &sy);
                 uint32_t color = TerrainColor(render, sx, sy, 0);
                 if (!color) continue;
                 wall_r += (color >> 16) & 255; wall_g += (color >> 8) & 255;
@@ -210,7 +267,7 @@ static void Terrain(Render *render)
                  * vertical exposed face rather than stretching the top. */
                 Vertex lower_a = vertices[i], lower_b = vertices[next];
                 int nx = (int)x + neighbor_x[i], ny = (int)y + neighbor_y[i];
-                double za = -2, zb = -2;
+                double za = base_height, zb = base_height;
                 if (nx >= 0 && ny >= 0) {
                     (void)KdcCourseCellHeight(&render->geometry, nx, ny,
                         lower_a.x - nx, lower_a.y - ny, &za);
@@ -231,7 +288,9 @@ static void Terrain(Render *render)
 
 static void Scenery(Render *render, bool hud)
 {
-    if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000)
+    /* The same course scenery signature as the native wide margins. */
+    if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000 ||
+        PPU_bigTiles(render->ppu, 2))
         return;
     const uint16_t *vram = PpuRenderVram(render->ppu);
     int extra = (render->width - 256) / 2;
@@ -240,10 +299,15 @@ static void Scenery(Render *render, bool hud)
         for (int x = 0; x < render->width; ++x) {
             int screen_x = x - extra;
             if (hud && (screen_x < 0 || screen_x >= 256)) continue;
-            unsigned u = (screen_x + render->ppu->hScroll[2]) & 255;
+            uint16_t scroll = render->ppu->hScroll[2];
+            unsigned u = (unsigned)(screen_x + scroll) & 255;
             unsigned v = (y + render->ppu->vScroll[2] + 1) & 255;
-            unsigned index = (v / 8) * 32 + u / 8;
-            unsigned clean = KdcReadWord(g_ram, 0xdadc + 2 * index);
+            /* The clean map's opposite edges do not join. As in the native
+             * widescreen margins, reflect whole tiles outside the field. */
+            bool flip;
+            unsigned column = KdcReflectedColumn(screen_x, scroll, &flip) & 31;
+            unsigned index = (v / 8) * 32 + column;
+            unsigned clean = KdcReadWord(g_ram, 0xdadc + 2 * index) ^ (flip ? 0x4000 : 0);
             unsigned live = vram[0x3c00 + index];
             if (hud && live == clean) continue;
             unsigned tile = hud ? live : clean;
@@ -291,46 +355,181 @@ static void CollectSprite(const KdcOrbitSprite *sprite, void *context)
         sprite_buffer[sprite_count++] = *sprite;
 }
 
-static void Sprites(Render *render, bool world, bool ground)
+static int SpriteSize(const Render *render, const KdcOrbitSprite *sprite)
 {
     static const uint8_t sizes[8][2] = {
         {8,16}, {8,32}, {8,64}, {16,32}, {16,64}, {32,64}, {16,32}, {16,32}
     };
+    return sizes[PPU_objSize(render->ppu)][sprite->large != 0];
+}
+
+/* Mode 1 OBJ priority against the course planes: priority 0/1 objects lie
+ * behind every opaque BG1/BG2 pixel, priority 2 behind high-priority tiles
+ * and priority 3 in front. The game uses this to mask artwork, such as the
+ * cup's interior showing only through the hole in the floor tiles. */
+static bool NativeMasked(const Render *render, unsigned priority, double x, double y)
+{
+    if (priority >= 3 || x < 0 || y < 0) return false;
+    int px = (int)x, py = (int)y;
     const uint16_t *vram = PpuRenderVram(render->ppu);
+    for (unsigned layer = 0; layer < 2; ++layer) {
+        unsigned word = KdcCourseTile(g_ram, layer, px / 8, py / 8);
+        if ((priority < 2 || (word & 0x2000)) &&
+            TilePixel(vram, word, 0, px & 7, py & 7, 4)) return true;
+    }
+    return false;
+}
+
+/* Original OBJ color at an unflipped piece position; 0 when transparent or
+ * masked. native is the anchor's original projected position, or NULL. */
+static uint32_t SpriteColor(const Render *render, const KdcOrbitSprite *sprite,
+                            int size, double source_x, double source_y,
+                            const double *native)
+{
+    if (!(source_x >= 0 && source_x < size && source_y >= 0 && source_y < size)) return 0;
+    int sx = (int)source_x, sy = (int)source_y;
+    unsigned attr = sprite->attributes;
+    if (native && NativeMasked(render, (attr >> 12) & 3,
+            native[0] + sprite->offset_x + sx, native[1] + sprite->offset_y + sy))
+        return 0;
+    if (attr & 0x4000) sx = size - 1 - sx;
+    if (attr & 0x8000) sy = size - 1 - sy;
+    unsigned base = attr & 0x100 ? PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
+    unsigned tile = ((((attr & 255) >> 4) + (sy >> 3)) << 4) |
+                    (((attr & 15) + (sx >> 3)) & 15);
+    unsigned pixel = TilePixel(PpuRenderVram(render->ppu), tile, base, sx & 7, sy & 7, 4);
+    return pixel ? Color(render->ppu->cgram[0x80 + 16 * ((attr >> 9) & 7) + pixel]) : 0;
+}
+
+/* Zoomed out, average the source texels under a pixel; it is drawn when at
+ * least half of them are opaque. Otherwise this is a point sample. */
+typedef struct Footprint { double x, y, step; int samples; } Footprint;
+static uint32_t Filtered(const Render *render, const KdcOrbitSprite *sprite,
+                         int size, Footprint f, const double *native)
+{
+    if (f.samples == 1) return SpriteColor(render, sprite, size, f.x, f.y, native);
+    unsigned r = 0, g = 0, b = 0, opaque = 0;
+    for (int j = 0; j < f.samples; ++j) {
+        for (int i = 0; i < f.samples; ++i) {
+            uint32_t c = SpriteColor(render, sprite, size,
+                f.x + (i + 0.5 - f.samples * 0.5) * f.step,
+                f.y + (j + 0.5 - f.samples * 0.5) * f.step, native);
+            if (!c) continue;
+            r += (c >> 16) & 255; g += (c >> 8) & 255; b += c & 255; ++opaque;
+        }
+    }
+    if (opaque * 2 < (unsigned)(f.samples * f.samples)) return 0;
+    return 0xff000000u | (r / opaque) << 16 | (g / opaque) << 8 | b / opaque;
+}
+
+/* Ground artwork (tee, shadows, guide ground marks) was drawn in the
+ * original projection. Paint it onto the visible terrain exactly as the
+ * native camera would have projected it there, like the terrain artwork
+ * itself: it turns with the course and follows slopes instead of standing
+ * as a billboard that terrain can cut through. Terrain depth is retained,
+ * so later bodies stand in front, and nearer occluders hide the decal. */
+static void Decal(Render *render, const KdcOrbitSprite *sprite)
+{
+    int size = SpriteSize(render, sprite);
+    double native_x, native_y;
+    KdcCourseGeometryProject(&render->geometry, sprite->x, sprite->y, sprite->z,
+                             &native_x, &native_y);
+    /* Screen bounds of the piece on the anchor plane, widened for slopes. */
+    double left = DBL_MAX, right = -DBL_MAX, top = DBL_MAX, bottom = -DBL_MAX;
+    for (unsigned corner = 0; corner < 4; ++corner) {
+        double dx = sprite->offset_x + (corner & 1 ? size : 0);
+        double dy = sprite->offset_y + (corner & 2 ? size : 0);
+        KdcCameraPoint p = KdcCameraProject(&camera,
+            sprite->x + (dx / 32 + dy / 16) / 2, sprite->y + (dx / 32 - dy / 16) / 2,
+            sprite->z, render->width, render->height);
+        left = fmin(left, p.x); right = fmax(right, p.x);
+        top = fmin(top, p.y); bottom = fmax(bottom, p.y);
+    }
+    const double tolerance = 1.5; /* elevation steps from the anchor plane */
+    double margin = 16 * tolerance * camera.zoom + 1;
+    int x0 = (int)fmax(0, floor(left - 1)), x1 = (int)fmin(render->width, ceil(right + 1));
+    int y0 = (int)fmax(0, floor(top - margin)), y1 = (int)fmin(render->height, ceil(bottom + margin));
+    /* Source pixels spanned by one output pixel on a horizontal plane. Both
+     * projections are affine, so this is the same at every pixel and height. */
+    int samples = Samples(camera.zoom);
+    double step = 1;
+    if (samples > 1) {
+        double p[3][2], unused;
+        for (unsigned i = 0; i < 3; ++i) {
+            double wx, wy;
+            if (!KdcCameraUnprojectPlane(&camera, 0.5 + (i == 1), 0.5 + (i == 2),
+                    sprite->z, render->width, render->height, &wx, &wy, &unused))
+                return;
+            KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z,
+                                     &p[i][0], &p[i][1]);
+        }
+        step = fmax(hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]),
+                    hypot(p[2][0] - p[0][0], p[2][1] - p[0][1])) / samples;
+    }
+    const double native[2] = {native_x, native_y};
+    for (int y = y0; y < y1; ++y) {
+        uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
+        for (int x = x0; x < x1; ++x) {
+            float depth = render->depth[y * render->width + x];
+            double wx, wy, wz, unused;
+            if (depth == -FLT_MAX) {
+                /* Over the void (a ball leaving the course) keep the plane. */
+                wz = sprite->z;
+                if (!KdcCameraUnprojectPlane(&camera, x + 0.5, y + 0.5, wz,
+                        render->width, render->height, &wx, &wy, &unused)) continue;
+            } else if (!KdcCameraUnproject(&camera, x + 0.5, y + 0.5, depth,
+                           render->width, render->height, &wx, &wy, &wz) ||
+                       fabs(wz - sprite->z) > tolerance) continue;
+            double sx, sy;
+            KdcCourseGeometryProject(&render->geometry, wx, wy, wz, &sx, &sy);
+            Footprint f = {sx - native_x - sprite->offset_x,
+                           sy - native_y - sprite->offset_y, step, samples};
+            uint32_t color = Filtered(render, sprite, size, f, native);
+            if (color) row[x] = color;
+        }
+    }
+}
+
+static void Sprites(Render *render, bool world, bool ground)
+{
     for (unsigned i = sprite_count; i > 0; --i) {
         const KdcOrbitSprite *sprite = &sprite_buffer[i - 1];
         if (sprite->world != world || (world && sprite->ground != ground)) continue;
-        int size = sizes[PPU_objSize(render->ppu)][sprite->large != 0];
+        if (world && ground) { Decal(render, sprite); continue; }
+        int size = SpriteSize(render, sprite);
         double scale = world ? camera.zoom : 1;
+        double z = sprite->z, surface;
+        /* Guest heights are fixed point; the mesh is continuous. Treat an
+         * anchor within a quarter step below the surface as resting on it. */
+        if (world && KdcCourseGeometrySample(&render->geometry, sprite->x, sprite->y, &surface) &&
+            surface > z && surface - z <= 0.25) z = surface;
         KdcCameraPoint point = world ? KdcCameraProject(&camera,
-            sprite->x, sprite->y, sprite->z, render->width, render->height) :
+            sprite->x, sprite->y, z, render->width, render->height) :
             (KdcCameraPoint){(render->width - 256) / 2.0, -1, 0};
         double left = point.x + sprite->offset_x * scale;
         double top = point.y + sprite->offset_y * scale;
-        unsigned attr = sprite->attributes;
-        unsigned base = attr & 0x100 ? PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
-        unsigned palette = 0x80 + 16 * ((attr >> 9) & 7);
+        int samples = world ? Samples(scale) : 1;
+        double native[2];
+        if (world) KdcCourseGeometryProject(&render->geometry, sprite->x, sprite->y,
+                                            sprite->z, &native[0], &native[1]);
         int x0 = (int)fmax(0, floor(left)), x1 = (int)fmin(render->width, ceil(left + size * scale));
         int y0 = (int)fmax(0, floor(top)), y1 = (int)fmin(render->height, ceil(top + size * scale));
         for (int y = y0; y < y1; ++y) {
             uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
-            int source_y = (int)floor((y + 0.5 - top) / scale);
-            if (source_y < 0 || source_y >= size) continue;
-            double depth = sprite->ground ?
-                point.depth + 2 * (y + 0.5 - point.y) / scale + 0.125 :
-                point.depth - (sprite->offset_y + source_y) * 0.5 + 0.25;
-            if (attr & 0x8000) source_y = size - 1 - source_y;
+            /* Upright billboard above its anchor. Rows the original image
+             * draws below the anchor (hole, shadows, feet) lie in front of
+             * it on the ground plane instead of being buried beneath it. */
+            double below = (y + 0.5 - point.y) / scale;
+            double depth = point.depth + (below >= 0 ? 2 * below : -0.5 * below) + 0.25;
             for (int x = x0; x < x1; ++x) {
-                int source_x = (int)floor((x + 0.5 - left) / scale);
-                if (source_x < 0 || source_x >= size) continue;
+                uint32_t color = Filtered(render, sprite, size, (Footprint){
+                    (x + 0.5 - left) / scale, (y + 0.5 - top) / scale, 1 / scale / samples, samples},
+                    world ? native : NULL);
+                if (!color) continue;
                 unsigned index = y * render->width + x;
-                if (world && depth < render->depth[index]) continue;
-                if (attr & 0x4000) source_x = size - 1 - source_x;
-                unsigned tile = ((((attr & 255) >> 4) + (source_y >> 3)) << 4) |
-                                (((attr & 15) + (source_x >> 3)) & 15);
-                unsigned pixel = TilePixel(vram, tile, base, source_x & 7, source_y & 7, 4);
-                if (!pixel) continue;
-                row[x] = Color(render->ppu->cgram[palette + pixel]);
+                /* Compare at buffer precision: equal depths keep OBJ order. */
+                if (world && (float)depth < render->depth[index]) continue;
+                row[x] = color;
                 if (world) render->depth[index] = (float)depth;
             }
         }
@@ -357,9 +556,35 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
     double cy = KdcCourseScroll(render.ppu->vScroll[0], KdcReadWord(g_ram, 0x88)) + 113;
     double horizontal = (cx - render.geometry.origin_x) / 32;
     double vertical = (cy - render.geometry.origin_y) / 16;
-    camera.target_x = (horizontal + vertical + focus_height) / 2;
-    camera.target_y = (horizontal - vertical - focus_height) / 2;
+    /* The native view center, on the plane beneath the player. */
+    double center_x = (horizontal + vertical + focus_height) / 2;
+    double center_y = (horizontal - vertical - focus_height) / 2;
+    /* Pivot on the player's ground point. The original look-ahead from it
+     * to the view center is not magnified when zooming in, so the player
+     * stays in view; zoomed out it shrinks with the course, which stays
+     * centered. It fades out as the camera turns from the original angle,
+     * where its screen-space intent no longer applies: from a quarter turn
+     * onwards the player is centered. At 1x and the original angle this is
+     * exactly the native framing. */
+    double ball_x = BallCoordinate(focus_player, 0xd8aa);
+    double ball_y = BallCoordinate(focus_player, 0xd8b2);
+    double lead = fmax(0, cos(camera.yaw)) * fmin(1, camera.zoom);
+    camera.target_x = ball_x;
+    camera.target_y = ball_y;
     camera.target_z = focus_height;
+    camera.lead_x = (center_x - ball_x) * lead;
+    camera.lead_y = (center_y - ball_y) * lead;
+    /* The ground pivot keeps bounces from shaking the course, but zoomed
+     * in a high ball would leave the frame. Shift the pivot height only as
+     * far as needed to keep the ball and a 16-pixel sprite above it on
+     * screen; raising it one step moves the view 16 pixels per zoom down. */
+    KdcCameraPoint ball = KdcCameraProject(&camera, ball_x, ball_y,
+        BallHeight(focus_player), width, height);
+    double top = 8 + 16 * camera.zoom, bottom = height - 8.0;
+    if (ball.y < top)
+        camera.target_z += (top - ball.y) / (16 * camera.zoom);
+    else if (ball.y > bottom)
+        camera.target_z -= (ball.y - bottom) / (16 * camera.zoom);
     for (int y = 0; y < height; ++y) {
         uint32_t *row = (uint32_t *)(dst + y * pitch);
         for (int x = 0; x < width; ++x) {

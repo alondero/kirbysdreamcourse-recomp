@@ -25,8 +25,19 @@ speculative frames. The option is saved beside the executable in
 
 Full stick deflection turns 90 degrees per second. Zoom changes exponentially
 at one octave per second, bounded to 0.25x through 4x, with a 20% radial
-deadzone. The camera follows the original horizontal tracking at the player's
-elevation, retaining that elevation during a shot. Reset, timeline restoration,
+deadzone. Rotation and zoom pivot on the ground beneath the active player's
+ball. The pivot height eases to the terrain under the ball (0.1 s time
+constant) rather than following the ball through the air, so bounces do not
+shake the course. When the ball's anchor would come within 8 pixels of the
+bottom edge, or within 8 pixels plus a 16-pixel sprite (scaled by zoom) of
+the top, the view shifts vertically just enough to keep it in frame: mainly a
+high ball when zoomed in, and the player at the top of the original framing at
+4x. Nearer terrain or scenery can still hide the player (see
+[Limits](#limits)). While aiming, the original camera frames
+the player off center; that look-ahead is kept at the original angle, is not
+magnified when zooming in, shrinks with the course when zooming out, and fades
+out by a quarter turn, from where the player is centered. At 1x and the
+original angle the framing is exactly the native view. Reset, timeline restoration,
 leaving a hole and changing maps clear the camera. Fades and mosaic transitions
 temporarily use the native renderer.
 
@@ -71,15 +82,39 @@ screen_y = origin_y + 16 * (x - y - z)
 
 Top surfaces and originally visible cliffs sample the runtime BG1/BG2 map,
 VRAM and palette. Newly visible cliff backs use a color derived from the
-original cliff palette: no back-face artwork has been identified. The clean
-BG3 scenery map at `$DADC` supplies the background; changed HUD spans are
+original cliff palette: no back-face artwork has been identified. Outer and
+void-facing walls end at elevation zero, the depth the native artwork shows
+on hole 1-1 (the only hole measured).
+The clean BG3 scenery map at `$DADC` supplies the background. Outside the
+native field it is reflected at whole-tile boundaries with the same
+`KdcReflectedColumn` rule as the [widescreen](widescreen.md) renderer, so
+zooming or turning never exposes the raw 256-pixel wrap. Changed HUD spans are
 copied from the native frame to retain color math and portrait composition.
+Below 1x, terrain and sprite texels are averaged over each pixel's footprint
+(up to 4x4 samples) instead of point sampled, which removes checkerboard and
+sprite shimmer when zoomed out.
 
 Sprite anchors use observed projector output at `$81:A5CC`, verified entity
 registry/task identity and dedicated producer hooks. Original OBJ graphics,
-animation, palettes and piece offsets remain intact. Bodies are billboards;
-shadows and the tee use ground depth. Inherently 2D particles retain their
-original motion relative to the spawning actor's world anchor.
+animation, palettes and piece offsets remain intact. Bodies are billboards
+standing on their anchors; rows the original image draws below the anchor
+(the cup ring, shadow pieces drawn with an enemy body, feet) lie on a flat
+plane at the anchor's height in front of it instead of being buried in the
+terrain; terrain rising towards the camera can still cover them. Anchors within a quarter step below the mesh
+rest on it, absorbing fixed-point height quantization. Ground sprites (the
+tee, separate ball shadows and guide marks) are projected onto the visible terrain as a decal:
+each pixel is unprojected to the course and mapped back through the native
+projection, so it turns with the course and follows slopes. Inherently 2D
+particles retain their original motion relative to the spawning actor's
+world anchor.
+
+The original game also masks sprites with Mode 1 OBJ priority: priority 0/1
+pieces lie behind every opaque BG1/BG2 pixel, priority 2 behind
+high-priority tiles and priority 3 in front. The cup's interior pieces
+(priority 0) only show through the hole cut into the floor tiles. The orbit
+renderer applies the same test at each texel's native screen position before
+depth testing, so these masks follow the artwork at any angle. Equal depths
+are compared at depth-buffer precision so original OBJ order decides ties.
 
 | Object | U low/high | V low/high | Z low/high |
 | --- | --- | --- | --- |
@@ -141,6 +176,26 @@ Local Windows validation on 2026-11-05:
   sampled gameplay interval. First RAM divergence: none.
 - Elevated and sloped holes were inspected in normal, extra and multiplayer
   modes, including normal 8:8. Original sprites and guides remain present.
+- Focus, sinking and zoomed-out fixes (same date): renderer fixtures cover
+  4x focus, zoom-out centering, quarter-turn centering, pivot height tracking,
+  feet and the ground plane below anchors, decal orientation and ordering,
+  a high ball kept in frame at 4x, wall height, reflected scenery margins,
+  OBJ priorities 0-3 over low- and high-priority tiles at two angles, and
+  zoomed-out terrain, sprite and decal filtering. The full suite ran 60 tests with the
+  ROM replay and SDL checks enabled; seven unrelated optional checks were
+  skipped. In 342-column captures, Kirby stayed on screen at 4x on hole 1-1
+  (previously off screen). Sampled upright sprite pixels hidden by terrain fell
+  from 16.0% to 6.7% across all 64 normal holes at 135 degrees; the inspected
+  remainder were covered by nearer terrain or scenery. The cup ring was complete at 90 and -60 degrees in the
+  hole-completion recording. These are presentation-only changes: guest
+  RAM is unchanged (the shot replay above still matches), and no reference
+  emulator can render this view, so there is no reference divergence to
+  report. The in-frame clamp moved the resting 4x view of hole 1-1 down by
+  about 7 pixels; zoomed-out and turned captures were unchanged. Untested
+  paths: a real lofted shot while zoomed in (fixture only), the second
+  player's focus, the ball over the void,
+  rows below anchors on slopes, decals beside nearer walls at a similar
+  height, and HUD rows with panels at both edges.
 
 Recordings, captures, private generated source and ROM-derived images stay in
 ignored `local/`. The hole-completion recording SHA-256 is
@@ -155,6 +210,14 @@ terrain artwork; sampling it can duplicate an occluding surface onto another
 surface, and reconstructed cliff backs do not reproduce original textures.
 Characters remain original 2D billboards, not newly modeled characters.
 Unknown sprite producers retain a conservative screen-space fallback.
+Tall scenery or terrain nearer the camera can hide the player at some angles
+(for example the tree on hole 1-3 at 135 degrees); no see-through silhouette
+is drawn. Ground shadows that the original game draws as background artwork,
+such as tree shadows, are not reproduced by the orbit renderer. OBJ
+priority masks are tested at each texel's original screen position, which is
+correct for artwork-relative masks such as the cup; a priority-2 sprite behind
+high-priority scenery would keep that scenery's outline after turning. No such
+sprite was observed in the sampled aiming frames of the 64 normal holes.
 
 Every power, moving object, two-player turn and map combination has not been
 played through. Save/load anchor recovery has fixture coverage, not a full

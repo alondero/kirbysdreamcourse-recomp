@@ -33,6 +33,7 @@ __pycache__/
 *.wav
 *.pcm
 *.log
+*.stackdump
 *.pyc
 /.claude/
 /.pytest_cache/
