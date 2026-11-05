@@ -45,7 +45,7 @@ int main(int argc, char **argv)
            provider->feature_set_option);
     CHECK(!provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, NULL));
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "invalid", "1"));
-    CHECK(provider->feature_count(provider->ctx) == 1);
+    CHECK(provider->feature_count(provider->ctx) == 2);
     CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
     CHECK(option.choice_count == 4 && !strcmp(option.value, "auto"));
     CHECK(provider->feature_choice_get(provider->ctx, "kdc.presentation", "widescreen", "aspect", 2, &choice));
@@ -58,7 +58,13 @@ int main(int argc, char **argv)
     CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
     CHECK(provider->package_get(provider->ctx, 0, &package));
     CHECK(!strcmp(feature.package_id, package.id));
-    CHECK(!provider->feature_get(provider->ctx, 1, &feature));
+    CHECK(provider->feature_get(provider->ctx, 1, &feature));
+    CHECK(!strcmp(feature.id, "orbit") && feature.enabled && !feature.option_count);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(KdcOrbitEnabled());
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
+    CHECK(KdcOrbitEnabled()); /* staged, not applied */
+    CHECK(!provider->feature_get(provider->ctx, 2, &feature));
     CHECK(!provider->feature_get(provider->ctx, 0, NULL));
     CHECK(!provider->feature_enable(provider->ctx, "foreign", "widescreen", 1));
     CHECK(!provider->feature_enable(provider->ctx, NULL, NULL, 1));
@@ -69,6 +75,8 @@ int main(int argc, char **argv)
     CHECK(!widescreen);
     CHECK(KdcWidescreenAspect() == 0);
     provider = KdcLauncherSettings(&widescreen, hash);
+    CHECK(provider->feature_get(provider->ctx, 1, &feature));
+    CHECK(feature.enabled); /* dismiss discarded the camera change */
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
     CHECK(!feature.enabled);
     CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
@@ -77,6 +85,7 @@ int main(int argc, char **argv)
     /* PLAY/RESUME applies the setting that the host will persist. */
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 1));
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(!provider->commit(provider->ctx, "missing.sfc"));
     CHECK(provider->last_error(provider->ctx));
     CHECK(!widescreen);
@@ -85,6 +94,7 @@ int main(int argc, char **argv)
     CHECK(!widescreen);
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(widescreen);
+    CHECK(!KdcOrbitEnabled());
     CHECK(KdcWidescreenAspect() == 2);
     CHECK(!provider->last_error(provider->ctx));
     provider = KdcLauncherSettings(&widescreen, hash);
@@ -93,5 +103,8 @@ int main(int argc, char **argv)
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 0));
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(!widescreen);
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 1));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcOrbitEnabled());
     return 0;
 }

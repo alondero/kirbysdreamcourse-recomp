@@ -87,7 +87,17 @@ The [hole ID reference](docs/hole-ids.md) maps all 256 slots to their known cour
 
 Enable **Widescreen** on the launcher's **Mods** page, or set `Widescreen = 1` in the `[Graphics]` section of `local/guarded-build/config.ini`. Its **View aspect** option follows the window automatically by default, or can be fixed at 16:9, 21:9 or 32:9. Fixed views are letterboxed as needed; pixel aspect remains a separate Settings choice. Both controls can be changed during play. The aspect choice is saved in `kdc-widescreen.cfg` beside the executable. Resize the window or use Alt+Return for fullscreen. A 4:3 window with automatic sizing still shows the original width with the default 4:3 pixel aspect. Widescreen is off by default.
 
-The course's extra terrain is rendered from its full map in memory, beyond the original streaming viewport. Draw requests captured before the game's viewport culling supply sprites in the horizontal margins. The HUD and bounded menu foregrounds remain centered. Whole-hole zoom and complete coverage of every object/effect are still unqualified. See [widescreen implementation and validation](docs/widescreen.md) and [sprite rendering](docs/widescreen-sprites.md) for coverage and limits.
+The course's extra terrain is rendered from its full map in memory, beyond the original streaming viewport. Draw requests captured before the game's viewport culling supply sprites in the horizontal margins. The HUD and bounded menu foregrounds remain centered. Complete coverage of every object/effect is still unqualified. For rotation and zoom, use the orbit camera below. See [widescreen implementation and validation](docs/widescreen.md) and [sprite rendering](docs/widescreen-sprites.md) for coverage and limits.
+
+## Orbit camera
+
+On a hole, use player one's **right stick** to orbit left/right and zoom
+in/out. **R3** restores the original view. Keyboard equivalents are keypad
+**4/6**, **8/2** and **5**. The **Orbit camera** option on the launcher's Mods
+page is enabled by default; the original renderer remains active until you
+move the camera. Original characters, effects and aiming guides remain in
+play. Newly exposed terrain faces are reconstructed from the course geometry
+and palette. See [camera implementation, tests and limits](docs/orbit-camera.md).
 
 ## Status
 

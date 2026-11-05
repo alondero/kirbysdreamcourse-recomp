@@ -2,6 +2,7 @@
 #define KDC_COURSE_SPRITES_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 struct CpuState;
 struct Ppu;
@@ -9,9 +10,26 @@ struct Ppu;
 /* Observers never write guest state or perform bus reads. The cfg registers
  * the same instruction sites for generated code as Initialize does for LLE. */
 void KdcObserveSprites(const struct CpuState *cpu, uint32_t pc);
+void KdcObserveProjection(const struct CpuState *cpu, uint32_t pc);
 void KdcInitializeSprites(void);
 void KdcResetSprites(struct Ppu *ppu);
 void KdcPrepareSprites(struct Ppu *ppu, const uint8_t *ram, int extra);
 void KdcReportSprites(int frame);
+
+/* Piece graphics retain their original OBJ attributes. World pieces are
+ * camera-facing billboards at cell coordinates, with elevation in 16-pixel
+ * terrain steps. Screen pieces use native-screen offsets. Unresolved pieces
+ * remain visible, but are explicitly distinguished from known HUD pieces. */
+typedef struct KdcOrbitSprite {
+    double x, y, z;
+    int offset_x, offset_y;
+    uint16_t attributes;
+    uint8_t large, bucket;
+    bool world, unresolved, ground;
+    uint32_t source_pc;
+} KdcOrbitSprite;
+typedef void (*KdcOrbitSpriteVisitor)(const KdcOrbitSprite *sprite, void *context);
+void KdcVisitOrbitSprites(const struct Ppu *ppu, const uint8_t *ram,
+                         KdcOrbitSpriteVisitor visitor, void *context);
 
 #endif

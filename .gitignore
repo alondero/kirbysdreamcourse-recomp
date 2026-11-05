@@ -18,6 +18,7 @@
 /.worktrees/
 /recomp/funcs.h
 /saves/
+kdc-camera.cfg
 __pycache__/
 
 # Local development and generated content
@@ -32,6 +33,7 @@ __pycache__/
 *.wav
 *.pcm
 *.log
+*.stackdump
 *.pyc
 /.claude/
 /.pytest_cache/

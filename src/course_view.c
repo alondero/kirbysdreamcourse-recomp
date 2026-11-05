@@ -35,11 +35,6 @@ static bool IsCourseSelect(const Ppu *ppu)
            !(ppu->bgmode & 0x70);
 }
 
-static int TileCoordinate(int pixel)
-{
-    return pixel >= 0 ? pixel / 8 : -((-pixel + 7) / 8);
-}
-
 static bool IsTitle(const Ppu *ppu)
 {
     return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x40 &&
@@ -62,18 +57,6 @@ static bool IsCourseIntro(const Ppu *ppu)
     return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x50 &&
            ppu->bgXsc[1] == 0x58 && ppu->bgXsc[2] == 0x3c &&
            ppu->bgTileAdr == 0x400 && !(ppu->bgmode & 0x70);
-}
-
-/* Reflect outside whole native-edge tiles; keep the period independent of
- * window width. The caller XORs the returned flip with the source flags. */
-static unsigned ReflectedColumn(int screen_x, uint16_t scroll_x, bool *flip)
-{
-    int fine = scroll_x & 7;
-    int columns = fine ? 33 : 32;
-    int phase = TileCoordinate(screen_x + fine) % (2 * columns);
-    if (phase < 0) phase += 2 * columns;
-    *flip = phase >= columns;
-    return (scroll_x >> 3) + (*flip ? 2 * columns - 1 - phase : phase);
 }
 
 static uint16_t IntroWallpaper(const uint16_t *vram, unsigned column, unsigned row)
@@ -105,7 +88,7 @@ static uint16_t MenuTile(const Ppu *ppu, int screen_x, uint32_t scrolled_y,
                          uint16_t scroll_x)
 {
     bool flip;
-    unsigned column = ReflectedColumn(screen_x, scroll_x, &flip) & 31;
+    unsigned column = KdcReflectedColumn(screen_x, scroll_x, &flip) & 31;
     unsigned row = (scrolled_y >> 3) & 31;
     const uint16_t *vram = PpuRenderVram(ppu);
     if (IsCourseIntro(ppu))
@@ -150,7 +133,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
          * those complete tiles so a native-edge chunk never changes.
          * The period is independent of the requested viewport width. */
         bool reflected;
-        unsigned column = ReflectedColumn(screen_x, scroll_x, &reflected);
+        unsigned column = KdcReflectedColumn(screen_x, scroll_x, &reflected);
         unsigned row = scrolled_y >> 3;
         unsigned index = (row & 31) * 32 + (column & 31);
         /* Selection keeps clean sky in the first VRAM page; raster scroll
@@ -166,8 +149,8 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
     int raster_y = source->ppu->vScroll[layer];
     int y = (int)scrolled_y - raster_y +
             KdcCourseScroll(raster_y, KdcReadWord(source->ram, 0x88));
-    return selection ? KdcCourseSelectTile(source->ram, layer, TileCoordinate(x), TileCoordinate(y)) :
-                       KdcCourseTile(source->ram, layer, TileCoordinate(x), TileCoordinate(y));
+    return selection ? KdcCourseSelectTile(source->ram, layer, KdcTileCoordinate(x), KdcTileCoordinate(y)) :
+                       KdcCourseTile(source->ram, layer, KdcTileCoordinate(x), KdcTileCoordinate(y));
 }
 
 void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)

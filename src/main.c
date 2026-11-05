@@ -29,6 +29,8 @@
 #include "game_rtl.h"
 #include "launcher_settings.h"
 #include "dev_start.h"
+#include "course_camera_host.h"
+#include "course_orbit.h"
 #include <stdlib.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
@@ -98,6 +100,9 @@ static const SnesDesktopHostGame kGameHost = {
     .mods_provider      = LauncherSettings,
     .configure_launcher = KdcConfigureLauncher,
     .prepare_frame       = PrepareWideFrame,
+    .before_run_frame    = KdcOrbitBeforeFrame,
+    .on_reset            = KdcOrbitReset,
+    .draw_frame          = KdcOrbitDraw,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
     .default_config_ini =

@@ -22,6 +22,25 @@ static inline int KdcCourseScroll(uint16_t raster, uint16_t camera)
     return origin + (int)(((unsigned)raster - (unsigned)origin + 512) & 1023) - 512;
 }
 
+static inline int KdcTileCoordinate(int pixel)
+{
+    return pixel >= 0 ? pixel / 8 : -((-pixel + 7) / 8);
+}
+
+/* Wide course scenery (docs/widescreen.md): reflect outside whole
+ * native-edge tiles, keeping the period independent of window width.
+ * Inside the native field this is the ordinary scrolled column. The caller
+ * XORs the returned flip with the source tile's flags. */
+static inline unsigned KdcReflectedColumn(int screen_x, uint16_t scroll_x, bool *flip)
+{
+    int fine = scroll_x & 7;
+    int columns = fine ? 33 : 32;
+    int phase = KdcTileCoordinate(screen_x + fine) % (2 * columns);
+    if (phase < 0) phase += 2 * columns;
+    *flip = phase >= columns;
+    return (unsigned)((scroll_x >> 3) + (*flip ? 2 * columns - 1 - phase : phase));
+}
+
 /* Course select's complete island/cloud planes: 3x3 SNES tilemap pages
  * (32x32 tiles per page), with separate $5000-byte source allocations. */
 static inline uint16_t KdcCourseSelectTile(const uint8_t *ram, unsigned layer,

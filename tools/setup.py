@@ -18,7 +18,7 @@ ROM_SHA256 = "0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b"
 PATCHES = (
     "apu-handoff", "simple-bus-timing", "refresh-clock-experiment",
     "launcher-with-rom", "widescreen-tile-provider", "scenery-provider",
-    "extra-object-provider", "apu-rate-experiment", "preanchor-experiment",
+    "extra-object-provider", "camera-input", "apu-rate-experiment", "preanchor-experiment",
     "beam-apu-clock-experiment", "beam-apu-fraction-experiment", "hdma-prime-experiment",
     "spc-timer-phase-experiment", "refresh-park-experiment", "refresh-position-experiment",
     "soft-reset-vram-experiment", "savestate-script-probe", "beam-state-experiment",
@@ -89,7 +89,8 @@ def build(args):
         run("git", "-C", framework, "apply", patch)
     config = project / "recomp"
     config.mkdir(parents=True)
-    shutil.copy2(ROOT / "recomp/bank00.cfg", config)
+    for bank_cfg in (ROOT / "recomp").glob("bank*.cfg"):
+        shutil.copy2(bank_cfg, config)
     symbols = (ROOT / "recomp/symbols.toml").read_text(encoding="utf-8-sig")
     pattern = r'(\[\[func\]\]\s*\nname\s*=\s*"I_RESET".*?\nemit\s*=\s*)false'
     symbols, count = re.subn(pattern, r"\g<1>true", symbols, flags=re.DOTALL)
