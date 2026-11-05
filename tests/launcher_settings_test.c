@@ -60,6 +60,7 @@ int main(int argc, char **argv)
     CHECK(!strcmp(feature.package_id, package.id));
     CHECK(provider->feature_get(provider->ctx, 1, &feature));
     CHECK(!strcmp(feature.id, "orbit") && feature.enabled && !feature.option_count);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
     CHECK(KdcOrbitEnabled());
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(KdcOrbitEnabled()); /* staged, not applied */
