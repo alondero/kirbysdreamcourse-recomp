@@ -9,44 +9,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$prepare = Join-Path $PSScriptRoot 'prepare_native_experiment.ps1'
-$options = @{
-    Rom = $Rom
-    CMake = $CMake
-    SdlSource = $SdlSource
-    Name = $Name
-    BuildVersion = $BuildVersion
-    ReleaseDefaults = [bool]$ReleaseDefaults
-    CurrentStack = $true
-    RasterState = $true
-    FieldTiming = $true
-    RdnmiBeam = $true
-    InstructionBoundaries = $true
-    IncrementalDsp = $true
-    SharedNoise = $true
-    NmiEntry = $true
-    NmiTrigger = $true
-    RefreshShort = $true
-    LiveWram = $true
-    HdmaCount = $true
-    BeamHdma = $true
-    HdmaInterrupt = $true
-    LateNmi = $true
-    IrqEntry = $true
-    EmuStack = $true
-    CpuIoBus = $true
-    NestedNmi = $true
-    WaiWake = $true
-    PpuLatchPhase = $true
-    HvbjoyPhase = $true
-    ResetPhase = $true
-    WaiCycle = $true
-    Ppu2Bus = $true
-    ApuQueueRead = $true
-    RasterLiveRestore = $true
-    ManualJoypad = $true
-    AutoJoyPhase = $true
-    SpcD4Phase = $true
-    ApuBoundarySync = [bool]$ApuBoundarySync
-}
-& $prepare @options
+& (Join-Path $PSScriptRoot 'assert_native_cmake.ps1') -CMake $CMake
+$options = @((Join-Path $PSScriptRoot 'setup.py'), '--rom', $Rom, '--cmake', $CMake,
+    '--name', $Name, '--version', $BuildVersion)
+if ($SdlSource) { $options += @('--sdl-source', $SdlSource) }
+if ($ReleaseDefaults) { $options += '--release-defaults' }
+if ($ApuBoundarySync) { $options += '--apu-boundary-sync' }
+python @options
+if ($LASTEXITCODE -ne 0) { throw 'Guarded build failed.' }

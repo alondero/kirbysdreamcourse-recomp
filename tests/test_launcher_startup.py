@@ -7,13 +7,14 @@ import tempfile
 import unittest
 
 
-@unittest.skipUnless(os.name == 'nt' and os.environ.get('KDC_TEST_LAUNCHER') == '1',
-                     'set KDC_TEST_LAUNCHER=1 for local Windows startup checks')
+@unittest.skipUnless(os.environ.get('KDC_TEST_LAUNCHER') == '1',
+                     'set KDC_TEST_LAUNCHER=1 for local startup checks')
 class LauncherStartupTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.root = Path(__file__).resolve().parents[1]
-        cls.executable = cls.root / 'local/guarded-build/KirbyDreamCourseRecomp.exe'
+        cls.executable = cls.root / ('local/guarded-build/KirbyDreamCourseRecomp' +
+                                    ('.exe' if os.name == 'nt' else ''))
         cls.rom = Path(os.environ.get('KDC_LAUNCHER_ROM', cls.root / "Kirby's Dream Course (USA).sfc"))
         cls.data = cls.rom.read_bytes()
         if hashlib.sha256(cls.data).hexdigest() != '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b':

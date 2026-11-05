@@ -48,16 +48,17 @@ class DevStartTest(unittest.TestCase):
             self.assertEqual(result.stdout.splitlines(), ['--rom', 'input.sfc', '--no-launcher'])
 
 
-@unittest.skipUnless(os.name == 'nt' and os.environ.get('KDC_TEST_DEV_START') == '1',
+@unittest.skipUnless(os.environ.get('KDC_TEST_DEV_START') == '1',
                      'set KDC_TEST_DEV_START=1 for local ROM startup checks')
 class DevStartRuntimeTest(unittest.TestCase):
     def test_loaded_maps_and_repeatable_dispatch(self):
         root = Path(__file__).resolve().parents[1]
-        rom = root / "Kirby's Dream Course (USA).sfc"
+        rom = Path(os.environ.get('KDC_DEV_ROM', root / "Kirby's Dream Course (USA).sfc"))
         self.assertEqual(hashlib.sha256(rom.read_bytes()).hexdigest(),
                          '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b')
         executable = Path(os.environ.get('KDC_DEV_EXECUTABLE',
-                                         root / 'local/guarded-build/KirbyDreamCourseRecomp.exe'))
+                                         root / ('local/guarded-build/KirbyDreamCourseRecomp' +
+                                                 ('.exe' if os.name == 'nt' else ''))))
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(('SNESRECOMP_', 'KDC_', 'LNG_', 'SDL_'))}
         env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy',

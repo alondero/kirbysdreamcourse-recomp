@@ -18,7 +18,46 @@ For this baseline, run `tools/setup.ps1 -CMake 'C:/path/to/native/cmake.exe'` to
 
 Use `python tools/compare_audio.py HOST_PCM REFERENCE_PCM --offset 456 --allow-partial` to reproduce the diagnostic comparison. The offset is explicit and may differ in other scenarios. The tool reports the overlap and first differing stereo sample; it does not resample, infer alignment, or certify timing. Compare repeated captures at offset zero without `--allow-partial` to require equal lengths. A partial comparison cannot prove either capture is complete.
 
-Generated game source and diagnostic runtime outputs remain private and must not be committed to the public repository or uploaded as artifacts. Release builds may generate source from the verified ROM fetched from a private companion repository and distribute the compiled EXE with dependencies and notices, without the ROM or generated source. The player supplies the runtime ROM. The project is Windows-oriented; other platforms have not been qualified.
+Generated game source and diagnostic runtime outputs remain private and must not be committed to the public repository or uploaded as artifacts. Release builds may generate source from the verified ROM fetched from a private companion repository and distribute compiled Windows/Linux executables with dependencies and notices, without the ROM or generated source. The player supplies the runtime ROM. Linux build and Steam Deck evidence are described below and in [Linux support](linux.md).
+
+## Linux and Steam Deck, 2026-11-05
+
+Built the guarded native executable in WSL Ubuntu 24.04 using GCC 13.3.0,
+CMake 3.28.3, the existing framework/UI pins and static SDL 3.4.10. The shared
+Python recipe produced the same patched framework contents as the existing
+Windows guarded build (all 29 modified framework files matched). The local
+ELF requires GLIBC_2.38 and directly links libm, libOpenGL, libstdc++, libgcc_s
+and libc. The supported build baseline remains Ubuntu 24.04, rather than a
+claim of compatibility with every older distribution providing those symbols.
+
+The extracted Linux ZIP passed 400-frame native/fallback smoke checks in WSL:
+direct release defaults matched explicit timing settings, and a correctly
+sized ROM with a wrong hash was rejected before guest execution. The full
+52-test suite passed with the real-ROM startup and developer-map checks enabled
+(5 unavailable/opt-in checks skipped). These include rejection of headered and
+modified ROMs, native/fallback/repeatability checks and developer map loads.
+
+On SteamOS 3.9.5 x86-64, the transferred ZIP's SHA-256 matched the workstation
+copy, and `ldd` resolved every dependency. Four deterministic scenarios were
+run twice in native mode and once in fallback mode: no-input boot (400 frames),
+normal 1:1 start (600), three scripted A-button presses on that start (600),
+and multiplayer 1:1 start (600). CPU traces, final WRAM and SRAM matched in
+all 12 comparisons with the existing Windows guarded build. No first platform
+divergence was observed in those measurements. Frame metadata JSON differs in
+line endings; its parsed content matches. This does not supersede the known
+Snes9x divergence above or establish cross-platform save-state compatibility.
+
+Visible Xwayland checks rendered the launcher and course on the Deck's
+1280x800 Gaming Mode session. The host detected the Steam Deck Controller,
+opened a real audio callback and opened/resumed in-game settings through
+injected keyboard input. Audible output was confirmed by the owner. A direct
+SSH launch initially remained behind Steam's interface, and controller routing
+requires a normal Steam launch; window capture alone does not qualify Gaming
+Mode input. After authorizing a backed-up non-Steam shortcut installation, the
+owner played the native build through Gaming Mode and confirmed it looked good.
+This qualifies that hands-on control/rendering path. Sound quality, the physical
+settings shortcut, completed courses, long sessions and cross-build save-state
+reload remain unqualified by these checks.
 
 ## Reset, state and persistence evidence
 

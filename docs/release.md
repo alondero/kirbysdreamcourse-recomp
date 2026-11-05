@@ -1,9 +1,15 @@
-# Windows binary releases
+# Binary releases
 
 The release deliverable is `kirbysdreamcourse-recomp-windows-x64.zip` containing
 `KirbyDreamCourseRecomp.exe`, launcher resources, required DLLs and notices.
 Players provide the supported ROM beside the EXE. They do not need a compiler,
 Python or code generation.
+
+Linux releases add `kirbysdreamcourse-recomp-linux-x64.zip`, containing the
+native x86-64 executable, `start.sh`, the same launcher resources and notices.
+Build prerequisites, system-library requirements and Steam Deck verification
+are recorded in [Linux support](linux.md). Both platforms use `tools/setup.py`
+for the guarded patch stack; Windows retains its PowerShell entry points.
 
 ## Private build inputs
 
@@ -87,7 +93,7 @@ gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref
 ```
 
 A dry run builds the dispatched commit with a `v0.0.0-dryrun-<sha>` version,
-uploads the tested EXE ZIP and skips publication. It uses private inputs and
+uploads the tested Windows and Linux ZIPs and skips publication. It uses private inputs and
 CI minutes. Editing the release skill alone does not authorize dispatch.
 
 After a tested commit is tagged and the tag pushed:
@@ -97,10 +103,11 @@ gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref
 ```
 
 Publication builds the requested tag, rather than whichever main commit is
-current when a runner starts. The build job has read-only public-repo access;
+current when a runner starts. Both build jobs have read-only public-repo access;
 only the release job receives `contents: write`. A build or smoke-check failure
-prevents publication. The release job publishes the tested ZIP with initial
-notes and verifies the remote tag commit, metadata and downloaded SHA-256.
+prevents publication. The release job requires both platforms to agree on the
+source commit/version, publishes both tested ZIPs with initial notes and verifies
+the remote tag commit, exact asset inventory and each downloaded SHA-256.
 Use the release skill to replace the initial notes with the complete reviewed
 body. Never overwrite conflicting tags/assets while resuming a failed run.
 
@@ -171,6 +178,38 @@ build. It is 5,754,748 bytes with 38 files, SHA-256
 `67c3486def88defdc0eb7199dd9d8151d8bb66579c59edf892864e9986a04fb6`.
 This dry run does not qualify the publication job or the interactive/full-game
 paths excluded from the local validation above.
+
+## Linux workflow verification, 2026-11-05
+
+[Dry run 42037353837](https://github.com/alondero/kirbysdreamcourse-recomp/actions/runs/42037353837)
+passed both Windows and Linux jobs at code commit
+`dc62df631525a38b3588bfcd62dabf8750112780`; publication was skipped. Each job
+generated, compiled and packaged through its shared release entry point,
+removed private build inputs/generated source and uploaded only its named ZIP.
+
+The Linux job used GCC 13.3.0 and CMake 3.31.6 on Ubuntu 24.04. Its full suite
+ran 53 tests (7 opt-in/platform checks skipped), followed by the real-ROM
+startup tests under Xvfb and developer map-load/repeatability checks. The
+extracted package completed 400-frame native and fallback smoke checks with
+direct defaults matching explicit settings and rejected the wrong ROM.
+The Windows job also completed its full suite and packaged native/fallback
+smoke checks, verifying the move to the shared guarded Python recipe.
+
+The downloaded Linux archive is `kirbysdreamcourse-recomp-linux-x64.zip`,
+SHA-256 `f17b36fc096870dd37c3c1d715e72164c9930ee0c374c7d63978982ff76868b0`.
+Its digest matches the runner's packaging log; ZIP integrity, reviewed
+resource/notice inventory, x86-64 ELF and source/version metadata checks pass.
+`build-info.json` records GLIBC_2.38 and the five reviewed system libraries.
+Hands-on Steam Deck play and platform comparisons are recorded in
+[compatibility](compatibility.md). Two-platform publication itself remains
+untested; this session created no release or tag.
+
+The first candidate run built both platforms but failed the additional Linux
+startup test because the runner had no display. The final workflow uses Xvfb
+for that test, preserving the actual SkipLauncher decision instead of bypassing
+it with SDL's dummy driver. Packaging also rejects symlinked resource roots
+and children before any archive is produced; a synthetic regression covers
+links to private inputs through the actual staging path.
 
 ## Publication, 2026-11-05
 
