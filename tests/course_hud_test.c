@@ -93,9 +93,15 @@ int main(void)
                 assert(sampled == 0x34e7);
             } else {
                 int edge = 256 + (extra > 96 ? 96 : extra) - 8;
-                KdcHudSample(p, 2, edge - 104 + 48, 176, &sampled, &tx, &ty, NULL);
+                /* Empty space is transparent over the white window, never
+                 * the yellow HOLE/SHOT fill. The card gets its own outer cap. */
+                KdcHudSample(p, 2, left + 36, 200, &sampled, &tx, &ty, NULL);
+                assert(sampled == p->vram[0x3c00 + 22 * 32 + 3] && ty == 4);
+                KdcHudSample(p, 2, edge - 4, 184, &sampled, &tx, &ty, NULL);
+                assert(sampled == p->vram[0x3c00 + 23 * 32 + 29]);
+                KdcHudSample(p, 2, edge - 120 + 8 + 48, 168, &sampled, &tx, &ty, NULL);
                 assert(sampled == 0x3d0e);
-                KdcHudSample(p, 2, edge - 104 + 16, 200, &sampled, &tx, &ty, NULL);
+                KdcHudSample(p, 2, edge - 120 + 24, 200, &sampled, &tx, &ty, NULL);
                 assert(sampled == 0x3d3c);
             }
             sampled = 0x4567; tx = 3; ty = 4;

@@ -558,7 +558,7 @@ is the pre-change baseline at `0ce99d3b461063560fed885bfa3fe1aad7c9eb32`.
   wait 118, press A 1, wait 110. Centered and edge layouts have identical
   WRAM, VRAM and CGRAM at all 400 checkpoints in each mode. Solo centered
   also matches the previous binary's complete BMPs at every checkpoint.
-  The shot/playfield region (rows 31..166) is pixel-identical between layouts
+  The unoccupied playfield region (rows 31..158) is pixel-identical between layouts
   in both modes at all checkpoints. Visual checks include expanded, quiet,
   shot timing, ball motion and the returning panel after energy changes.
 - Menu route: 1,100 frames, retained 290..1099, Start at 301/451/651 and A at
@@ -594,3 +594,16 @@ original shot instrument over the reconstructed course. This is a composition
 check under the dummy backend, not a monitor-rate or performance guarantee.
 Fresh solo/versus captures from the clean framework build also match the
 previously inspected edge images.
+
+
+The follow-up solo border correction gives the right card a complete independent
+outer frame, preserving the full player drawing above a separate stock row.
+Neutral padding samples a transparent row of the original outer border over
+the white window; the apparently blank tile between HOLE and SHOT is yellow
+counter fill and must not be reused as whitespace. The card is 120 by 56 pixels,
+with a four-pixel backing inset. No empty-name collapse was introduced.
+The border regression failed before the fix and passes afterward; the 17-test
+course subset passes with two optional skips. A repeated 400-frame shot route
+retains identical WRAM/VRAM/CGRAM and rows 31..158; the entire shot instrument
+region at frames 800..810 is also pixel-identical. Fresh 342-column and orbit
+captures confirm the frame/padding correction in both render paths.

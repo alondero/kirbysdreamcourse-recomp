@@ -79,7 +79,7 @@ static bool Windows(const Ppu *ppu, unsigned layer, int y,
     int ranges[4], n = 0;
     if (!hud.multi) {
         if (y >= 180 && y < 212) { ranges[n++] = left + 36; ranges[n++] = left + 112; }
-        if (y >= 172 && y < 212) { ranges[n++] = right - 64; ranges[n++] = right + 32; }
+        if (y >= 164 && y < 212) { ranges[n++] = right - 80; ranges[n++] = right + 32; }
     } else {
         if (y >= 12 && y < 32) { ranges[n++] = 48; ranges[n++] = 208; }
         if (y >= 180 && y < 196) {
@@ -164,6 +164,39 @@ static uint16_t Clean(int x, int y, int *px, int *py)
     return KdcReadWord(hud.ram, 0xdadc + 2 * (((y >> 3) & 31) * 32 + column)) ^ (flip ? 0x4000 : 0);
 }
 
+/* The straight top border has a transparent interior row. Reuse that
+ * row for padding so the native white backing shows through; the blank
+ * cell between HOLE and SHOT is solid yellow, not neutral whitespace. */
+static void Padding(const Ppu *ppu, int x, uint16_t *tile, int *px, int *py)
+{
+    *tile = Map(ppu, 3, 22); *px = x & 7; *py = 4;
+}
+
+static void SoloCard(const Ppu *ppu, int dx, int y,
+                     uint16_t *tile, int *px, int *py)
+{
+    Padding(ppu, dx, tile, px, py);
+    /* A complete independent outer frame, assembled from the original
+     * outer corners/rails rather than the counter panel's inner cells. */
+    int column = dx < 8 ? 2 : dx >= 112 ? 29 : 3;
+    if (y < 168 || y >= 208) {
+        *tile = Map(ppu, column, y < 168 ? 22 : 26);
+        *px = dx & 7; *py = y & 7;
+    } else if (column != 3) {
+        *tile = Map(ppu, column, 23); *px = dx & 7; *py = y & 7;
+    }
+    /* Keep the complete name drawing and counters, including the drawing's
+     * lower pink border. Stock occupies a separate row after a clear gap. */
+    if (dx >= 8 && dx < 112 && y >= 164 && y < 194) {
+        int sx = 56 + dx - 8, sy = y + 16;
+        *tile = Map(ppu, sx >> 3, sy >> 3); *px = sx & 7; *py = sy & 7;
+    }
+    if (dx >= 24 && dx < 96 && y >= 200 && y < 208) {
+        int sx = 160 + dx - 24;
+        *tile = Map(ppu, sx >> 3, 25); *px = sx & 7; *py = y & 7;
+    }
+}
+
 bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
                   uint16_t *tile, int *px, int *py, void *context)
 {
@@ -184,22 +217,15 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
         if (y >= 176 && y < 216 && dx >= 0 && dx < 120) {
             sx = dx < 40 ? 16 + dx : 160 + dx - 40;
             if (y >= 200 && y < 208 && dx >= 40 && dx < 112) {
-                *tile = Map(ppu, 16, 24); *px = x & 7; *py = y & 7;
+                Padding(ppu, x, tile, px, py);
                 return true;
             }
         }
         int edge = 256 + hud.extra - (hud.extra > 96 ? hud.extra - 96 : 0) - 8;
-        dx = x - (edge - 104);
-        if (dx >= 0 && dx < 104 && y >= 168 && y < 216) {
-            sx = 56 + dx;
-            sy = y < 200 ? y + 8 : y;
-            if (y >= 200 && y < 208) {
-                if (dx >= 16 && dx < 88) sx = 160 + dx - 16;
-                else if (dx >= 8 && dx < 96) {
-                    *tile = Map(ppu, 16, 24); *px = x & 7; *py = y & 7;
-                    return true;
-                } else sx = dx < 8 ? 56 + dx : 152 + (dx & 7);
-            }
+        dx = x - (edge - 120);
+        if (dx >= 0 && dx < 120 && y >= 160 && y < 216) {
+            SoloCard(ppu, dx, y, tile, px, py);
+            return true;
         }
     } else {
         /* Energy retains the original pink/yellow frame; the original player
