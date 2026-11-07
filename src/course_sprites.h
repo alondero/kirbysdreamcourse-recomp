@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "course_sprite_view.h"
 
 struct CpuState;
 struct Ppu;
@@ -34,6 +35,11 @@ typedef struct KdcOrbitSprite {
     /* Whole draw-request displacement from the world anchor, separate from
      * individual animation-piece offsets. Survives a change of layout. */
     double motion_x, motion_y;
+    KdcSpriteView view;
+    /* Optional immutable ROM tiles, in row-major order for an 8/16px piece.
+     * Zero retains the original VRAM texel source. */
+    uint32_t view_tiles[4];
+    int8_t view_order; /* Transformed attachment: +1 before body, -1 after. */
 } KdcOrbitSprite;
 typedef void (*KdcOrbitSpriteVisitor)(const KdcOrbitSprite *sprite, void *context);
 void KdcVisitOrbitSprites(const struct Ppu *ppu, const uint8_t *ram,
