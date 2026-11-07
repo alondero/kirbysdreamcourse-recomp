@@ -15,6 +15,7 @@ typedef struct {
     int pending_widescreen;
     int pending_aspect;
     int pending_orbit;
+    int pending_high_refresh, pending_rate;
     const char *expected_rom_hash;
     const char *last_error;
 } KdcLauncherSettingsState;
@@ -22,6 +23,38 @@ typedef struct {
 static const char *const aspect_values[] = {"auto", "16:9", "21:9", "32:9"};
 static int aspect = -1;
 static int orbit = -1;
+static int high_refresh = -1, rate;
+static const int rates[] = {0, 60, 90, 120, 144, 165, 240, 360};
+static const char *const rate_values[] = {"display", "60", "90", "120", "144", "165", "240", "360"};
+
+bool KdcHighRefreshEnabled(void)
+{
+    if (high_refresh < 0) {
+        FILE *file = fopen("kdc-presentation.cfg", "r");
+        int enabled = 0, fps = 0;
+        if (file) {
+            if (fscanf(file, "%d %d", &enabled, &fps) != 2) enabled = 0;
+            fclose(file);
+        }
+        high_refresh = 0;
+        for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); ++i) {
+            if (fps == rates[i]) { rate = (int)i; high_refresh = enabled == 1; break; }
+        }
+    }
+    return high_refresh != 0;
+}
+
+int KdcPresentationFps(void)
+{
+    (void)KdcHighRefreshEnabled();
+    return rates[rate];
+}
+
+static int IsHighRefresh(const char *package, const char *feature)
+{
+    return package && feature && !strcmp(package, "kdc.presentation") &&
+           !strcmp(feature, "high-refresh");
+}
 
 bool KdcOrbitEnabled(void)
 {
@@ -74,7 +107,7 @@ static int Count(void *ctx)
 static int FeatureCount(void *ctx)
 {
     (void)ctx;
-    return 2;
+    return 3;
 }
 
 static int IsOrbit(const char *package, const char *feature)
@@ -92,14 +125,14 @@ static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
     snprintf(out->version, sizeof(out->version), "1.0.0");
     snprintf(out->name, sizeof(out->name), "Kirby's Dream Course presentation");
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
-    out->enabled = state->pending_widescreen || state->pending_orbit;
+    out->enabled = state->pending_widescreen || state->pending_orbit || state->pending_high_refresh;
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
     const KdcLauncherSettingsState *state = ctx;
-    if (index < 0 || index >= 2 || !out) return 0;
+    if (index < 0 || index >= 3 || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
@@ -124,12 +157,25 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
         out->enabled = state->pending_orbit;
         out->option_count = 0;
     }
+    if (index == 2) {
+        snprintf(out->id, sizeof(out->id), "high-refresh");
+        snprintf(out->name, sizeof(out->name), "Smooth presentation");
+        snprintf(out->description, sizeof(out->description),
+                 "Interpolate course camera and object motion between game ticks. "
+                 "Uses the reconstructed course view and adds one tick of visual delay. "
+                 "Menus and transitions retain their original presentation.");
+        out->enabled = state->pending_high_refresh;
+    }
     return 1;
 }
 
 static int EnableFeature(void *ctx, const char *package, const char *feature, int enabled)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsHighRefresh(package, feature)) {
+        state->pending_high_refresh = enabled != 0;
+        return 1;
+    }
     if (IsOrbit(package, feature)) {
         state->pending_orbit = enabled != 0;
         return 1;
@@ -143,6 +189,17 @@ static int GetOption(void *ctx, const char *package, const char *feature,
                      int index, RecompLauncherCModOption *out)
 {
     const KdcLauncherSettingsState *state = ctx;
+    if (IsHighRefresh(package, feature) && index == 0 && out) {
+        *out = (RecompLauncherCModOption){0};
+        snprintf(out->id, sizeof(out->id), "fps");
+        snprintf(out->label, sizeof(out->label), "Presentation rate");
+        snprintf(out->description, sizeof(out->description), "Game speed stays unchanged. Display follows your monitor's refresh rate.");
+        snprintf(out->value, sizeof(out->value), "%s", rate_values[state->pending_rate]);
+        snprintf(out->default_value, sizeof(out->default_value), "display");
+        out->type = RECOMP_MOD_OPTION_CHOICE;
+        out->choice_count = sizeof(rates) / sizeof(rates[0]);
+        return 1;
+    }
     if (!IsFeature(package, feature) || index != 0 || !out) return 0;
     *out = (RecompLauncherCModOption){0};
     snprintf(out->id, sizeof(out->id), "aspect");
@@ -159,6 +216,13 @@ static int GetChoice(void *ctx, const char *package, const char *feature,
                      const char *option, int index, RecompLauncherCModChoice *out)
 {
     (void)ctx;
+    if (IsHighRefresh(package, feature) && option && !strcmp(option, "fps") &&
+        index >= 0 && index < (int)(sizeof(rates) / sizeof(rates[0])) && out) {
+        *out = (RecompLauncherCModChoice){0};
+        snprintf(out->value, sizeof(out->value), "%s", rate_values[index]);
+        snprintf(out->label, sizeof(out->label), "%s", index ? rate_values[index] : "Display");
+        return 1;
+    }
     if (!IsFeature(package, feature) || !option || strcmp(option, "aspect") ||
         index < 0 || index >= 4 || !out) return 0;
     *out = (RecompLauncherCModChoice){0};
@@ -171,6 +235,12 @@ static int SetOption(void *ctx, const char *package, const char *feature,
                      const char *option, const char *value)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsHighRefresh(package, feature) && option && !strcmp(option, "fps") && value) {
+        for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); ++i) {
+            if (!strcmp(value, rate_values[i])) { state->pending_rate = (int)i; return 1; }
+        }
+        return 0;
+    }
     if (!IsFeature(package, feature) || !option || strcmp(option, "aspect") || !value) return 0;
     for (int i = 0; i < 4; ++i) {
         if (!strcmp(value, aspect_values[i])) { state->pending_aspect = i; return 1; }
@@ -241,6 +311,14 @@ static int Commit(void *ctx, const char *rom)
     }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
+    if (state->pending_high_refresh != KdcHighRefreshEnabled() || state->pending_rate != rate) {
+        FILE *file = fopen("kdc-presentation.cfg", "w");
+        int ok = file && fprintf(file, "%d %d\n", state->pending_high_refresh, rates[state->pending_rate]) > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) { state->last_error = "Could not save presentation settings."; return 0; }
+        high_refresh = state->pending_high_refresh;
+        rate = state->pending_rate;
+    }
     *state->widescreen = state->pending_widescreen != 0;
     return 1;
 }
@@ -270,11 +348,14 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
     };
     /* One modal launcher at a time: reset this singleton's staged state on
      * every open, discarding uncommitted edits from the previous visit. */
+    (void)KdcHighRefreshEnabled(); /* Initialize rate before copying staged fields. */
     state = (KdcLauncherSettingsState){
         .widescreen = widescreen,
         .pending_widescreen = *widescreen,
         .pending_aspect = KdcWidescreenAspect(),
         .pending_orbit = KdcOrbitEnabled(),
+        .pending_high_refresh = KdcHighRefreshEnabled(),
+        .pending_rate = rate,
         .expected_rom_hash = rom_sha256,
     };
     return &provider;

@@ -19,6 +19,7 @@
 /recomp/funcs.h
 /saves/
 kdc-camera.cfg
+kdc-presentation.cfg
 __pycache__/
 
 # Local development and generated content

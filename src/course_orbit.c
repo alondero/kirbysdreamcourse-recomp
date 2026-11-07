@@ -9,6 +9,7 @@
 #include <float.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 extern Snes *g_snes;
@@ -19,6 +20,33 @@ static unsigned map_id = ~0u;
 static double focus_height;
 static bool focus_ready;
 static unsigned focus_player = ~0u;
+static bool high_refresh;
+static bool orbit_controls = true;
+
+typedef struct Presentation {
+    KdcCourseCamera camera;
+    KdcOrbitSprite sprites[4096];
+    unsigned count, frame, map, player;
+    int width, height;
+    bool valid;
+} Presentation;
+
+static Presentation previous, current;
+static int previous_piece[4096], previous_anchor[4096];
+static bool continuous;
+static bool background_valid;
+static KdcCourseCamera background_camera;
+static uint32_t background_pixels[kPpuBufWidth * 240];
+static float background_depth[kPpuBufWidth * 240];
+
+void KdcOrbitConfigure(bool enabled, bool controls)
+{
+    if (enabled != high_refresh || controls != orbit_controls) {
+        KdcOrbitReset();
+        high_refresh = enabled;
+        orbit_controls = controls;
+    }
+}
 
 typedef struct Vertex {
     double x, y, z;
@@ -32,6 +60,7 @@ typedef struct Render {
     float *depth;
     Ppu *ppu;
     KdcCourseGeometry geometry;
+    KdcCourseCamera camera;
 } Render;
 
 static float depth_buffer[kPpuBufWidth * 240];
@@ -45,6 +74,8 @@ void KdcOrbitReset(void)
     focus_height = 0;
     focus_ready = false;
     focus_player = ~0u;
+    current.valid = previous.valid = continuous = false;
+    background_valid = false;
 }
 
 /* Player ball U/V: signed integer cells with 16-bit fractions. */
@@ -68,14 +99,16 @@ void KdcOrbitInput(int horizontal, int vertical, bool reset)
         KdcOrbitReset();
         return;
     }
-    unsigned current = KdcReadWord(g_ram, 0xabb2);
-    if (current != map_id) {
+    unsigned next_map = KdcReadWord(g_ram, 0xabb2);
+    if (next_map != map_id) {
         KdcOrbitReset();
-        map_id = current;
+        map_id = next_map;
     }
     const double seconds = 1.0 / 60.0988;
     bool was_active = camera.active;
     KdcCameraStep(&camera, horizontal, vertical, reset, seconds);
+    if (reset) current.valid = previous.valid = continuous = false;
+    if (high_refresh) camera.active = true;
     if (reset || (!was_active && camera.active)) focus_ready = false;
     unsigned player = KdcReadWord(g_ram, 0x1803);
     if (!camera.active || (player != 0 && player != 2)) return;
@@ -161,9 +194,9 @@ static void Triangle(Render *render, Vertex a, Vertex b, Vertex c,
                        bool textured, uint32_t color)
 {
     KdcCameraPoint p[3] = {
-        KdcCameraProject(&camera, a.x, a.y, a.z, render->width, render->height),
-        KdcCameraProject(&camera, b.x, b.y, b.z, render->width, render->height),
-        KdcCameraProject(&camera, c.x, c.y, c.z, render->width, render->height),
+        KdcCameraProject(&render->camera, a.x, a.y, a.z, render->width, render->height),
+        KdcCameraProject(&render->camera, b.x, b.y, b.z, render->width, render->height),
+        KdcCameraProject(&render->camera, c.x, c.y, c.z, render->width, render->height),
     };
     double area = Edge(p[0], p[1], p[2].x, p[2].y);
     if (fabs(area) < 0.000001) return;
@@ -174,7 +207,7 @@ static void Triangle(Render *render, Vertex a, Vertex b, Vertex c,
     /* Zoomed out, one output pixel spans several source texels. Average a
      * grid across its footprint instead of point-sampling one, which makes
      * fine checkerboards shimmer. The texture is affine in screen space. */
-    int samples = textured ? Samples(camera.zoom) : 1;
+    int samples = textured ? Samples(render->camera.zoom) : 1;
     for (int y = top; y <= bottom; ++y) {
         uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
         for (int x = left; x <= right; ++x) {
@@ -439,25 +472,25 @@ static void Decal(Render *render, const KdcOrbitSprite *sprite)
     for (unsigned corner = 0; corner < 4; ++corner) {
         double dx = sprite->offset_x + (corner & 1 ? size : 0);
         double dy = sprite->offset_y + (corner & 2 ? size : 0);
-        KdcCameraPoint p = KdcCameraProject(&camera,
+        KdcCameraPoint p = KdcCameraProject(&render->camera,
             sprite->x + (dx / 32 + dy / 16) / 2, sprite->y + (dx / 32 - dy / 16) / 2,
             sprite->z, render->width, render->height);
         left = fmin(left, p.x); right = fmax(right, p.x);
         top = fmin(top, p.y); bottom = fmax(bottom, p.y);
     }
     const double tolerance = 1.5; /* elevation steps from the anchor plane */
-    double margin = 16 * tolerance * camera.zoom + 1;
+    double margin = 16 * tolerance * render->camera.zoom + 1;
     int x0 = (int)fmax(0, floor(left - 1)), x1 = (int)fmin(render->width, ceil(right + 1));
     int y0 = (int)fmax(0, floor(top - margin)), y1 = (int)fmin(render->height, ceil(bottom + margin));
     /* Source pixels spanned by one output pixel on a horizontal plane. Both
      * projections are affine, so this is the same at every pixel and height. */
-    int samples = Samples(camera.zoom);
+    int samples = Samples(render->camera.zoom);
     double step = 1;
     if (samples > 1) {
         double p[3][2], unused;
         for (unsigned i = 0; i < 3; ++i) {
             double wx, wy;
-            if (!KdcCameraUnprojectPlane(&camera, 0.5 + (i == 1), 0.5 + (i == 2),
+            if (!KdcCameraUnprojectPlane(&render->camera, 0.5 + (i == 1), 0.5 + (i == 2),
                     sprite->z, render->width, render->height, &wx, &wy, &unused))
                 return;
             KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z,
@@ -475,9 +508,9 @@ static void Decal(Render *render, const KdcOrbitSprite *sprite)
             if (depth == -FLT_MAX) {
                 /* Over the void (a ball leaving the course) keep the plane. */
                 wz = sprite->z;
-                if (!KdcCameraUnprojectPlane(&camera, x + 0.5, y + 0.5, wz,
+                if (!KdcCameraUnprojectPlane(&render->camera, x + 0.5, y + 0.5, wz,
                         render->width, render->height, &wx, &wy, &unused)) continue;
-            } else if (!KdcCameraUnproject(&camera, x + 0.5, y + 0.5, depth,
+            } else if (!KdcCameraUnproject(&render->camera, x + 0.5, y + 0.5, depth,
                            render->width, render->height, &wx, &wy, &wz) ||
                        fabs(wz - sprite->z) > tolerance) continue;
             double sx, sy;
@@ -497,13 +530,13 @@ static void Sprites(Render *render, bool world, bool ground)
         if (sprite->world != world || (world && sprite->ground != ground)) continue;
         if (world && ground) { Decal(render, sprite); continue; }
         int size = SpriteSize(render, sprite);
-        double scale = world ? camera.zoom : 1;
+        double scale = world ? render->camera.zoom : 1;
         double z = sprite->z, surface;
         /* Guest heights are fixed point; the mesh is continuous. Treat an
          * anchor within a quarter step below the surface as resting on it. */
         if (world && KdcCourseGeometrySample(&render->geometry, sprite->x, sprite->y, &surface) &&
             surface > z && surface - z <= 0.25) z = surface;
-        KdcCameraPoint point = world ? KdcCameraProject(&camera,
+        KdcCameraPoint point = world ? KdcCameraProject(&render->camera,
             sprite->x, sprite->y, z, render->width, render->height) :
             (KdcCameraPoint){(render->width - 256) / 2.0, -1, 0};
         double left = point.x + sprite->offset_x * scale;
@@ -536,26 +569,16 @@ static void Sprites(Render *render, bool world, bool ground)
     }
 }
 
-int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
-                  int width, int height, double alpha)
+static KdcCourseCamera ViewCamera(Render *render)
 {
-    (void)alpha;
-    if (!camera.active || !focus_ready || !dst || width < 1 || width > kPpuBufWidth ||
-        height < 1 || height > 240 || pitch < (size_t)width * 4 ||
-        !g_snes || !g_snes->ppu || !g_snes->cart || !KdcIsCourse(g_snes->ppu)) return 0;
-    /* Preserve original fades, forced blank and mosaic transitions until
-     * the fully visible course returns. Camera state is retained. */
-    if (PPU_forcedBlank(g_snes->ppu) || PPU_brightness(g_snes->ppu) != 15 ||
-        PPU_mosaicSize(g_snes->ppu) > 1) return 0;
-    Render render = {dst, pitch, width, height, depth_buffer, g_snes->ppu, {0}};
-    if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
-        g_snes->cart->rom, g_snes->cart->romImageSize)) return 0;
-    double cx = KdcCourseScroll(render.ppu->hScroll[0], KdcReadWord(g_ram, 0x86)) + 128;
+    int width = render->width, height = render->height;
+    KdcCourseCamera view = camera;
+    double cx = KdcCourseScroll(render->ppu->hScroll[0], KdcReadWord(g_ram, 0x86)) + 128;
     /* Visible SNES scanlines begin at one, while the output rows begin at
      * zero. Preserve that phase for terrain and billboard origins. */
-    double cy = KdcCourseScroll(render.ppu->vScroll[0], KdcReadWord(g_ram, 0x88)) + 113;
-    double horizontal = (cx - render.geometry.origin_x) / 32;
-    double vertical = (cy - render.geometry.origin_y) / 16;
+    double cy = KdcCourseScroll(render->ppu->vScroll[0], KdcReadWord(g_ram, 0x88)) + 113;
+    double horizontal = (cx - render->geometry.origin_x) / 32;
+    double vertical = (cy - render->geometry.origin_y) / 16;
     /* The native view center, on the plane beneath the player. */
     double center_x = (horizontal + vertical + focus_height) / 2;
     double center_y = (horizontal - vertical - focus_height) / 2;
@@ -568,34 +591,247 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
      * exactly the native framing. */
     double ball_x = BallCoordinate(focus_player, 0xd8aa);
     double ball_y = BallCoordinate(focus_player, 0xd8b2);
-    double lead = fmax(0, cos(camera.yaw)) * fmin(1, camera.zoom);
-    camera.target_x = ball_x;
-    camera.target_y = ball_y;
-    camera.target_z = focus_height;
-    camera.lead_x = (center_x - ball_x) * lead;
-    camera.lead_y = (center_y - ball_y) * lead;
+    double lead = fmax(0, cos(view.yaw)) * fmin(1, view.zoom);
+    view.target_x = ball_x;
+    view.target_y = ball_y;
+    view.target_z = focus_height;
+    view.lead_x = (center_x - ball_x) * lead;
+    view.lead_y = (center_y - ball_y) * lead;
     /* The ground pivot keeps bounces from shaking the course, but zoomed
      * in a high ball would leave the frame. Shift the pivot height only as
      * far as needed to keep the ball and a 16-pixel sprite above it on
      * screen; raising it one step moves the view 16 pixels per zoom down. */
-    KdcCameraPoint ball = KdcCameraProject(&camera, ball_x, ball_y,
+    KdcCameraPoint ball = KdcCameraProject(&view, ball_x, ball_y,
         BallHeight(focus_player), width, height);
-    double top = 8 + 16 * camera.zoom, bottom = height - 8.0;
+    double top = 8 + 16 * view.zoom, bottom = height - 8.0;
     if (ball.y < top)
-        camera.target_z += (top - ball.y) / (16 * camera.zoom);
+        view.target_z += (top - ball.y) / (16 * view.zoom);
     else if (ball.y > bottom)
-        camera.target_z -= (ball.y - bottom) / (16 * camera.zoom);
-    for (int y = 0; y < height; ++y) {
-        uint32_t *row = (uint32_t *)(dst + y * pitch);
-        for (int x = 0; x < width; ++x) {
-            row[x] = Color(render.ppu->cgram[0]);
-            depth_buffer[y * width + x] = -FLT_MAX;
+        view.target_z -= (ball.y - bottom) / (16 * view.zoom);
+    return view;
+}
+
+static bool Ready(void)
+{
+    return camera.active && focus_ready && g_snes && g_snes->ppu && g_snes->cart &&
+        KdcIsCourse(g_snes->ppu) && !PPU_forcedBlank(g_snes->ppu) &&
+        PPU_brightness(g_snes->ppu) == 15 && PPU_mosaicSize(g_snes->ppu) <= 1;
+}
+
+static bool Nearby(const KdcOrbitSprite *a, const KdcOrbitSprite *b)
+{
+    return fabs(a->x - b->x) <= 4 && fabs(a->y - b->y) <= 4 && fabs(a->z - b->z) <= 32;
+}
+
+static void ReportPresentation(void)
+{
+    static bool checked;
+    static FILE *log;
+    if (!checked) {
+        checked = true;
+        const char *path = getenv("KDC_PRESENTATION_LOG");
+        if (path && *path) {
+            log = fopen(path, "w");
+            if (log) fputs("frame,continuous,pieces,world,identified,matched\n", log);
         }
     }
-    Scenery(&render, false);
-    Terrain(&render);
+    if (!log) return;
+    unsigned world = 0, identified = 0, matched = 0;
+    for (unsigned i = 0; i < current.count; ++i) {
+        world += current.sprites[i].world;
+        identified += current.sprites[i].world && current.sprites[i].motion_id != 0;
+        matched += continuous && previous_anchor[i] >= 0;
+    }
+    fprintf(log, "%u,%u,%u,%u,%u,%u\n", current.frame, continuous,
+            current.count, world, identified, matched);
+}
+
+void KdcOrbitCapture(unsigned frame, int width, int height)
+{
+    if (!high_refresh) return;
+    background_valid = false;
+    previous = current;
+    current.valid = continuous = false;
+    if (!Ready() || width < 1 || width > kPpuBufWidth || height < 1 || height > 240) return;
+    if (KdcReadWord(g_ram, 0xabb2) != map_id ||
+        KdcReadWord(g_ram, 0x1803) != focus_player) return;
+    Render render = {.width = width, .height = height, .ppu = g_snes->ppu};
+    if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
+            g_snes->cart->rom, g_snes->cart->romImageSize)) return;
+    current.camera = ViewCamera(&render);
+    current.frame = frame;
+    current.map = KdcReadWord(g_ram, 0xabb2);
+    current.player = KdcReadWord(g_ram, 0x1803);
+    current.width = width; current.height = height;
     sprite_count = 0;
     KdcVisitOrbitSprites(render.ppu, g_ram, CollectSprite, NULL);
+    current.count = sprite_count;
+    memcpy(current.sprites, sprite_buffer, sprite_count * sizeof(*sprite_buffer));
+    current.valid = true;
+    continuous = previous.valid && frame == previous.frame + 1 &&
+        current.map == previous.map && current.player == previous.player &&
+        width == previous.width && height == previous.height &&
+        fabs(current.camera.target_x - previous.camera.target_x) <= 4 &&
+        fabs(current.camera.target_y - previous.camera.target_y) <= 4 &&
+        fabs(current.camera.target_z - previous.camera.target_z) <= 32 &&
+        fabs(current.camera.lead_x - previous.camera.lead_x) <= 2 &&
+        fabs(current.camera.lead_y - previous.camera.lead_y) <= 2 &&
+        fabs(remainder(current.camera.yaw - previous.camera.yaw, 6.283185307179586)) < 0.2 &&
+        fabs(current.camera.zoom - previous.camera.zoom) < 0.5;
+    if (!continuous) { ReportPresentation(); return; }
+    /* Resolve correspondence once per simulation boundary, never per draw.
+     * Ambiguous duplicate pieces retain current offsets. Multiple pieces of
+     * one actor may still share a verified, identical world anchor. */
+    for (unsigned i = 0; i < current.count; ++i) {
+        const KdcOrbitSprite *s = &current.sprites[i];
+        int anchor = -1, piece = -1;
+        bool ambiguous_anchor = false, ambiguous_piece = false;
+        if (s->motion_id && s->world && !s->unresolved) {
+            for (unsigned j = 0; j < previous.count; ++j) {
+                const KdcOrbitSprite *p = &previous.sprites[j];
+                if (p->motion_id != s->motion_id || !p->world || p->unresolved ||
+                    p->ground != s->ground) continue;
+                if (anchor >= 0) {
+                    const KdcOrbitSprite *a = &previous.sprites[anchor];
+                    if (a->x != p->x || a->y != p->y || a->z != p->z ||
+                        a->motion_x != p->motion_x || a->motion_y != p->motion_y) ambiguous_anchor = true;
+                }
+                anchor = (int)j;
+                if (p->piece_id != s->piece_id || p->attributes != s->attributes ||
+                    p->bucket != s->bucket || p->large != s->large) continue;
+                if (piece >= 0) ambiguous_piece = true;
+                piece = (int)j;
+            }
+        }
+        previous_anchor[i] = !ambiguous_anchor && anchor >= 0 && Nearby(s, &previous.sprites[anchor]) &&
+            fabs(s->motion_x - previous.sprites[anchor].motion_x) <= 64 &&
+            fabs(s->motion_y - previous.sprites[anchor].motion_y) <= 64 ? anchor : -1;
+        previous_piece[i] = !ambiguous_piece && piece >= 0 &&
+            fabs(s->offset_x - previous.sprites[piece].offset_x) <= 64 &&
+            fabs(s->offset_y - previous.sprites[piece].offset_y) <= 64 ? piece : -1;
+    }
+    ReportPresentation();
+}
+
+static double Blend(double a, double b, double alpha) { return a + (b - a) * alpha; }
+
+static void Interpolate(Render *render, double alpha)
+{
+    render->camera = current.camera;
+    sprite_count = current.count;
+    memcpy(sprite_buffer, current.sprites, sprite_count * sizeof(*sprite_buffer));
+    if (!continuous || !isfinite(alpha) || alpha >= 1) return;
+    alpha = fmax(0, alpha);
+    const KdcCourseCamera *a = &previous.camera, *b = &current.camera;
+    render->camera.yaw = a->yaw + remainder(b->yaw - a->yaw, 6.283185307179586) * alpha;
+    render->camera.zoom = Blend(a->zoom, b->zoom, alpha);
+    render->camera.target_x = Blend(a->target_x, b->target_x, alpha);
+    render->camera.target_y = Blend(a->target_y, b->target_y, alpha);
+    render->camera.target_z = Blend(a->target_z, b->target_z, alpha);
+    render->camera.lead_x = Blend(a->lead_x, b->lead_x, alpha);
+    render->camera.lead_y = Blend(a->lead_y, b->lead_y, alpha);
+    for (unsigned i = 0; i < sprite_count; ++i) {
+        KdcOrbitSprite *s = &sprite_buffer[i];
+        if (previous_anchor[i] < 0) continue;
+        const KdcOrbitSprite *p = &previous.sprites[previous_anchor[i]];
+        s->x = Blend(p->x, s->x, alpha); s->y = Blend(p->y, s->y, alpha);
+        s->z = Blend(p->z, s->z, alpha);
+        if (previous_piece[i] < 0) {
+            /* Actor motion remains smooth when its animation changes to a
+             * different layout; the new artwork's local offsets stay exact. */
+            s->offset_x += Blend(p->motion_x, s->motion_x, alpha) - s->motion_x;
+            s->offset_y += Blend(p->motion_y, s->motion_y, alpha) - s->motion_y;
+            continue;
+        }
+        p = &previous.sprites[previous_piece[i]];
+        s->offset_x = Blend(p->offset_x, s->offset_x, alpha);
+        s->offset_y = Blend(p->offset_y, s->offset_y, alpha);
+    }
+}
+
+static void ReportDraw(double alpha)
+{
+    static bool checked;
+    static FILE *log;
+    if (!checked) {
+        checked = true;
+        const char *path = getenv("KDC_PRESENTATION_DRAW_LOG");
+        if (path && *path) {
+            log = fopen(path, "w");
+            if (log) fputs("frame,alpha,interpolated_objects\n", log);
+        }
+    }
+    if (!log) return;
+    unsigned moved = 0;
+    for (unsigned i = 0; i < sprite_count; ++i) {
+        const KdcOrbitSprite *a = &current.sprites[i], *b = &sprite_buffer[i];
+        moved += a->x != b->x || a->y != b->y || a->z != b->z ||
+                 a->offset_x != b->offset_x || a->offset_y != b->offset_y;
+    }
+    fprintf(log, "%u,%.6f,%u\n", current.frame, alpha, moved);
+}
+
+static void Background(Render *render)
+{
+    const KdcCourseCamera *a = &background_camera, *b = &render->camera;
+    bool same = background_valid && high_refresh &&
+        a->yaw == b->yaw && a->zoom == b->zoom &&
+        a->target_x == b->target_x && a->target_y == b->target_y &&
+        a->target_z == b->target_z && a->lead_x == b->lead_x && a->lead_y == b->lead_y;
+    /* Capture invalidates this cache on every simulation tick. During one
+     * captured scene only the presentation transform can change: palette,
+     * VRAM, scenery and terrain remain on the single host thread. Retain
+     * depth BEFORE any sprite draw so moving bodies cannot leave occluders. */
+    if (same) {
+        for (int y = 0; y < render->height; ++y)
+            memcpy(render->pixels + y * render->pitch, background_pixels + y * render->width,
+                   (size_t)render->width * 4);
+        memcpy(render->depth, background_depth, (size_t)render->width * render->height * sizeof(float));
+        return;
+    }
+    for (int y = 0; y < render->height; ++y) {
+        uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
+        for (int x = 0; x < render->width; ++x) {
+            row[x] = Color(render->ppu->cgram[0]);
+            render->depth[y * render->width + x] = -FLT_MAX;
+        }
+    }
+    Scenery(render, false);
+    Terrain(render);
+    if (high_refresh) {
+        for (int y = 0; y < render->height; ++y)
+            memcpy(background_pixels + y * render->width, render->pixels + y * render->pitch,
+                   (size_t)render->width * 4);
+        memcpy(background_depth, render->depth, (size_t)render->width * render->height * sizeof(float));
+        background_camera = render->camera;
+        background_valid = true;
+    }
+}
+
+int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
+                  int width, int height, double alpha)
+{
+    if (!camera.active || !focus_ready || !dst || width < 1 || width > kPpuBufWidth ||
+        height < 1 || height > 240 || pitch < (size_t)width * 4 ||
+        !g_snes || !g_snes->ppu || !g_snes->cart || !KdcIsCourse(g_snes->ppu)) return 0;
+    /* Preserve original fades, forced blank and mosaic transitions until
+     * the fully visible course returns. Camera state is retained. */
+    if (PPU_forcedBlank(g_snes->ppu) || PPU_brightness(g_snes->ppu) != 15 ||
+        PPU_mosaicSize(g_snes->ppu) > 1) return 0;
+    Render render = {.pixels = dst, .pitch = pitch, .width = width, .height = height,
+                     .depth = depth_buffer, .ppu = g_snes->ppu};
+    if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
+        g_snes->cart->rom, g_snes->cart->romImageSize)) return 0;
+    render.camera = ViewCamera(&render);
+    if (high_refresh) {
+        if (!current.valid || current.width != width || current.height != height) return 0;
+        Interpolate(&render, alpha);
+        ReportDraw(alpha);
+    } else {
+        sprite_count = 0;
+        KdcVisitOrbitSprites(render.ppu, g_ram, CollectSprite, NULL);
+    }
+    Background(&render);
     Sprites(&render, true, true);
     Sprites(&render, true, false);
     Scenery(&render, true);

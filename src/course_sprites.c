@@ -17,6 +17,7 @@ typedef struct OrbitAnchor {
     int16_t origin_x, origin_y;
     uint32_t source_pc;
     bool world, unresolved, ground;
+    uint64_t motion_id;
 } OrbitAnchor;
 typedef struct Piece {
     int16_t world_x, world_y;
@@ -24,6 +25,8 @@ typedef struct Piece {
     uint8_t large, bucket;
     bool recovered;
     OrbitAnchor anchor;
+    uint32_t piece_id;
+    int16_t motion_x, motion_y;
 } Piece;
 typedef struct DrawList {
     Piece pieces[kMaxPieces];
@@ -55,6 +58,13 @@ static uint16_t anchor_map;
 static bool pending_anchor_valid;
 static int16_t pending_x, pending_y;
 static uint32_t source_pc;
+static uint32_t task_generation[64];
+
+static uint64_t TaskMotion(unsigned slot)
+{
+    if (slot >= 128 || (slot & 1)) return 0;
+    return ((uint64_t)task_generation[slot / 2] << 32) | (0x10000u + slot);
+}
 static void SetPendingAnchor(OrbitAnchor anchor, int x, int y);
 static OrbitAnchor ResolveAnchor(const CpuState *cpu, int x, int y);
 static OrbitAnchor EnemyBaseAnchor(const CpuState *cpu, unsigned slot);
@@ -159,7 +169,7 @@ void KdcObserveProjection(const CpuState *cpu, uint32_t pc)
                            (landing ? 0x6b12 : 0xbb46) + i),
             Fixed(cpu->ram, (landing ? 0x6b18 : 0xbf46) + i,
                            (landing ? 0x6b1e : 0xc346) + i),
-            0, x, y, pc, true, false, false
+            0, x, y, pc, true, false, false, 0
         };
         if (landing) {
             /* The marker renderer retains U/V and its projected origin;
@@ -175,6 +185,7 @@ void KdcObserveProjection(const CpuState *cpu, uint32_t pc)
             anchor.z = Elevation(Fixed(cpu->ram, (ground ? 0xcf46 : 0xc746) + i,
                                                  (ground ? 0xd346 : 0xcb46) + i));
         }
+        anchor.motion_id = 0x20000u + (landing ? 0x1000u : 0) + i;
         SetPendingAnchor(anchor, x, y);
         return;
     }
@@ -187,7 +198,7 @@ void KdcObserveProjection(const CpuState *cpu, uint32_t pc)
         Elevation(Fixed(cpu->ram, d + 0x48, d + 0x4a)),
         (int16_t)AbsoluteWord(cpu, 0x6a82),
         (int16_t)(AbsoluteWord(cpu, 0x8b9a) - AbsoluteWord(cpu, 0x6a86)),
-        pc, true, false, false
+        pc, true, false, false, 0
     };
     projections[projection_next] = anchor;
     projection_next = (projection_next + 1) % 1024;
@@ -212,6 +223,7 @@ static OrbitAnchor ResolveAnchor(const CpuState *cpu, int x, int y)
             result.y = Fixed(ram, 0xd8b2 + player, 0xd8b6 + player);
             result.z = Elevation(Fixed(ram, 0xd8ba + player, 0xd8be + player));
             result.world = true; result.unresolved = false;
+            result.motion_id = 0x100u + player;
             return result;
         }
     }
@@ -236,6 +248,7 @@ static OrbitAnchor ResolveAnchor(const CpuState *cpu, int x, int y)
         result.x = u + 0.5; result.y = v + 0.5; result.z = Elevation(z);
         result.origin_x = (int16_t)(x + 32);
         result.world = true; result.unresolved = false;
+        result.motion_id = TaskMotion(slot);
         return result;
     }
     for (unsigned n = 0; n < projection_count; ++n) {
@@ -278,6 +291,7 @@ static OrbitAnchor EnemyBaseAnchor(const CpuState *cpu, unsigned slot)
         anchor.x = u + 0.5; anchor.y = v + 0.5; anchor.z = Elevation(physical_z);
         anchor.origin_x = (int16_t)(x + 32); anchor.origin_y = y;
         anchor.world = true; anchor.unresolved = false;
+        anchor.motion_id = TaskMotion(slot);
         break;
     }
     return anchor;
@@ -293,6 +307,7 @@ static OrbitAnchor BallAnchor(const CpuState *cpu, unsigned player)
     anchor.origin_x = (int16_t)AbsoluteWord(cpu, 0x91e + player);
     anchor.origin_y = (int16_t)AbsoluteWord(cpu, 0x93e + player);
     anchor.world = true; anchor.unresolved = false;
+    anchor.motion_id = 0x100u + player;
     return anchor;
 }
 
@@ -300,7 +315,11 @@ static OrbitAnchor RecoverEffectAnchor(const CpuState *cpu, unsigned slot)
 {
     OrbitAnchor anchor = {.source_pc = source_pc, .unresolved = true};
     if (slot >= 128 || (slot & 1)) return anchor;
-    if (task_anchors[slot / 2].world) return task_anchors[slot / 2];
+    if (task_anchors[slot / 2].world) {
+        anchor = task_anchors[slot / 2];
+        anchor.motion_id = TaskMotion(slot);
+        return anchor;
+    }
     unsigned type = AbsoluteWord(cpu, 0x4e1c + slot);
     if (type == 0x5d && AbsoluteWord(cpu, 0x519c + slot) == 0xf04b &&
         (AbsoluteWord(cpu, 0x521c + slot) & 0x7f) == 4) {
@@ -320,7 +339,10 @@ static OrbitAnchor RecoverEffectAnchor(const CpuState *cpu, unsigned slot)
             AbsoluteWord(cpu, 0x4f9c + root) <= 0xe1ef)
             anchor = BallAnchor(cpu, 0);
     }
-    if (anchor.world) task_anchors[slot / 2] = anchor;
+    if (anchor.world) {
+        anchor.motion_id = TaskMotion(slot);
+        task_anchors[slot / 2] = anchor;
+    }
     return anchor;
 }
 
@@ -382,7 +404,10 @@ static void Expand(const CpuState *cpu, const Request *request)
             (int16_t)(request->world_x + (int8_t)dx),
             (int16_t)(request->world_y + (int8_t)dy),
             (uint16_t)(priority < 0 ? word : (word & 0xcfff) | priority),
-            flags & 1, request->bucket, request->recovered, request->anchor
+            flags & 1, request->bucket, request->recovered, request->anchor,
+            (bank << 16) | layout,
+            (int16_t)(request->world_x - request->anchor.origin_x),
+            (int16_t)(request->world_y - request->anchor.origin_y)
         };
         if (flags & 0x80) return;
         layout = (uint16_t)(layout + 5);
@@ -476,11 +501,13 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
         return;
     }
     if (address == 0xdfc0 && cpu->Y < 128 && !(cpu->Y & 1)) {
+        ++task_generation[cpu->Y / 2];
         task_anchors[cpu->Y / 2] = (OrbitAnchor){0};
         return;
     }
     if (address == 0xe776 && cpu->X < 128 && cpu->Y < 128 &&
         !(cpu->X & 1) && !(cpu->Y & 1)) {
+        ++task_generation[cpu->Y / 2];
         task_anchors[cpu->Y / 2] = task_anchors[cpu->X / 2];
         return;
     }
@@ -546,11 +573,12 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
                 anchor = (OrbitAnchor){
                     AbsoluteWord(cpu, 0x6b64) + 0.5, AbsoluteWord(cpu, 0x6b66) + 0.5,
                     AbsoluteWord(cpu, 0x6b68), x, (int16_t)(y + 1), pc,
-                    true, false, true
+                    true, false, true, 0
                 };
             }
             if (anchor.world) task_anchors[slot / 2] = anchor;
             else if (task_anchors[slot / 2].world) anchor = task_anchors[slot / 2];
+            if (anchor.world) anchor.motion_id = TaskMotion(slot);
             SetPendingAnchor(anchor, x, y);
         } else {
             SetPendingAnchor((OrbitAnchor){.source_pc = pc},
@@ -612,6 +640,7 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
                     ((int16_t)AbsoluteWord(cpu, 0x93e + player) - wy) / 16.0;
                 anchor.world = true; anchor.unresolved = false;
                 anchor.ground = true;
+                anchor.motion_id = 0x100u + player;
             }
             SetPendingAnchor(anchor, wx, wy);
         }
@@ -767,6 +796,7 @@ void KdcPrepareSprites(Ppu *ppu, const uint8_t *ram, int extra)
 
 void KdcResetSprites(Ppu *ppu)
 {
+    for (unsigned i = 0; i < 64; ++i) ++task_generation[i];
     memset(&building, 0, sizeof(building));
     memset(&displayed, 0, sizeof(displayed));
     request_count = 0;
@@ -792,7 +822,8 @@ void KdcVisitOrbitSprites(const Ppu *ppu, const uint8_t *ram,
                 (int16_t)(piece->world_x - (anchor->world ? anchor->origin_x : camera_x)),
                 (int16_t)(piece->world_y - (anchor->world ? anchor->origin_y : camera_y)),
                 piece->attributes, piece->large, piece->bucket,
-                anchor->world, anchor->unresolved, anchor->ground, anchor->source_pc
+                anchor->world, anchor->unresolved, anchor->ground, anchor->source_pc,
+                anchor->motion_id, piece->piece_id, piece->motion_x, piece->motion_y
             };
             visitor(&sprite, context);
         }

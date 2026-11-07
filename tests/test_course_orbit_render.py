@@ -8,6 +8,12 @@ from pathlib import Path
 
 class OrbitRendererTest(unittest.TestCase):
     def test_original_sprites_orbit_zoom_occlusion_hud_and_read_only_rendering(self):
+        self.run_fixture('course_orbit_render_test.c')
+
+    def test_intermediate_camera_and_object_pixels_and_history_rejection(self):
+        self.run_fixture('high_refresh_render_test.c')
+
+    def run_fixture(self, fixture):
         compiler = shutil.which('gcc')
         root = Path(__file__).resolve().parents[1]
         framework = Path(os.environ.get('SNESRECOMP_ROOT', root / 'local/guarded-framework'))
@@ -18,7 +24,7 @@ class OrbitRendererTest(unittest.TestCase):
             executable = Path(directory) / 'course_orbit_render_test.exe'
             result = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
                                      '-I', str(root / 'src'), '-I', str(source),
-                                     str(root / 'tests/course_orbit_render_test.c'),
+                                     str(root / 'tests' / fixture),
                                      str(root / 'src/course_orbit.c'),
                                      str(root / 'src/course_camera.c'),
                                      str(root / 'src/course_geometry.c'),

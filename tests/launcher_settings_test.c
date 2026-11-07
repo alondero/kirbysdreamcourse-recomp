@@ -14,7 +14,11 @@
 int main(int argc, char **argv)
 {
     CHECK(argc == 5 || argc == 6 || argc == 7);
-    if (argc == 7) { CHECK(KdcWidescreenAspect() == 2); return 0; }
+    if (argc == 7) {
+        CHECK(KdcWidescreenAspect() == 2);
+        CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
+        return 0;
+    }
     RecompLauncherCGameInfo info = {.has_run_ahead = 1, .has_renderer = 1};
     KdcConfigureLauncher(&info);
     CHECK(!info.has_run_ahead && info.has_renderer && !info.audio_frequency_locked);
@@ -45,7 +49,16 @@ int main(int argc, char **argv)
            provider->feature_set_option);
     CHECK(!provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, NULL));
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "invalid", "1"));
-    CHECK(provider->feature_count(provider->ctx) == 2);
+    CHECK(provider->feature_count(provider->ctx) == 3);
+    CHECK(!KdcHighRefreshEnabled());
+    CHECK(provider->feature_get(provider->ctx, 2, &feature));
+    CHECK(!feature.enabled && !strcmp(feature.id, "high-refresh"));
+    CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "high-refresh", 0, &option));
+    CHECK(option.choice_count == 8 && !strcmp(option.value, "display"));
+    CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "high-refresh", "fps", "999"));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "high-refresh", "fps", "144"));
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "high-refresh", 1));
+    CHECK(!KdcHighRefreshEnabled()); /* staging does not change the clock */
     CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
     CHECK(option.choice_count == 4 && !strcmp(option.value, "auto"));
     CHECK(provider->feature_choice_get(provider->ctx, "kdc.presentation", "widescreen", "aspect", 2, &choice));
@@ -64,7 +77,7 @@ int main(int argc, char **argv)
     CHECK(KdcOrbitEnabled());
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(KdcOrbitEnabled()); /* staged, not applied */
-    CHECK(!provider->feature_get(provider->ctx, 2, &feature));
+    CHECK(!provider->feature_get(provider->ctx, 3, &feature));
     CHECK(!provider->feature_get(provider->ctx, 0, NULL));
     CHECK(!provider->feature_enable(provider->ctx, "foreign", "widescreen", 1));
     CHECK(!provider->feature_enable(provider->ctx, NULL, NULL, 1));
@@ -106,5 +119,9 @@ int main(int argc, char **argv)
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 1));
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(KdcOrbitEnabled());
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "high-refresh", 1));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "high-refresh", "fps", "144"));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
     return 0;
 }
