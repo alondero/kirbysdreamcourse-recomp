@@ -33,6 +33,7 @@ PATCHES = (
     "hvbjoy-phase-experiment", "reset-phase-experiment", "wai-cycle-experiment",
     "ppu2-openbus-experiment", "apu-guest-read-experiment", "raster-live-restore-experiment",
     "manual-joypad-strobe-experiment", "autojoy-phase-experiment", "spc-indexed-write-state-experiment",
+    "hud-presentation",
 )
 STATE_OPTIONS = (
     "STATE", "RASTER_STATE", "FIELD_STATE", "DSP_STATE", "BEAM_HDMA_STATE",

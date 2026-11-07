@@ -3,6 +3,7 @@
 #include "course_geometry.h"
 #include "course_view.h"
 #include "course_sprites.h"
+#include "course_hud.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes/cart.h"
@@ -321,6 +322,7 @@ static void Terrain(Render *render)
 
 static void Scenery(Render *render, bool hud)
 {
+    if (hud && KdcHudActive(render->ppu)) return;
     /* The same course scenery signature as the native wide margins. */
     if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000 ||
         PPU_bigTiles(render->ppu, 2))
@@ -354,6 +356,15 @@ static void RestoreHud(Render *render, const uint8_t *field)
 {
     if (!field || render->ppu->bgXsc[2] != 0x3c ||
         PPU_bgTileAdr(render->ppu, 2) != 0x4000) return;
+    if (KdcHudActive(render->ppu)) {
+        int extra = (render->width - 256) / 2;
+        for (int y = 0; y < render->height; ++y)
+            for (int x = 0; x < render->width; ++x)
+                if (KdcHudOverlayPixel(render->ppu, x - extra, y + 1))
+                    memcpy(render->pixels + y * render->pitch + x * 4,
+                           field + ((size_t)y * render->width + x) * 4, 4);
+        return;
+    }
     /* The game composites its HUD into BG3 over the clean scenery map.
      * Preserve the complete occupied horizontal span on each HUD row,
      * including transparent interiors that use the native PPU's color
@@ -540,6 +551,8 @@ static void Sprites(Render *render, bool world, bool ground)
             sprite->x, sprite->y, z, render->width, render->height) :
             (KdcCameraPoint){(render->width - 256) / 2.0, -1, 0};
         double left = point.x + sprite->offset_x * scale;
+        if (!world) left += KdcHudPortraitShift(render->ppu, sprite->offset_x,
+                                                sprite->offset_y, sprite->attributes);
         double top = point.y + sprite->offset_y * scale;
         int samples = world ? Samples(scale) : 1;
         double native[2];

@@ -10,6 +10,7 @@ void KdcConfigureLauncher(struct RecompLauncherCGameInfo *info);
 /* Zero follows the drawable; other values select a fixed display ratio. */
 int KdcWidescreenAspect(void);
 bool KdcOrbitEnabled(void);
+bool KdcHudEdges(void);
 bool KdcHighRefreshEnabled(void);
 int KdcPresentationFps(void);
 

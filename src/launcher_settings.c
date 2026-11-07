@@ -14,6 +14,7 @@ typedef struct {
     bool *widescreen;
     int pending_widescreen;
     int pending_aspect;
+    int pending_hud;
     int pending_orbit;
     int pending_high_refresh, pending_rate;
     const char *expected_rom_hash;
@@ -23,6 +24,20 @@ typedef struct {
 static const char *const aspect_values[] = {"auto", "16:9", "21:9", "32:9"};
 static int aspect = -1;
 static int orbit = -1;
+static int hud_edges = -1;
+
+bool KdcHudEdges(void)
+{
+    if (hud_edges < 0) {
+        char value[16] = {0};
+        FILE *file = fopen("kdc-hud.cfg", "r");
+        if (file) { (void)fgets(value, sizeof(value), file); fclose(file); }
+        value[strcspn(value, "\r\n")] = 0;
+        hud_edges = !strcmp(value, "edges");
+    }
+    return hud_edges != 0;
+}
+
 static int high_refresh = -1, rate;
 static const int rates[] = {0, 60, 90, 120, 144, 165, 240, 360};
 static const char *const rate_values[] = {"display", "60", "90", "120", "144", "165", "240", "360"};
@@ -142,10 +157,10 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
     snprintf(out->group, sizeof(out->group), "Display");
     snprintf(out->description, sizeof(out->description),
              "Show extra course terrain using the selected view aspect. "
-             "Preserves pixel proportions and the centered HUD. Distant sprites "
+             "Preserves pixel proportions. Choose centered or edge HUD placement. Distant sprites "
              "still follow the original game's visibility rules.");
     out->enabled = state->pending_widescreen;
-    out->option_count = 1;
+    out->option_count = 2;
     out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
     if (index == 1) {
         snprintf(out->id, sizeof(out->id), "orbit");
@@ -165,6 +180,7 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
                  "Uses the reconstructed course view and adds one tick of visual delay. "
                  "Menus and transitions retain their original presentation.");
         out->enabled = state->pending_high_refresh;
+        out->option_count = 1;
     }
     return 1;
 }
@@ -200,7 +216,17 @@ static int GetOption(void *ctx, const char *package, const char *feature,
         out->choice_count = sizeof(rates) / sizeof(rates[0]);
         return 1;
     }
-    if (!IsFeature(package, feature) || index != 0 || !out) return 0;
+    if (!IsFeature(package, feature) || index < 0 || index > 1 || !out) return 0;
+    if (index == 1) {
+        *out = (RecompLauncherCModOption){0};
+        snprintf(out->id, sizeof(out->id), "hud");
+        snprintf(out->label, sizeof(out->label), "HUD placement");
+        snprintf(out->description, sizeof(out->description), "Edges keeps ability portraits and energy at the sides, with other status separated. Shot controls stay in their original position. Unsupported scenes stay centered.");
+        snprintf(out->value, sizeof(out->value), "%s", state->pending_hud ? "edges" : "centered");
+        snprintf(out->default_value, sizeof(out->default_value), "centered");
+        out->type = RECOMP_MOD_OPTION_CHOICE; out->choice_count = 2;
+        return 1;
+    }
     *out = (RecompLauncherCModOption){0};
     snprintf(out->id, sizeof(out->id), "aspect");
     snprintf(out->label, sizeof(out->label), "View aspect");
@@ -216,6 +242,12 @@ static int GetChoice(void *ctx, const char *package, const char *feature,
                      const char *option, int index, RecompLauncherCModChoice *out)
 {
     (void)ctx;
+    if (IsFeature(package, feature) && option && !strcmp(option, "hud") && out && index >= 0 && index < 2) {
+        *out = (RecompLauncherCModChoice){0};
+        snprintf(out->value, sizeof(out->value), "%s", index ? "edges" : "centered");
+        snprintf(out->label, sizeof(out->label), "%s", index ? "Edges" : "Centered (original)");
+        return 1;
+    }
     if (IsHighRefresh(package, feature) && option && !strcmp(option, "fps") &&
         index >= 0 && index < (int)(sizeof(rates) / sizeof(rates[0])) && out) {
         *out = (RecompLauncherCModChoice){0};
@@ -235,6 +267,11 @@ static int SetOption(void *ctx, const char *package, const char *feature,
                      const char *option, const char *value)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsFeature(package, feature) && option && value && !strcmp(option, "hud")) {
+        if (strcmp(value, "centered") && strcmp(value, "edges")) return 0;
+        state->pending_hud = !strcmp(value, "edges");
+        return 1;
+    }
     if (IsHighRefresh(package, feature) && option && !strcmp(option, "fps") && value) {
         for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); ++i) {
             if (!strcmp(value, rate_values[i])) { state->pending_rate = (int)i; return 1; }
@@ -309,6 +346,13 @@ static int Commit(void *ctx, const char *rom)
         }
         orbit = state->pending_orbit;
     }
+    if (state->pending_hud != KdcHudEdges()) {
+        FILE *file = fopen("kdc-hud.cfg", "w");
+        int ok = file && fprintf(file, "%s\n", state->pending_hud ? "edges" : "centered") > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) { state->last_error = "Could not save HUD settings."; return 0; }
+        hud_edges = state->pending_hud;
+    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     if (state->pending_high_refresh != KdcHighRefreshEnabled() || state->pending_rate != rate) {
@@ -353,6 +397,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .widescreen = widescreen,
         .pending_widescreen = *widescreen,
         .pending_aspect = KdcWidescreenAspect(),
+        .pending_hud = KdcHudEdges(),
         .pending_orbit = KdcOrbitEnabled(),
         .pending_high_refresh = KdcHighRefreshEnabled(),
         .pending_rate = rate,

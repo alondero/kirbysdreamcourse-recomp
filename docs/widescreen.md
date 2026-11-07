@@ -2,7 +2,7 @@
 
 Widescreen is an optional presentation enhancement. Enable `[Graphics] Widescreen = 1` or the launcher's Mods > Widescreen setting. It defaults to off. The View aspect option follows the drawable by default, or selects a fixed 16:9, 21:9 or 32:9 view; fixed views are letterboxed as needed. The pinned host sizes an even-width raster using the selected view and configured SNES pixel aspect. With the default pixel shape, 16:9 uses 342 columns, 21:9 uses 448, and 32:9 uses 682. The existing runtime capacity is 800 columns; ratios beyond that capacity are letterboxed rather than stretched. Portrait/narrow windows retain the original field in automatic mode.
 
-`src/main.c` supplies adaptive geometry. `src/course_view.c` supplies presentation-only terrain through a direct tile-provider callback. `src/course_sprites.c` recovers presentation draw requests before viewport rejection and supplies horizontal-margin sprites through the PPU's extra-object compositor. Guest sprite emission/culling, collision and camera simulation retain their original behavior. The PPU owns priority, windows, palettes and color math. Course BG3 scenery fills the sides from its clean source map; the tile-based HUD and its object elements remain centered. Bounded menu foregrounds remain centered while BG2/backdrop can fill the sides. See [sprite implementation and validation](widescreen-sprites.md) for the additional hook configuration, runtime patch and remaining coverage limits.
+`src/main.c` supplies adaptive geometry. `src/course_view.c` supplies presentation-only terrain through a direct tile-provider callback. `src/course_sprites.c` recovers presentation draw requests before viewport rejection and supplies horizontal-margin sprites through the PPU's extra-object compositor. Guest sprite emission/culling, collision and camera simulation retain their original behavior. The PPU owns priority, windows, palettes and color math. Course BG3 scenery fills the sides from its clean source map; the tile-based HUD and its object elements default to centered. Mods > Widescreen > HUD placement offers an opt-in Edges layout; see the implementation and evidence below. Bounded menu foregrounds remain centered while BG2/backdrop can fill the sides. See [sprite implementation and validation](widescreen-sprites.md) for the additional hook configuration, runtime patch and remaining coverage limits.
 
 ## Source evidence
 
@@ -468,3 +468,142 @@ No fresh Snes9x comparison was run; the unchanged centers and WRAM do not
 resolve the existing first reference divergence at host 15/reference 16.
 Other member actions, all course-introduction variants, mosaic appearance,
 live resizing, save/load and unsampled frames remain unqualified by these routes.
+
+
+## Edge HUD: quiet badge with distributed expanded status (#31)
+
+The selected quiet/expanded option C is implemented using the live original
+artwork. The earlier schematic studies remain separately reviewable in
+[prototype PR #36](https://github.com/alondero/kirbysdreamcourse-recomp/pull/36).
+No new counters, ability names, timers or turn indicators are inferred.
+
+| Element | Edge presentation |
+| --- | --- |
+| Solo ability/conditions portrait | Lower left; exactly the same position in quiet and expanded states |
+| Solo energy | Extends inward from the portrait only when the original expanded panel is visible |
+| Registered name/drawn symbol, HOLE/SHOT, reserve stock | Separate lower-right card using the original live tiles |
+| Versus portraits and six-slot energy gauges | Mirrored left/right groups, with portraits remaining when expanded status hides |
+| Versus PLAYER labels and POINT totals | Compact upper-center strip, visible with the original expanded panel |
+| Shot power/spin/aim instrument and its companions | Original coordinates, visibility and timing |
+| World guideline, trajectory, course sprites | Original world relationship |
+| Menus, scorecards, unsupported scene signatures | Original layout |
+
+Select **Mods > Widescreen > HUD placement > Edges**, then PLAY/RESUME.
+Centered remains the default. The existing launcher staging rules apply:
+dismissing edits does not apply them, and a failed ROM validation cannot commit
+them. `kdc-hud.cfg` persists `centered`/`edges` beside the executable; missing or
+unrecognized values choose centered. Widescreen remains a separate switch.
+
+The minimum supported raster is 342 columns (43 extra per side). Narrower
+windows retain the original layout. At 448 columns and beyond, the anchors
+stop at a centered 448-column comfort span rather than following arbitrarily
+wide physical corners. Pixel proportions and HUD scale are unchanged.
+
+### Implementation boundaries
+
+`src/course_hud.c` owns the USA layout. The expanded state comes from the live
+BG3 border, not a host timer or a guessed gameplay phase. Each portrait must
+match its complete four-piece OAM quartet, size, palette and original position;
+only those slots receive a horizontal presentation shift. The tile glyphs,
+custom player drawing, counters, stock and energy still come directly from the
+game's current VRAM. The clean scenery map at WRAM `$7E:DADC` restores the old
+panel area. No ROM artwork is copied into source or packages.
+
+`patches/snesrecomp-hud-presentation.patch` adds host-only 2bpp sample remapping,
+qualified window spans and per-slot OBJ shifts. Original hardware evaluation
+still owns sprite limits; palette, priority and color composition remain in
+the PPU. Native OAM order also protects relocated portraits from recovered
+margin sprites. All new fields are outside guest snapshot spans and reset
+with the PPU. `tools/setup.py` applies the patch after the existing guarded
+stack; CMake checks for its API.
+
+The white panel backing is a raster HDMA window/color-math effect, not part of
+the tile artwork. The implementation qualifies its complete known selector,
+logic, color policy and per-line edge profile before moving it. Unknown window
+effects, fades, mosaic, unsupported scroll/layout/OBJ modes, missing portraits,
+and non-course screens retain native presentation. Solo window 1 covers
+x=56..235 on zero-based lines 179..210. Versus uses its measured rounded profile
+on lines 171..212. Other lines use the disabled 128..127 range. Window 2 is
+unused. These are title-specific observations, not new hardware rules.
+
+The orbit renderer shares the portrait placement and restores the relocated
+HUD's opaque tiles/backing from the native field. It does not copy full old HUD
+row spans over the rotated world when Edges is active. The shot instrument
+continues to use the original screen-space path.
+
+### Validation (Windows, 2026-11-07)
+
+Verified the supplied USA SHA-256 above before captures. Built with native
+CMake, MinGW GCC and Ninja using the existing guarded nine-state profile:
+`cmake --build local/hud-build -j 8`. The isolated framework is pinned to
+`147b55e252dcb3e7680a99c7c2f50e7183891844`; the complete setup patch stack was
+checked against that pin. No dependency/license pin changes.
+
+The ROM-free suite passes 62 tests with eight optional dependency/environment
+skips. The new real-PPU fixture checks no-op sampling against the original
+2bpp drawer, flips/palettes, exact energy/counter/stock/versus-strip sources,
+quiet/expanded portrait stability, untouched shot samples, widths
+0/42/43/96/213/272, fade/unknown-window/missing-quartet/scene fallback, and
+unchanged RAM/VRAM/OAM. Launcher tests check default, staging, dismissal,
+invalid values, commit and process-reload persistence.
+
+Deterministic local captures use SDL dummy video/audio, `NewRenderer=1`,
+`NoSpriteLimits=0`, `SNESRECOMP_FRAMEDUMP_PIXELS=1`,
+`SNESRECOMP_FRAMEDUMP_VIDEO=1` and explicit `SNESRECOMP_WS_EXTRA`. The release
+build supplies the documented guarded timing defaults. The comparison binary
+is the pre-change baseline at `0ce99d3b461063560fed885bfa3fe1aad7c9eb32`.
+
+- Solo and versus: `--dev-hole normal:1:1` / `multi:1:1`, 1,000 frames,
+  retained 600..999. Script: wait 649, press A 1, wait 118, press A 1,
+  wait 118, press A 1, wait 110. Centered and edge layouts have identical
+  WRAM, VRAM and CGRAM at all 400 checkpoints in each mode. Solo centered
+  also matches the previous binary's complete BMPs at every checkpoint.
+  The unoccupied playfield region (rows 31..158) is pixel-identical between layouts
+  in both modes at all checkpoints. Visual checks include expanded, quiet,
+  shot timing, ball motion and the returning panel after energy changes.
+- Menu route: 1,100 frames, retained 290..1099, Start at 301/451/651 and A at
+  851/1051, ten-frame holds. All 810 complete BMPs and WRAM/VRAM/CGRAM
+  checkpoints match the previous binary with Edges selected. This covers
+  title/member/name-entry progression and its fades, not all menu actions.
+- Widths 256/342/448/682/800: inspected solo hole-one frames 590..599.
+  Narrow output falls back; supported widths retain readable separated
+  panels and the comfort-span behavior.
+- Orbit: scripted right-stick horizontal 32767 from frame 550 to 579, then
+  zero, inspected frames 630..639. The rotated course retains the relocated
+  portrait, panels and clean old-panel area.
+
+There is no first guest-state divergence in these edge/center comparisons.
+A fresh 30-frame zero-SRAM Snes9x 1.63 `fae2fea` check (core SHA-256
+`72e0f16839c0298d8ce52eb2281e83feaede49af73936a39bb782b0f488e92e0`)
+reproduces the existing first WRAM mismatch at host 15/reference 16. This HUD
+work does not resolve that baseline timing divergence.
+
+Captures, logs and the runnable preview are private under ignored `local/`.
+Full-game coverage is not claimed: rare abilities, all courses/bosses/endings,
+all scorecards and pause/continue variants, save/load, live resizing, all
+versus turn transitions and a fresh Linux build remain unqualified. Unknown
+render signatures deliberately fall back rather than relocating guessed HUD.
+
+
+Before handoff, main advanced to `9a1c000` (high-refresh presentation, #35).
+The branch integrates that update, retaining independent HUD and refresh
+settings. The combined build and 62-test suite pass. A 1,000-frame 144 Hz
+requested-presentation run with edge HUD produced 1,724 presentations; actual
+host screenshots at game frames 800..810 retain the anchored quiet badge and
+original shot instrument over the reconstructed course. This is a composition
+check under the dummy backend, not a monitor-rate or performance guarantee.
+Fresh solo/versus captures from the clean framework build also match the
+previously inspected edge images.
+
+
+The follow-up solo border correction gives the right card a complete independent
+outer frame, preserving the full player drawing above a separate stock row.
+Neutral padding samples a transparent row of the original outer border over
+the white window; the apparently blank tile between HOLE and SHOT is yellow
+counter fill and must not be reused as whitespace. The card is 120 by 56 pixels,
+with a four-pixel backing inset. No empty-name collapse was introduced.
+The border regression failed before the fix and passes afterward; the 17-test
+course subset passes with two optional skips. A repeated 400-frame shot route
+retains identical WRAM/VRAM/CGRAM and rows 31..158; the entire shot instrument
+region at frames 800..810 is also pixel-identical. Fresh 342-column and orbit
+captures confirm the frame/padding correction in both render paths.

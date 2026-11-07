@@ -43,6 +43,8 @@ class LauncherSettingsTest(unittest.TestCase):
                                               text=True, cwd=directory)
                     self.assertEqual(reloaded.returncode, 0, reloaded.stdout + reloaded.stderr)
                     (Path(directory) / 'kdc-widescreen.cfg').unlink()
+                    self.assertEqual((Path(directory) / 'kdc-hud.cfg').read_text().strip(), 'edges')
+                    (Path(directory) / 'kdc-hud.cfg').unlink()
                     self.assertEqual((Path(directory) / 'kdc-presentation.cfg').read_text().strip(), '1 144')
                     (Path(directory) / 'kdc-presentation.cfg').unlink()
                     # A wrong expected hash must fail even in a release build.
