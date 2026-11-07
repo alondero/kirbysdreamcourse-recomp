@@ -3,6 +3,27 @@
 #include <math.h>
 #include <string.h>
 
+/* Verified USA-ROM table addresses; see docs/orbit-camera.md. */
+enum {
+    kObjVramBase = 0x6000,
+    kBallBank = 0x87,
+    kParasolBank = 0x85,
+    kBallScriptsP1 = 0xab5e,
+    kBallScriptsP2 = 0xc9cb,
+    kBallMirrorsP1 = 0xab4e,
+    kBallMirrorsP2 = 0xc9bb,
+    kParasolMirrors = 0xb539,
+    kParasolUpScriptsP1 = 0xb3bc,
+    kParasolUpScriptsP2 = 0xb3cc,
+    kParasolUpOffsets = 0xb3ff,
+    kParasolTiltScriptsP1 = 0xb54d,
+    kParasolTiltScriptsP2 = 0xb56d,
+    kParasolTiltOffsets = 0xb5d9,
+    kParasolSideScriptsP1 = 0xb6a1,
+    kParasolSideScriptsP2 = 0xb6b1,
+    kParasolSideOffsets = 0xb6dc,
+};
+
 typedef struct Transfer { unsigned source, destination, length; } Transfer;
 typedef struct Transfers { Transfer items[4]; unsigned count; } Transfers;
 
@@ -76,12 +97,12 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
         /* $85:B62B uploads this stage once. Later motion can change D75E;
          * recover the frozen view from the latched tiles and uniform OBJ
          * mirror in body layouts 9603/9624 and attachment A144/A165. */
-        unsigned table = view.player ? 0xb6b1 : 0xb6a1;
+        unsigned table = view.player ? kParasolSideScriptsP2 : kParasolSideScriptsP1;
         bool found = false;
         for (unsigned d = 0; d < 16; d += 2) {
             Transfers candidate;
-            if (rom[Offset(0x85, 0xb539 + d)] != ((sprite->attributes >> 14) & 1)) continue;
-            if (!ReadTransfers(rom, 0x85, Word(rom, 0x85, table + d), &candidate) ||
+            if (rom[Offset(kParasolBank, kParasolMirrors + d)] != ((sprite->attributes >> 14) & 1)) continue;
+            if (!ReadTransfers(rom, kParasolBank, Word(rom, kParasolBank, table + d), &candidate) ||
                 !Matches(rom, vram, &candidate)) continue;
             view.direction = (uint8_t)d;
             found = true;
@@ -96,23 +117,23 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
     unsigned source_facing = view.facing, target_facing = facing;
     switch (view.family) {
     case KDC_SPRITE_VIEW_BALL:
-        bank = 0x87; table = view.player ? 0xc9cb : 0xab5e;
-        mirror_table = view.player ? 0xc9bb : 0xab4e;
+        bank = kBallBank; table = view.player ? kBallScriptsP2 : kBallScriptsP1;
+        mirror_table = view.player ? kBallMirrorsP2 : kBallMirrorsP1;
         phase_count = 3;
         break;
     case KDC_SPRITE_VIEW_PARASOL_UP:
-        bank = 0x85; table = view.player ? 0xb3cc : 0xb3bc;
-        mirror_table = 0xb539; offset_table = 0xb3ff;
+        bank = kParasolBank; table = view.player ? kParasolUpScriptsP2 : kParasolUpScriptsP1;
+        mirror_table = kParasolMirrors; offset_table = kParasolUpOffsets;
         source_index >>= 1; target_index >>= 1;
         source_facing >>= 1; target_facing >>= 1;
         break;
     case KDC_SPRITE_VIEW_PARASOL_TILT:
-        bank = 0x85; table = view.player ? 0xb56d : 0xb54d;
-        mirror_table = 0xb539; offset_table = 0xb5d9;
+        bank = kParasolBank; table = view.player ? kParasolTiltScriptsP2 : kParasolTiltScriptsP1;
+        mirror_table = kParasolMirrors; offset_table = kParasolTiltOffsets;
         break;
     case KDC_SPRITE_VIEW_PARASOL_SIDE:
-        bank = 0x85; table = view.player ? 0xb6b1 : 0xb6a1;
-        mirror_table = 0xb539; offset_table = 0xb6dc;
+        bank = kParasolBank; table = view.player ? kParasolSideScriptsP2 : kParasolSideScriptsP1;
+        mirror_table = kParasolMirrors; offset_table = kParasolSideOffsets;
         source_index >>= 1; target_index >>= 1;
         source_facing >>= 1; target_facing >>= 1;
         break;
@@ -136,7 +157,7 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
     for (unsigned y = 0; y < size / 8; ++y) {
         for (unsigned x = 0; x < size / 8; ++x) {
             unsigned piece_tile = tile + y * 16 + x;
-            unsigned address = 0x6000 + piece_tile * 16;
+            unsigned address = kObjVramBase + piece_tile * 16;
             unsigned offset = TileSource(&target, address);
             unsigned player_tile = piece_tile - (view.player ? 0x20 : 0);
             bool static_canopy = view.attachment &&

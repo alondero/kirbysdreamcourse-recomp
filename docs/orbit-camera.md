@@ -263,6 +263,25 @@ with the same local patched framework; this change does not modify that
 fixture or PPU implementation. The changed renderer fixtures were rerun and
 pass with warnings treated as errors.
 
+Review integration on 2026-11-07 rebased these changes onto `9ddd8ef`
+(native checkerboard rendering). Both source modules are linked in the game,
+renderer fixtures and presentation probe; checker-cache generation advances
+before background rendering while sprite orientation remains after camera
+interpolation. A combined fixture checks directional artwork with checker
+reconstruction enabled and with unchanged checker entries reused on the next
+draw. The bounded attachment scratch buffer remains full-sized to preserve
+within-group OBJ order without imposing a smaller recovered-piece limit.
+
+Validation used an isolated checkout of the same pinned framework with all
+56 patches from the updated `tools/setup.py` profile. Windows Release build
+passed, and the consolidated suite passed all 60 enabled tests (68 total,
+eight optional skips), including the ROM-backed camera replay. First sampled
+RAM divergence: none; reset images match native output. The earlier local
+HD-tile assertion failure is absent with this matching framework profile.
+The strict-warning checker, sprite-view and three orbit-renderer tests pass;
+the 60/120/144/240 Hz probe reports zero guest changes and the same simulation
+image hash at every rate. Runtime/platform coverage limits below still apply.
+
 Recordings, captures, private generated source and ROM-derived images stay in
 ignored `local/`. The hole-completion recording SHA-256 is
 `537d4c7c310d82ca3353d35fe78442698107b56f51d004d94242e962ac6d18fa`;

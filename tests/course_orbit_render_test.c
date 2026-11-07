@@ -456,6 +456,8 @@ static int Scenarios(void)
     Snapshot();
     Draw();
     EXPECT(memcmp(first, pixels, sizeof(first)) != 0);
+    uint16_t checker_words[16 * 16];
+    memcpy(checker_words, ppu.vram + 16, sizeof(checker_words));
     for (unsigned tile = 1; tile <= 16; ++tile)
         for (unsigned y = 0; y < 8; ++y) ppu.vram[tile * 16 + y] = 0x00ff;
     Snapshot();
@@ -493,6 +495,18 @@ static int Scenarios(void)
     Draw();
     EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
     EXPECT(custom[0].view_tiles[0] == 0);
+    /* Checker reconstruction and directional artwork coexist in one draw,
+     * including reuse of unchanged checker entries on the next draw. */
+    memcpy(ppu.vram + 16, checker_words, sizeof(checker_words));
+    hd_enabled = true;
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
+    memcpy(first, pixels, sizeof(first));
+    Draw();
+    EXPECT(memcmp(first, pixels, sizeof(first)) == 0);
+    hd_enabled = false;
+    Snapshot();
     /* Stale matching tiles in an inactive OBJ page are not evidence. */
     ppu.obsel = 0;
     for (unsigned y = 0; y < 8; ++y) ppu.vram[0x1c00 + y] = 255;
