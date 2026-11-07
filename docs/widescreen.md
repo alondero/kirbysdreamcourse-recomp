@@ -524,7 +524,10 @@ effects, fades, mosaic, unsupported scroll/layout/OBJ modes, missing portraits,
 and non-course screens retain native presentation. Solo window 1 covers
 x=56..235 on zero-based lines 179..210. Versus uses its measured rounded profile
 on lines 171..212. Other lines use the disabled 128..127 range. Window 2 is
-unused. These are title-specific observations, not new hardware rules.
+unused; its bounds do not qualify the layout because the checked selector
+never enables it. Normal menu entry leaves those bounds at 255..0, while
+developer starts leave 0..0. These are title-specific observations, not new
+hardware rules.
 
 The orbit renderer shares the portrait placement and restores the relocated
 HUD's opaque tiles/backing from the native field. It does not copy full old HUD
@@ -607,3 +610,33 @@ course subset passes with two optional skips. A repeated 400-frame shot route
 retains identical WRAM/VRAM/CGRAM and rows 31..158; the entire shot instrument
 region at frames 800..810 is also pixel-identical. Fresh 342-column and orbit
 captures confirm the frame/padding correction in both render paths.
+
+### Normal menu entry correction (2026-11-07)
+
+The original qualification incorrectly required the unused window 2 bounds
+to be zero. Entering a course through the normal menus leaves them at 255..0,
+so selecting Edges silently retained the centered layout. Developer starts
+left 0..0 and did not expose this. The exact qualified selector `$220000`
+never enables window 2; its bounds now have no effect on qualification.
+Selectors that enable it still retain native presentation.
+
+The real-PPU regression reproduces the normal-menu bounds for solo and versus
+at all supported fixture widths. It fails before the correction and passes
+afterward, including the check that enabling window 2 disables relocation.
+The ROM-free suite passes 65 tests with nine optional checks skipped.
+Release compilation passed with the existing guarded runtime and generated
+inputs: `cmake --build local/hud-fix-build -j 8`.
+
+After verifying the supported USA ROM hash, a fresh zero-SRAM 4,000-frame
+menu-to-course replay used the local input script with SHA-256
+`0de6653686b36d14033f9d717fdb6e67dd89e78409e70d014f12e256f9f4f4a0`,
+the documented guarded timing switches, dummy SDL drivers and 43 extra
+columns per side. At the retained checkpoint, host frame 3999, the old Edges
+and Centered images were identical. After correction, 12,689 pixels differ
+between layouts, and visual inspection confirms the separated edge panels.
+The corrected Centered image matches the old complete image byte for byte;
+WRAM, VRAM and CGRAM match across all three cases. Rows 0..158 also match
+between corrected layouts. No guest-state divergence occurs at this sampled
+checkpoint; earlier frames and other menu routes were not compared. No new
+reference-emulator capture was made for this presentation-only guard change;
+the previously documented baseline/reference divergence remains unresolved.

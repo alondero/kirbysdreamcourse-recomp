@@ -102,8 +102,10 @@ static bool Windows(const Ppu *ppu, unsigned layer, int y,
  * Anything else may be a transition/effect: retain the hardware layout. */
 static bool SupportedWindow(const Ppu *ppu, int line)
 {
+    /* This selector enables only window 1. Window 2's unused bounds differ
+     * between normal menu entry (255..0) and developer starts (0..0). */
     if (ppu->windowsel != 0x220000 || ppu->wbgobjlog ||
-        ppu->window2left || ppu->window2right || ppu->cgwsel != 0x10 ||
+        ppu->cgwsel != 0x10 ||
         ppu->cgadsub != 0x33 || ppu->fixedColor != 0x7fff ||
         ppu->screenWindowed[0] != 0x13 || ppu->screenWindowed[1]) return false;
     int left = 128, right = 127;
