@@ -22,11 +22,18 @@ void KdcReportSprites(int frame);
  * remain visible, but are explicitly distinguished from known HUD pieces. */
 typedef struct KdcOrbitSprite {
     double x, y, z;
-    int offset_x, offset_y;
+    double offset_x, offset_y;
     uint16_t attributes;
     uint8_t large, bucket;
     bool world, unresolved, ground;
     uint32_t source_pc;
+    /* Zero means unverified continuity. Allocation generations distinguish
+     * task reuse; piece identity follows the layout address, not OBJ order. */
+    uint64_t motion_id;
+    uint32_t piece_id;
+    /* Whole draw-request displacement from the world anchor, separate from
+     * individual animation-piece offsets. Survives a change of layout. */
+    double motion_x, motion_y;
 } KdcOrbitSprite;
 typedef void (*KdcOrbitSpriteVisitor)(const KdcOrbitSprite *sprite, void *context);
 void KdcVisitOrbitSprites(const struct Ppu *ppu, const uint8_t *ram,

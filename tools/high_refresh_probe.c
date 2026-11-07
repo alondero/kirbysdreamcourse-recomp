@@ -23,6 +23,7 @@ int main(void)
     const unsigned rates[] = {60, 120, 144, 240};
     puts("hz,simulations,presentations,intermediate_images,guest_changes,simulation_image_hash,draw_clock_ms");
     for (unsigned r = 0; r < sizeof(rates) / sizeof(rates[0]); ++r) {
+        KdcOrbitConfigure(true, true);
         NativeAngle();
         Snapshot();
         SnesHostClock timeline;
@@ -36,6 +37,7 @@ int main(void)
             if (snes_host_clock_simulation_due(&timeline, now)) {
                 /* Deterministic camera motion once per simulated tick. */
                 KdcOrbitInput(timeline.simulation_frames < 60 ? 32767 : -32767, 0, false);
+                KdcOrbitCapture((unsigned)timeline.simulation_frames + 1, width, height);
                 Draw();
                 memcpy(first, pixels, sizeof(first));
                 sequence = sequence * 31 + HashPixels();

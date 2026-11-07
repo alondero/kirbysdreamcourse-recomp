@@ -31,6 +31,8 @@
 #include "dev_start.h"
 #include "course_camera_host.h"
 #include "course_orbit.h"
+#include "host_clock.h"
+#include "host_api.h"
 #include <stdlib.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
@@ -79,6 +81,26 @@ static const char *ValidateRomPath(const char *path)
     return KdcValidateRomPath(path, SNESRECOMP_ROM_EXPECTED_SHA256);
 }
 
+static void BeforePresentationFrame(void)
+{
+    if (!snesrecomp_host_frame_is_live()) return;
+    KdcOrbitConfigure(KdcHighRefreshEnabled(), KdcOrbitEnabled());
+    if (KdcOrbitEnabled()) KdcOrbitBeforeFrame();
+    else if (KdcHighRefreshEnabled()) KdcOrbitInput(0, 0, false);
+    else KdcOrbitReset();
+}
+
+static void CapturePresentation(const uint8_t *field, unsigned frame)
+{
+    (void)field;
+    KdcOrbitCapture(frame, snesrecomp_desktop_frame_width(), snesrecomp_desktop_frame_height());
+}
+
+static double PresentationHz(double refresh)
+{
+    return KdcHighRefreshEnabled() ? snes_host_presentation_hz(KdcPresentationFps(), refresh) : 0;
+}
+
 static const SnesDesktopHostGame kGameHost = {
     .display_name        = "Kirby's Dream Course",
     .window_title        = "Kirby's Dream Course",
@@ -100,7 +122,9 @@ static const SnesDesktopHostGame kGameHost = {
     .mods_provider      = LauncherSettings,
     .configure_launcher = KdcConfigureLauncher,
     .prepare_frame       = PrepareWideFrame,
-    .before_run_frame    = KdcOrbitBeforeFrame,
+    .before_run_frame    = BeforePresentationFrame,
+    .end_sim_frame       = CapturePresentation,
+    .presentation_hz     = PresentationHz,
     .on_reset            = KdcOrbitReset,
     .draw_frame          = KdcOrbitDraw,
     /* Match SNES sprite evaluation by default; users may override this in

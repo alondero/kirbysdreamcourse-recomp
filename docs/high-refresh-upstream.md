@@ -2,6 +2,9 @@
 
 Source inspection for [issue #34](https://github.com/alondero/kirbysdreamcourse-recomp/issues/34), 2026-11-07. This note records source evidence, not a runtime or visual qualification. No upstream implementation was copied into Kirby.
 
+The subsequent [implementation and validation](high-refresh-presentation.md)
+builds on these findings; the starting-state observations below are historical.
+
 ## Reusable framework support
 
 Kirby's tested SNESRecomp pin is `147b55e252dcb3e7680a99c7c2f50e7183891844`. Inspection used `git show HEAD:<path>` in the local checkout after verifying HEAD, so local patches cannot silently change the evidence below.

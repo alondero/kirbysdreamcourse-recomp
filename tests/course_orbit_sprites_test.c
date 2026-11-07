@@ -220,6 +220,19 @@ int main(void)
     Word(0x4e1c + 6, 0x5d); Word(0x519c + 6, 0xf04b); Word(0x521c + 6, 0x84);
     restored = RecoverEffectAnchor(&cpu, 6);
     assert(restored.world && restored.x == 8.5 && restored.origin_y == 296);
+    assert(restored.motion_id == TaskMotion(6));
+    uint64_t old_identity = restored.motion_id;
+    cpu.Y = 6;
+    memcpy(before, ram, sizeof(ram)); before_cpu = cpu;
+    KdcObserveSprites(&cpu, 0x80dfc0);
+    assert(TaskMotion(6) != old_identity);
+    assert(!memcmp(before, ram, sizeof(ram)) && !memcmp(&before_cpu, &cpu, sizeof(cpu)));
+    restored = RecoverEffectAnchor(&cpu, 6);
+    assert(restored.world && restored.motion_id == TaskMotion(6));
+    cpu.X = 6; cpu.Y = 8;
+    KdcObserveSprites(&cpu, 0x80e776);
+    OrbitAnchor clone = RecoverEffectAnchor(&cpu, 8);
+    assert(clone.world && clone.x == restored.x && clone.motion_id != restored.motion_id);
     ppu_free(ppu);
     return 0;
 }
