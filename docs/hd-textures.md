@@ -140,6 +140,11 @@ The first, headless isolation run also reduced raster time from 6.041 to
 5.038 ms with the unchanged-texel shortcut alone. Synthetic tests assert the
 work reduction independently of wall-clock noise.
 
+A final three-pair sample under that heavier load measured raster means of
+8.223 / 10.314 / 7.979 ms before and 7.084 / 6.982 / 5.042 ms after. The
+three-run median fell from 8.223 to 6.982 ms (15%). All benchmark screenshot
+comparisons passed; background load still prevents a controlled FPS conclusion.
+
 Reproduce an isolated comparison with two Release executables:
 
 ```powershell
