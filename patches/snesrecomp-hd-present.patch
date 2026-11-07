@@ -1,0 +1,176 @@
+diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
+index c257b725..8bd13098 100644
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -683,6 +683,8 @@ static void RendererApply(int choice) {
+   }
+ }
+ 
++static void HdBindForNextFrame(unsigned width, unsigned height);
++
+ static void PreparePpuFrame(void) {
+   int drawable_width = 0, drawable_height = 0;
+   if (g_renderer_funcs.GetOutputSize)
+@@ -727,6 +729,8 @@ static void PreparePpuFrame(void) {
+   PpuBeginDrawing(g_ppu, g_my_pixels,
+                   (g_game->native_widescreen ? fw : 256) * 4, flags);
+   PpuSetExtraSpace(g_ppu, (uint8)g_ws_extra);
++  HdBindForNextFrame((unsigned)(g_game->native_widescreen ? fw : 256),
++                     (unsigned)fh);
+ }
+ 
+ // --- Scripted input ---
+@@ -1434,10 +1438,91 @@ static void WritePpm(const char *path, const uint8 *pixel_buffer, int pitch,
+     host_report_breadcrumb("screenshot: wrote %s (%dx%d) at frame %u", path, w, h, frame);
+ }
+ 
++/* ---- Optional HD presentation surface -----------------------------------
++ * Bound for the next simulated frame in PreparePpuFrame and presented only
++ * after a whole frame has been drawn into it. The native field stays the
++ * authority for thumbnails, dumps, the overlay backdrop and a game-composed
++ * frame, which is nearest-scaled. */
++static uint32_t *g_hd_surface;
++static size_t g_hd_capacity;
++static unsigned g_hd_bound_scale, g_hd_bound_w, g_hd_bound_h;
++static uint32_t g_hd_bind_frame;
++static uint8_t *g_hd_native;
++
++static void HdUnbind(void) {
++  if (g_hd_bound_scale && g_ppu)
++    PpuBindMode7HdSurface(g_ppu, NULL, 0, 0, 0, 0, 0);
++  g_hd_bound_scale = 0;
++}
++
++static void HdBindForNextFrame(unsigned width, unsigned height) {
++  unsigned scale = g_game->hd_scale ? g_game->hd_scale() : 1;
++  if (scale > 4) scale = 4;
++  /* Only ports whose PPU field is the presented frame. */
++  if (scale < 2 || !g_ppu || (g_ws_active && !g_game->native_widescreen)) {
++    HdUnbind();
++    return;
++  }
++  if (g_hd_bound_scale == scale && g_hd_bound_w == width && g_hd_bound_h == height)
++    return;
++  const size_t pitch = (size_t)width * scale * 4u;
++  const size_t capacity = pitch * height * scale;
++  if (capacity > g_hd_capacity) {
++    HdUnbind();
++    free(g_hd_surface);
++    g_hd_surface = (uint32_t *)calloc(1, capacity);
++    g_hd_capacity = g_hd_surface ? capacity : 0;
++  }
++  if (!g_hd_native)
++    g_hd_native = (uint8_t *)malloc((size_t)kSnesDesktopMaxFrameWidth * 4u * 240u);
++  if (!g_hd_surface || !g_hd_native ||
++      !PpuBindMode7HdSurface(g_ppu, g_hd_surface, g_hd_capacity, pitch,
++                             width, height, scale)) {
++    HdUnbind();
++    return;
++  }
++  g_hd_bound_scale = scale;
++  g_hd_bound_w = width;
++  g_hd_bound_h = height;
++  g_hd_bind_frame = (uint32_t)snes_frame_counter;
++}
++
++/* The scale of the frame about to be presented: the binding must predate it. */
++static int HdPresentScale(void) {
++  if (!g_hd_bound_scale || g_hd_bound_w != (unsigned)g_snes_width ||
++      g_hd_bound_h != (unsigned)g_snes_height ||
++      (uint32_t)snes_frame_counter == g_hd_bind_frame)
++    return 1;
++  return (int)g_hd_bound_scale;
++}
++
++static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
++  const int w = g_snes_width, h = g_snes_height;
++  const size_t native_pitch = (size_t)w * 4u;
++  bool composed = g_game->draw_frame &&
++      g_game->draw_frame(g_hd_native, native_pitch, g_my_pixels, w, h,
++                         g_present_alpha);
++  debug_server_note_composed_frame(composed ? g_hd_native : NULL,
++                                   composed ? (unsigned)native_pitch : 0,
++                                   composed ? w : 0, composed ? h : 0);
++  if (!composed)
++    RtlWidescreenPresent(g_hd_native, native_pitch, g_my_pixels, w, h);
++  const size_t row_bytes = (size_t)w * (size_t)scale * 4u;
++  for (int y = 0; y < h * scale; y++) {
++    uint32_t *out = (uint32_t *)(dst + (size_t)y * pitch);
++    if (composed) {
++      const uint32_t *in = (const uint32_t *)(g_hd_native + (size_t)(y / scale) * native_pitch);
++      for (int x = 0; x < w * scale; x++) out[x] = in[x / scale];
++    } else {
++      memcpy(out, (const uint8_t *)g_hd_surface + (size_t)y * row_bytes, row_bytes);
++    }
++  }
++}
++
+ static void DrawPpuFrameWithPerf(void) {
+   double profile_start = ProfileStart();
+   PreparePpuFrame();
+-  const int render_scale = 1;
++  const int render_scale = HdPresentScale();
+   uint8 *present_buffer = 0;
+   int present_pitch = 0;
+ 
+@@ -1474,7 +1559,10 @@ static void DrawPpuFrameWithPerf(void) {
+ #endif
+ 
+   profile_start = ProfileStart();
+-  RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
++  if (render_scale > 1)
++    HdDrawFrame(pixel_buffer, (size_t)pitch, render_scale);
++  else
++    RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
+ #if defined(SNESRECOMP_HOST_HAS_BLEND)
+   /* The shared blend keeps the UNBLENDED frame, so the mix never feeds back
+    * on itself, and the PPU's own renderBuffer stays pure for thumbnails.
+@@ -1516,19 +1604,26 @@ static void DrawPpuFrameWithPerf(void) {
+    * is not executing. That is what locked Super Metroid up when the
+    * save-state browser was opened. */
+   {
+-    const int rows = g_snes_height * render_scale;
+-    const int row_bytes = g_snes_width * render_scale * 4;
++    /* An HD present keeps its native composition as the overlay backdrop;
++     * the overlay scales it to the window either way. */
++    const bool hd = render_scale > 1;
++    const uint8 *source = hd ? g_hd_native : pixel_buffer;
++    const size_t source_pitch = hd ? (size_t)g_snes_width * 4u : (size_t)pitch;
++    const int rows = g_snes_height * (hd ? 1 : render_scale);
++    const int row_bytes = g_snes_width * (hd ? 1 : render_scale) * 4;
+     if (rows > 0 && row_bytes > 0 &&
+         (size_t)rows * (size_t)row_bytes <= sizeof(g_frozen_frame)) {
+       for (int y = 0; y < rows; y++)
+         memcpy(g_frozen_frame + (size_t)y * (size_t)row_bytes,
+-               pixel_buffer + (size_t)y * (size_t)pitch, (size_t)row_bytes);
+-      g_frozen_w = g_snes_width * render_scale;
++               source + (size_t)y * source_pitch, (size_t)row_bytes);
++      g_frozen_w = row_bytes / 4;
+       g_frozen_h = rows;
+     }
+   }
++  /* The OSD is rasterized for a ~3x window: half size on a native frame,
++   * full size on an HD frame of similar pixel density. */
+   ComposeOsd(pixel_buffer, pitch, g_snes_width * render_scale,
+-             g_snes_height * render_scale, 2);
++             g_snes_height * render_scale, render_scale > 1 ? 1 : 2);
+   /* Use the same completed simulation index as the common WRAM dumper. */
+   const uint32 dump_frame = snes_frame_counter ? snes_frame_counter - 1 : 0;
+   FrameDump_Present(dump_frame, pixel_buffer, pitch,
+diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
+index f75ea402..5dfdc4f4 100644
+--- a/runner/src/desktop/host_main.h
++++ b/runner/src/desktop/host_main.h
+@@ -223,6 +223,12 @@ typedef struct SnesDesktopHostGame {
+   /* Optional title policy applied to every resolved path before guest setup.
+    * Return NULL to accept, or a player-facing refusal reason. */
+   const char *(*validate_rom_path)(const char *path);
++  /* Optional HD presentation scale (1..4) for the frames that follow. The host
++   * binds a PPU HD surface (PpuBindMode7HdSurface) and presents it once a
++   * complete frame has been drawn into it; a game may add PpuSetHdTiles.
++   * A draw_frame composition is nearest-scaled. NULL or 1 keeps the native
++   * presentation, byte for byte. */
++  unsigned (*hd_scale)(void);
+ } SnesDesktopHostGame;
+ 
+ /* The whole program. Returns the process exit code. */

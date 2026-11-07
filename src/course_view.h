@@ -53,6 +53,26 @@ static inline uint16_t KdcCourseSelectTile(const uint8_t *ram, unsigned layer,
     return KdcReadWord(ram, 0x10000 + layer * 0x5000 + 2 * index);
 }
 
+/* The game composites its HUD panel into the course BG3 map ($3C00) over
+ * the clean scenery map at WRAM $DADC. For BG3 map pixel row v, report the
+ * screen columns [left, right] spanned by changed entries, including
+ * transparent interiors; no fixed screen rectangle is assumed. */
+static inline bool KdcHudSpan(const uint16_t *bg3_map, const uint8_t *ram,
+                              unsigned v, uint16_t hscroll, int *left, int *right)
+{
+    int first = 256, last = -1;
+    for (int x = 0; x < 256; ++x) {
+        unsigned u = (x + hscroll) & 255;
+        unsigned index = ((v & 255) / 8) * 32 + u / 8;
+        if (bg3_map[index] == KdcReadWord(ram, 0xdadc + 2 * index)) continue;
+        if (x < first) first = x;
+        last = x;
+    }
+    *left = first;
+    *right = last;
+    return first <= last;
+}
+
 /* USA ROM $80:BC3E and $80:BE17: inclusive row bounds, packed word
  * offsets, and two parallel tile layers. See docs/widescreen.md. */
 static inline uint16_t KdcCourseTile(const uint8_t *ram, unsigned layer,

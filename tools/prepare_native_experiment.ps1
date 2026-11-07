@@ -145,6 +145,9 @@ if ($ManualJoypad) { $patches += 'snesrecomp-manual-joypad-strobe-experiment.pat
 if ($AutoJoyPhase) { $patches += 'snesrecomp-autojoy-phase-experiment.patch' }
 if ($SpcD4Phase) { $patches += 'snesrecomp-spc-indexed-write-state-experiment.patch' }
 if ($ApuBoundarySync) { $patches += 'snesrecomp-apu-boundary-sync.patch' }
+# Presentation-only HD tiles and surface; inert until the game enables them.
+$patches += 'snesrecomp-hd-tiles.patch'
+$patches += 'snesrecomp-hd-present.patch'
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
     git -C $framework apply --check $patch

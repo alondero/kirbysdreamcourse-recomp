@@ -17,6 +17,7 @@ typedef struct {
     int pending_hud;
     int pending_orbit;
     int pending_high_refresh, pending_rate;
+    int pending_hd;
     const char *expected_rom_hash;
     const char *last_error;
 } KdcLauncherSettingsState;
@@ -71,6 +72,19 @@ static int IsHighRefresh(const char *package, const char *feature)
            !strcmp(feature, "high-refresh");
 }
 
+static int hd = -1;
+
+bool KdcHdTexturesEnabled(void)
+{
+    if (hd < 0) {
+        FILE *file = fopen("kdc-hd.cfg", "r");
+        int value = file ? fgetc(file) : '0';
+        if (file) fclose(file);
+        hd = value == '1';
+    }
+    return hd != 0;
+}
+
 bool KdcOrbitEnabled(void)
 {
     if (orbit < 0) {
@@ -122,13 +136,19 @@ static int Count(void *ctx)
 static int FeatureCount(void *ctx)
 {
     (void)ctx;
-    return 3;
+    return 4;
 }
 
 static int IsOrbit(const char *package, const char *feature)
 {
     return package && feature && !strcmp(package, "kdc.presentation") &&
            !strcmp(feature, "orbit");
+}
+
+static int IsHdTextures(const char *package, const char *feature)
+{
+    return package && feature && !strcmp(package, "kdc.presentation") &&
+           !strcmp(feature, "hd_textures");
 }
 
 static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
@@ -140,14 +160,15 @@ static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
     snprintf(out->version, sizeof(out->version), "1.0.0");
     snprintf(out->name, sizeof(out->name), "Kirby's Dream Course presentation");
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
-    out->enabled = state->pending_widescreen || state->pending_orbit || state->pending_high_refresh;
+    out->enabled = state->pending_widescreen || state->pending_orbit ||
+                   state->pending_high_refresh || state->pending_hd;
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
     const KdcLauncherSettingsState *state = ctx;
-    if (index < 0 || index >= 3 || !out) return 0;
+    if (index < 0 || index >= 4 || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
@@ -170,6 +191,16 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
                  "stick click restores the original view. Keyboard: keypad "
                  "4/6, 8/2 and 5. The camera starts in the original view.");
         out->enabled = state->pending_orbit;
+        out->option_count = 0;
+    } else if (index == 3) {
+        snprintf(out->id, sizeof(out->id), "hd_textures");
+        snprintf(out->name, sizeof(out->name), "HD textures");
+        snprintf(out->description, sizeof(out->description),
+                 "Redraws course terrain, scenery and sprites at 4x with smoothed "
+                 "edges, keeping the original colours and palette effects. Menus, "
+                 "the orbit camera view and anything not reproducible stay pixel "
+                 "sharp.");
+        out->enabled = state->pending_hd;
         out->option_count = 0;
     }
     if (index == 2) {
@@ -194,6 +225,10 @@ static int EnableFeature(void *ctx, const char *package, const char *feature, in
     }
     if (IsOrbit(package, feature)) {
         state->pending_orbit = enabled != 0;
+        return 1;
+    }
+    if (IsHdTextures(package, feature)) {
+        state->pending_hd = enabled != 0;
         return 1;
     }
     if (!IsFeature(package, feature)) return 0;
@@ -353,6 +388,16 @@ static int Commit(void *ctx, const char *rom)
         if (!ok) { state->last_error = "Could not save HUD settings."; return 0; }
         hud_edges = state->pending_hud;
     }
+    if (state->pending_hd != KdcHdTexturesEnabled()) {
+        FILE *file = fopen("kdc-hd.cfg", "w");
+        int ok = file && fprintf(file, "%d\n", state->pending_hd) > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) {
+            state->last_error = "Could not save HD texture settings.";
+            return 0;
+        }
+        hd = state->pending_hd;
+    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     if (state->pending_high_refresh != KdcHighRefreshEnabled() || state->pending_rate != rate) {
@@ -401,6 +446,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .pending_orbit = KdcOrbitEnabled(),
         .pending_high_refresh = KdcHighRefreshEnabled(),
         .pending_rate = rate,
+        .pending_hd = KdcHdTexturesEnabled(),
         .expected_rom_hash = rom_sha256,
     };
     return &provider;

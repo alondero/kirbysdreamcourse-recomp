@@ -99,6 +99,15 @@ move the camera. Original characters, effects and aiming guides remain in
 play. Newly exposed terrain faces are reconstructed from the course geometry
 and palette. See [camera implementation, tests and limits](docs/orbit-camera.md).
 
+## HD textures
+
+Enable **HD textures** on the launcher's **Mods** page to redraw course
+terrain, scenery and sprites at 4x with smoothed edges. Every HD pixel keeps
+one of the original character's palette colours, so palette effects still
+work. Menus, the HUD and the orbit camera's rotated view stay pixel sharp.
+HD textures are off by default. See [HD textures](docs/hd-textures.md) for
+how it works, validation and limits.
+
 ## Status
 
 Recorded single-player runs completed courses one and two in native and fallback modes. A two-player smoke test completed one hole. The pinned reference and host still differ in startup and gameplay state; audio, timing, save-state compatibility and many paths remain under investigation. See [compatibility and evidence](docs/compatibility.md) and the repository issues. Native blocks fall back to the interpreter when they cannot safely execute.
