@@ -53,7 +53,7 @@ index dd967c33..53474309 100644
        PpuDrawMode7HdLine(ppu, (unsigned)line);
    }
  }
-@@ -1110,6 +1117,281 @@ static bool PpuViewportAllows(Ppu *ppu, uint layer, int screen_x,
+@@ -1110,6 +1117,285 @@ static bool PpuViewportAllows(Ppu *ppu, uint layer, int screen_x,
  }
  
  // Draw a whole line of a 4bpp background layer into bgBuffers
@@ -108,7 +108,7 @@ index dd967c33..53474309 100644
 +  PpuHdTileStats stats;
 +  PpuHdTileMemo memo[kPpuHdSources];
 +  PpuHdTileEntry *entries;
-+  uint8_t any[kPpuBufWidth]; /* some record at this pixel has an HD image */
++  uint8_t any[kPpuBufWidth]; /* some recorded HD subpixel differs from native */
 +  PpuHdTileRecord records[2][kPpuHdSources][kPpuBufWidth];
 +};
 +
@@ -224,7 +224,11 @@ index dd967c33..53474309 100644
 +    unsigned raw = (raw_x + k) & 7;
 +    value.col = (uint8_t)(flip_x ? 7 - raw : raw);
 +    rec[first + k] = value;
-+    if (value.entry) ppu->hdTiles->any[first + k] = 1;
++    /* Only changed subpixels need candidate collection and exactness checks.
++     * Keep every record: a changing layer may reveal an unchanged one. */
++    if (value.entry && !(ppu->hdTiles->entries[value.entry - 1].image->same &
++                         (1ull << (value.row * 8 + value.col))))
++      ppu->hdTiles->any[first + k] = 1;
 +  }
 +}
 +
@@ -423,7 +427,7 @@ index dd967c33..53474309 100644
  #undef READ_BITS
  #undef DO_PIXEL
  #undef DO_PIXEL_HFLIP
-@@ -2712,6 +3012,240 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
+@@ -2712,6 +3012,248 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
    }
  }
  
@@ -561,13 +565,27 @@ index dd967c33..53474309 100644
 +  const uint32_t *native = (const uint32_t *)(ppu->renderBuffer +
 +      (line - 1) * ppu->renderPitch);
 +  uint8_t *first = (uint8_t *)surface->pixels + (line - 1) * scale * surface->pitch;
++  /* Seed a contiguous nearest-scaled row, then copy it vertically. Most
++   * native pixels are unchanged; avoid four interleaved row writes for each
++   * of them in the candidate loop below. */
++  uint32_t *base = (uint32_t *)first;
++  if (scale == 4) {
++    for (unsigned j = 0; j < width; ++j) {
++      const uint32_t color = native[j];
++      base[j * 4] = base[j * 4 + 1] = base[j * 4 + 2] = base[j * 4 + 3] = color;
++    }
++  } else {
++    for (unsigned j = 0; j < width; ++j)
++      for (unsigned sx = 0; sx < scale; ++sx) base[j * scale + sx] = native[j];
++  }
++  for (unsigned sy = 1; sy < scale; ++sy)
++    memcpy(first + sy * surface->pitch, first, width * scale * sizeof(uint32_t));
 +  const uint16_t stamp = t->stamp;
 +  for (unsigned j = 0; j < width; ++j) {
 +    const int x = (int)j - (int)ppu->extraLeftRight;
 +    const uint32_t want = native[j];
 +    PpuHdCandidate cand[2][kPpuHdSources];
 +    unsigned count[2] = {0, 0};
-+    bool composed = false;
 +    if (x >= left && x < right && !(t->policy && keep[x - left])) {
 +      const size_t i = (size_t)(x + kPpuExtraLeftRight);
 +      bool any_image = false;
@@ -648,14 +666,8 @@ index dd967c33..53474309 100644
 +            row[sx] = last_colour;
 +          }
 +        }
-+        composed = true;
 +      }
 +    }
-+    if (!composed)
-+      for (unsigned sy = 0; sy < scale; ++sy) {
-+        uint32_t *row = (uint32_t *)(first + sy * surface->pitch) + j * scale;
-+        for (unsigned sx = 0; sx < scale; ++sx) row[sx] = want;
-+      }
 +  }
 +  ++t->stats.hd_lines;
 +  return true;
@@ -672,7 +684,7 @@ index dd967c33..53474309 100644
  
    // Range evaluation walks OAM forward, but tile fetching walks the accepted
    // sprites backward. This is observable when the 34-sliver limit is reached.
-@@ -3049,6 +3584,19 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
+@@ -3049,6 +3584,21 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
                }
          // Lower OAM indices are processed later and overwrite higher ones.
                  dst[0] = z + pixel;
@@ -687,7 +699,9 @@ index dd967c33..53474309 100644
 +                              (flip_y ? kPpuHdFlipY : 0)),
 +                    0, ppu->hdTiles->stamp, 0};
 +                  r->entry = PpuHdLookup(ppu, kPpuHdObj, r);
-+                  if (r->entry) ppu->hdTiles->any[dst - ppu->objBuffer.data] = 1;
++                  if (r->entry && !(ppu->hdTiles->entries[r->entry - 1].image->same &
++                                    (1ull << (r->row * 8 + r->col))))
++                    ppu->hdTiles->any[dst - ppu->objBuffer.data] = 1;
 +                }
                  if(ppu->extraObjectCount)
                    ppu->objectOrder[dst-ppu->objBuffer.data]=(uint64_t)((slot-first_slot)&127)<<32;

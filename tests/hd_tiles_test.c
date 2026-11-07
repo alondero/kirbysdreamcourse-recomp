@@ -146,7 +146,19 @@ static void TestIdentity(unsigned scale, bool bg3_priority)
     assert(stats.hd_lines == kHeight);
     assert(stats.native_lines == 0);
     assert(stats.fallback_pixels == 0);
+    /* A cached image whose subpixels all match the native index must not
+     * enter the per-pixel exactness/composition path. */
+    assert(stats.replaced_pixels == 0);
+    AssertNearest(scale);
+    /* Also exercise the full identity oracle, including the random scene's
+     * colour math. Conservatively disable the cached unchanged summaries;
+     * the images themselves still contain exact nearest-neighbour indices. */
+    for (unsigned i = 0; i < kPpuHdCacheSlots; ++i)
+        if (p->hdTiles->entries[i].image) p->hdTiles->entries[i].image->same = 0;
+    Render(p);
+    PpuGetHdTileStats(p, &stats);
     assert(stats.replaced_pixels > 0);
+    assert(stats.fallback_pixels == 0);
     AssertNearest(scale);
     PpuSetHdTiles(p, NULL, NULL);
     ppu_free(p);
@@ -322,6 +334,9 @@ static void TestOpaqueWinnerSubpixels(void)
     PpuHdTileStats stats;
     PpuGetHdTileStats(p, &stats);
     assert(stats.fallback_pixels == 0);
+    /* One changed native pixel per 8x8 tile, including both flip axes;
+     * all other cached texels must bypass exactness/composition. */
+    assert(stats.replaced_pixels == kWidth * kHeight / 64);
     PpuSetHdTiles(p, NULL, NULL);
     ppu_free(p);
 }

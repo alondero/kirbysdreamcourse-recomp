@@ -43,13 +43,17 @@ The work is split between a generic framework patch and a small game policy.
    colour can have, so transparency edges are treated as edges. Uniform
    characters gain nothing and stay native. Each image also stores per-pixel
    summaries (fully opaque, fully clear, unchanged), used to skip work later.
-3. **Exactness check.** After the native line is drawn, every native pixel is
-   resolved again from the recorded characters. Its priority values for the
+3. **Exactness check.** Only pixels with a recorded HD subpixel that differs
+   from its native index are resolved again from the recorded characters.
+   Unchanged records are still retained: a changing layer can reveal them.
+   The priority values for the
    main and sub screens, its sprite value and its final colour must equal
    what the native renderer produced. Only then are its 16 HD subpixels
    composed, re-resolving priority per subpixel and reapplying colour math.
    Anything not modelled (a host overlay, a layer drawn by another path, a
    widescreen extra object) fails the check and keeps the native pixel.
+   The output is first filled with a contiguous nearest-scaled row and copied
+   vertically; composition overwrites only the pixels that need HD work.
 4. **Game policy** (`src/hd_textures.c`). For each HD line the game can keep
    the whole line or individual columns native. Outside live courses the
    whole frame stays native. On course lines the HUD stays native: the BG3
@@ -68,7 +72,10 @@ ROM-free tests:
 
 - `tests/test_hd_tiles.py` builds the real PPU against synthetic scenes. A
   nearest-neighbour source must reproduce the nearest-scaled native frame
-  exactly, with every line on the HD path and no fallback pixels. Explicit
+  exactly, with every line on the HD path and no fallback pixels. It checks
+  both the unchanged-pixel shortcut and the full compositor (with unchanged
+  summaries conservatively disabled). A one-pixel recolouring fixture checks
+  that flipped tiles process only that pixel. Explicit
   scenes check that transparent HD subpixels reveal the layer below, that
   opaque ones grow over transparent pixels, flips, the single-layer shortcut,
   the line policy, and that unsupported lines stay native.
@@ -106,6 +113,53 @@ Results on `normal:1:1`, frame 380, recorded 2026-11-07:
 Developer switches for headless checks: `KDC_HD=0|1` overrides the saved
 choice. `KDC_HD_SOURCE=nearest` selects the exact nearest-neighbour source
 used as the identity oracle. `KDC_HD_STATS=1` prints cumulative counters.
+
+### Performance diagnosis, 2026-11-07
+
+On the Ryzen 9 3900X / RTX 3080 Windows machine, the bottleneck was CPU raster
+composition. The HD tiles are composed by the software PPU; a faster graphics
+card does not accelerate that work. Unchanged texels were still entering
+candidate collection and exactness checking, and nearest expansion wrote four
+interleaved rows per native pixel. The shortcuts above remove those costs
+without reducing the texture scale or disabling validation for changed pixels.
+
+Two paired Direct3D11 runs with screenshot I/O excluded gave:
+
+| HD stage (mean ms/frame) | Before, runs 1 / 2 | After, runs 1 / 2 |
+| --- | --- | --- |
+| CPU raster | 6.490 / 5.993 | 4.924 / 5.764 |
+| Frame composition/copy | 0.595 / 0.539 | 0.590 / 0.842 |
+| Upload/present | 0.912 / 1.101 | 0.954 / 0.966 |
+
+The raster improvement was 24% in the first pair and 4% in the second. Overall
+unpaced throughput was 73.4 to 83.4 fps, then 76.5 to 73.3 fps: background load
+can outweigh the saving. Subsequent sampling found an unrelated PowerShell
+process consuming roughly 12 logical cores, plus build and antivirus activity.
+These measurements identify removable raster work, not a sustained FPS promise.
+The first, headless isolation run also reduced raster time from 6.041 to
+5.038 ms with the unchanged-texel shortcut alone. Synthetic tests assert the
+work reduction independently of wall-clock noise.
+
+Reproduce an isolated comparison with two Release executables:
+
+```powershell
+python tools/benchmark_hd.py --executable local/guarded-build/KirbyDreamCourseRecomp.exe --baseline path/to/previous.exe --repeat 3 --display
+```
+
+This runs `normal:1:1` with deterministic no-input starts, widescreen, audio off,
+VSync off, and no frame delay. It profiles frames 350–605, after course loading.
+The screenshot comparison occurs at frame 340, before timing starts, so image
+encoding does not inflate composition time. Omit `--display` for SDL dummy;
+use `--native-width` to disable widescreen. Logs, captures and JSON measurements
+stay in ignored `local/`. `--max-raster-ms` optionally enforces a local budget;
+wall-time thresholds are sensitive to other workloads and are not CI tests.
+
+Validation also compares 221 consecutive HD frames (380–600) and the complete
+605-frame state trace against the pre-optimization executable, separately at
+native width and widescreen. These checks establish preservation of the previous
+renderer, not new fidelity to the pinned reference emulator. Linux, other holes,
+extreme aspect ratios, and sustained high-refresh play are not qualified by this
+bounded run.
 
 ## Known limits
 
