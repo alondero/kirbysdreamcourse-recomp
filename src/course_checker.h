@@ -5,7 +5,11 @@
 #include <stdint.h>
 
 /* Analytic reconstruction of opaque, two-colour isometric tile edges.
- * Coordinates are unflipped tile coordinates [0,8); colours stay indexed. */
+ * Coordinates are unflipped tile coordinates [0,8); colours stay indexed.
+ * Supported boundaries have x +/- y or x +/- 2y normals, at half-integer
+ * source-centre thresholds. Models are a half-plane, intersection of two
+ * nonparallel half-planes (including its non-convex exterior via colour
+ * complement), or their XOR. Corner polarity is independent of scan order. */
 typedef struct KdcCheckerEdge { int slope, threshold, reverse; } KdcCheckerEdge;
 typedef struct KdcChecker {
     KdcCheckerEdge edge[2];

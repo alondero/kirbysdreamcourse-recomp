@@ -71,8 +71,10 @@ static float depth_buffer[kPpuBufWidth * 240];
 static KdcOrbitSprite sprite_buffer[4096];
 static unsigned sprite_count;
 
-/* Each location is inspected once per draw; fits survive unchanged live
- * words and neighbour indices. This also handles streamed tiles and palettes. */
+/* Bounded associative lookup. Entries used in this draw cannot be evicted:
+ * collisions must never turn raster samples into repeated model fitting.
+ * On bucket exhaustion, new locations keep their native pixels for the draw.
+ * Fits survive unchanged live words and neighbour indices between draws. */
 static struct CheckerCache {
     uint16_t words[16];
     uint8_t border[kKdcCheckerBorderSize];
@@ -83,6 +85,20 @@ static struct CheckerCache {
 } checker_cache[4096];
 static unsigned checker_generation;
 
+static struct CheckerCache *CheckerLocation(int column, int row, unsigned layer)
+{
+    unsigned first = ((unsigned)row * 131u + (unsigned)column) * 2u + layer;
+    struct CheckerCache *available = NULL;
+    for (unsigned i = 0; i < 32; ++i) {
+        struct CheckerCache *entry = &checker_cache[(first + i) & 4095];
+        if (entry->valid && entry->column == column && entry->row == row && entry->layer == layer)
+            return entry;
+        if (!available && (!entry->valid || entry->generation != checker_generation))
+            available = entry;
+    }
+    return available;
+}
+
 static unsigned TilePixel(const uint16_t *vram, unsigned tile,
                            unsigned base, int x, int y, unsigned bpp);
 
@@ -91,8 +107,8 @@ static unsigned TerrainPixel(const Render *render, const uint16_t *vram,
 {
     if (!render->hd) return 0;
     int column = (int)floor(u / 8), row = (int)floor(v / 8);
-    unsigned slot = ((unsigned)(row * 131 + column) * 2 + layer) & 4095;
-    struct CheckerCache *cached = &checker_cache[slot];
+    struct CheckerCache *cached = CheckerLocation(column, row, layer);
+    if (!cached) return 0;
     bool same = cached->valid && cached->column == column && cached->row == row && cached->layer == layer;
     if (!same || cached->generation != checker_generation) {
         const uint16_t *words = vram + (tile & 1023) * 16;

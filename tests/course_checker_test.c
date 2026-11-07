@@ -65,8 +65,57 @@ static void Continuity(void)
     assert(compared > 0);
 }
 
+/* Independent 90-degree cone, rotated around the tile. The offset places
+ * one tile corner strictly inside, exposing top-left scan-order dependence. */
+static uint8_t Corner(double x, double y, unsigned rotation, bool invert)
+{
+    for (unsigned i = 0; i < rotation; ++i) {
+        double next_x = 7 - y;
+        y = x; x = next_x;
+    }
+    bool inside = x + y >= 5.5 && x - y >= 1.5;
+    return inside != invert ? 3 : 12;
+}
+
+static void Corners(void)
+{
+    unsigned origin_inside = 0, origin_outside = 0;
+    for (unsigned rotation = 0; rotation < 4; ++rotation)
+        for (unsigned invert = 0; invert < 2; ++invert) {
+            uint8_t pixels[64], border[kKdcCheckerBorderSize];
+            uint16_t words[16];
+            KdcChecker checker;
+            for (int y = 0; y < 8; ++y)
+                for (int x = 0; x < 8; ++x)
+                    pixels[y * 8 + x] = Corner(x, y, rotation, invert);
+            for (int k = 0; k < kKdcCheckerBorderSize; ++k) {
+                int x, y;
+                KdcCheckerBorderPosition(k, &x, &y);
+                border[k] = Corner(x, y, rotation, invert);
+            }
+            Encode(pixels, words);
+            assert(KdcCheckerFit(words, border, &checker));
+            assert(checker.operation == 1);
+            origin_inside += Corner(0, 0, rotation, false) == 3;
+            origin_outside += Corner(0, 0, rotation, false) == 12;
+            for (int y = 0; y < 8; ++y)
+                for (int x = 0; x < 8; ++x)
+                    assert(KdcCheckerSample(&checker, x + 0.5, y + 0.5) == pixels[y * 8 + x]);
+            /* Fractional offsets avoid ties on an edge; compare the whole
+             * interior and border, not just the native pixel centres. */
+            for (int y = -32; y < 160; ++y)
+                for (int x = -32; x < 160; ++x) {
+                    double sx = (x + 0.25) / 16, sy = (y + 0.125) / 16;
+                    assert(KdcCheckerSample(&checker, sx + 0.5, sy + 0.5) ==
+                           Corner(sx, sy, rotation, invert));
+                }
+        }
+    assert(origin_inside && origin_outside);
+}
+
 int main(void)
 {
+    Corners();
     Continuity();
     uint8_t pixels[64], border[80];
     uint16_t words[16];

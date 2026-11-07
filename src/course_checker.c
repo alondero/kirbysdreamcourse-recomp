@@ -2,6 +2,55 @@
 
 typedef struct Candidate { KdcCheckerEdge edge; uint64_t mask; } Candidate;
 
+/* Compile-time half-plane masks. Bit (8*y+x) corresponds to the integer
+ * source centre (x,y); the threshold is t+1/2. No runtime construction,
+ * mutable initialization, or per-fit candidate stack is needed. */
+#define CUT(s, t, y) ((t) + 1 - (s) * (y))
+#define ROW(s, t, y) ((CUT(s, t, y) <= 0 ? UINT64_C(255) : \
+                      CUT(s, t, y) >= 8 ? UINT64_C(0) : \
+                      (UINT64_C(255) << (CUT(s, t, y) & 7)) & 255) << (8 * (y)))
+#define MASK(s, t) (ROW(s,t,0) | ROW(s,t,1) | ROW(s,t,2) | ROW(s,t,3) | \
+                    ROW(s,t,4) | ROW(s,t,5) | ROW(s,t,6) | ROW(s,t,7))
+#define EDGE(s, t) {{s, 2*(t)+1, 0}, MASK(s,t)}, {{s, 2*(t)+1, 1}, ~MASK(s,t)}
+static const Candidate candidates[] = {
+    EDGE(-2, -20), EDGE(-2, -19), EDGE(-2, -18), EDGE(-2, -17),
+    EDGE(-2, -16), EDGE(-2, -15), EDGE(-2, -14), EDGE(-2, -13),
+    EDGE(-2, -12), EDGE(-2, -11), EDGE(-2, -10), EDGE(-2, -9),
+    EDGE(-2, -8), EDGE(-2, -7), EDGE(-2, -6), EDGE(-2, -5),
+    EDGE(-2, -4), EDGE(-2, -3), EDGE(-2, -2), EDGE(-2, -1),
+    EDGE(-2, 0), EDGE(-2, 1), EDGE(-2, 2), EDGE(-2, 3),
+    EDGE(-2, 4), EDGE(-2, 5), EDGE(-2, 6), EDGE(-2, 7),
+    EDGE(-2, 8), EDGE(-2, 9), EDGE(-2, 10), EDGE(-2, 11),
+    EDGE(-2, 12),
+    EDGE(2, -6), EDGE(2, -5), EDGE(2, -4), EDGE(2, -3),
+    EDGE(2, -2), EDGE(2, -1), EDGE(2, 0), EDGE(2, 1),
+    EDGE(2, 2), EDGE(2, 3), EDGE(2, 4), EDGE(2, 5),
+    EDGE(2, 6), EDGE(2, 7), EDGE(2, 8), EDGE(2, 9),
+    EDGE(2, 10), EDGE(2, 11), EDGE(2, 12), EDGE(2, 13),
+    EDGE(2, 14), EDGE(2, 15), EDGE(2, 16), EDGE(2, 17),
+    EDGE(2, 18), EDGE(2, 19), EDGE(2, 20), EDGE(2, 21),
+    EDGE(2, 22), EDGE(2, 23), EDGE(2, 24), EDGE(2, 25),
+    EDGE(2, 26),
+    EDGE(-1, -13), EDGE(-1, -12), EDGE(-1, -11), EDGE(-1, -10),
+    EDGE(-1, -9), EDGE(-1, -8), EDGE(-1, -7), EDGE(-1, -6),
+    EDGE(-1, -5), EDGE(-1, -4), EDGE(-1, -3), EDGE(-1, -2),
+    EDGE(-1, -1), EDGE(-1, 0), EDGE(-1, 1), EDGE(-1, 2),
+    EDGE(-1, 3), EDGE(-1, 4), EDGE(-1, 5), EDGE(-1, 6),
+    EDGE(-1, 7), EDGE(-1, 8), EDGE(-1, 9), EDGE(-1, 10),
+    EDGE(-1, 11), EDGE(-1, 12),
+    EDGE(1, -6), EDGE(1, -5), EDGE(1, -4), EDGE(1, -3),
+    EDGE(1, -2), EDGE(1, -1), EDGE(1, 0), EDGE(1, 1),
+    EDGE(1, 2), EDGE(1, 3), EDGE(1, 4), EDGE(1, 5),
+    EDGE(1, 6), EDGE(1, 7), EDGE(1, 8), EDGE(1, 9),
+    EDGE(1, 10), EDGE(1, 11), EDGE(1, 12), EDGE(1, 13),
+    EDGE(1, 14), EDGE(1, 15), EDGE(1, 16), EDGE(1, 17),
+    EDGE(1, 18), EDGE(1, 19),
+};
+#undef EDGE
+#undef MASK
+#undef ROW
+#undef CUT
+
 static bool Side(KdcCheckerEdge edge, double x, double y)
 {
     /* Threshold is twice the boundary in integer pixel-centre coordinates.
@@ -70,25 +119,7 @@ bool KdcCheckerFit(const uint16_t words[16], const uint8_t border[kKdcCheckerBor
     if (!border) return false;
     for (unsigned k = 0; k < kKdcCheckerBorderSize; ++k)
         if (border[k] != colors[0] && border[k] != colors[1]) return false;
-    Candidate candidates[236];
-    unsigned n = 0;
-    static const int slopes[] = {-2, 2, -1, 1};
-    for (unsigned s = 0; s < 4; ++s) {
-        int slope = slopes[s], low = slope < 0 ? 7 * slope : 0;
-        int high = 7 + (slope > 0 ? 7 * slope : 0);
-        for (int t = low - 6; t < high + 6; ++t) {
-            KdcCheckerEdge edge = {slope, 2 * t + 1, 0};
-            uint64_t mask = 0;
-            for (unsigned y = 0; y < 8; ++y)
-                for (unsigned x = 0; x < 8; ++x)
-                    if (Side(edge, x + 0.5, y + 0.5))
-                        mask |= UINT64_C(1) << (8 * y + x);
-            for (int reverse = 0; reverse < 2; ++reverse) {
-                edge.reverse = reverse;
-                candidates[n++] = (Candidate){edge, reverse ? ~mask : mask};
-            }
-        }
-    }
+    const unsigned n = sizeof(candidates) / sizeof(*candidates);
     *checker = (KdcChecker){.colors = {colors[0], colors[1]}};
     bool found = false;
     for (unsigned i = 0; i < n; ++i)
@@ -105,20 +136,23 @@ bool KdcCheckerFit(const uint16_t words[16], const uint8_t border[kKdcCheckerBor
         for (unsigned j = i + 1; j < n; ++j) {
             if (candidates[i].edge.slope == candidates[j].edge.slope) continue;
             uint64_t a = candidates[i].mask, b = candidates[j].mask;
-            unsigned op = (a & b) == target ? 1 : (a ^ b) == target ? 2 : 0;
-            if (!op) continue;
-            /* XOR is unchanged when both sides are inverted. Keep only
-             * one representative before testing uniqueness. */
-            if (op == 2 && candidates[i].edge.reverse) continue;
-            /* Native samples can hide a corner's boundary by a whole
-             * subpixel. Never choose an arbitrary first fit: adjacent
-             * tiles could then reconstruct different phases. */
-            KdcChecker model = {.colors = {colors[0], colors[1]},
-                .edge = {candidates[i].edge, candidates[j].edge}, .operation = (uint8_t)op};
-            if (!BorderMatches(&model, border)) continue;
-            if (found) return false;
-            *checker = model;
-            found = true;
+            /* Try both operations: a native intersection match can fail
+             * the border while an XOR using the same edges still matches. */
+            for (unsigned op = 1; op <= 2; ++op) {
+                bool inverted_corner = op == 1 && (a & b) == ~target;
+                if (op == 1 && (a & b) != target && !inverted_corner) continue;
+                if (op == 2 && ((a ^ b) != target || candidates[i].edge.reverse)) continue;
+                /* XOR is unchanged when both sides are inverted; the check
+                 * above retains one representative before uniqueness testing.
+                 * A corner's exterior needs swapped colours, not a different
+                 * geometric model, when the first pixel is inside it. */
+                KdcChecker model = {.colors = {colors[inverted_corner], colors[!inverted_corner]},
+                    .edge = {candidates[i].edge, candidates[j].edge}, .operation = (uint8_t)op};
+                if (!BorderMatches(&model, border)) continue;
+                if (found) return false;
+                *checker = model;
+                found = true;
+            }
         }
     return found;
 }

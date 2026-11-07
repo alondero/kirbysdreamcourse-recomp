@@ -13,7 +13,10 @@ class OrbitRendererTest(unittest.TestCase):
     def test_intermediate_camera_and_object_pixels_and_history_rejection(self):
         self.run_fixture('high_refresh_render_test.c')
 
-    def run_fixture(self, fixture):
+    def test_checker_cache_collisions_and_draw_budget(self):
+        self.run_fixture("course_checker_cache_test.c", embedded=True)
+
+    def run_fixture(self, fixture, embedded=False):
         compiler = shutil.which('gcc')
         root = Path(__file__).resolve().parents[1]
         framework = Path(os.environ.get('SNESRECOMP_ROOT', root / 'local/guarded-framework'))
@@ -22,14 +25,14 @@ class OrbitRendererTest(unittest.TestCase):
             self.skipTest('Requires GCC and the pinned framework headers')
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / 'course_orbit_render_test.exe'
+            sources = [root / "src/course_camera.c", root / "src/course_geometry.c"]
+            if not embedded:
+                sources += [root / "src/course_orbit.c", root / "src/course_hud.c",
+                            root / "src/course_checker.c"]
             result = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
                                      '-I', str(root / 'src'), '-I', str(source),
                                      str(root / 'tests' / fixture),
-                                     str(root / 'src/course_orbit.c'),
-                                     str(root / 'src/course_hud.c'),
-                                     str(root / 'src/course_camera.c'),
-                                     str(root / 'src/course_geometry.c'),
-                                     str(root / 'src/course_checker.c'),
+                                     *map(str, sources),
                                      '-lm', '-o', str(executable)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
             result = subprocess.run([str(executable)], capture_output=True)

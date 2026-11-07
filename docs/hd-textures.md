@@ -39,7 +39,9 @@ The work is split between a generic framework patch and a small game policy.
 2. **Scaling** (`src/course_checker.c`, `src/hd_scaler.c`). A cache miss asks
    the game for the HD image. For BG1/BG2, opaque two-colour characters are
    first tested against straight isometric edges (1:1 and 2:1, including
-   reflected edges, corners and crossings). A model is accepted only if it
+   reflected edges, corners and crossings). Corner interiors and complementary
+   exteriors are recognized independently of palette order. The 236 candidate
+   half-planes are compile-time constants. A model is accepted only if it
    reproduces all 64 original pixel centres and the 80 neighbouring samples
    in a two-pixel border, with at least eight interior pixels of each colour,
    and the fit is unique. Ambiguous corner fits stay on the
@@ -98,8 +100,11 @@ all eight neighbours' live words and palette/flip attributes. Neither cache
 assumes that a VRAM address or course tile identity remains unchanged.
 The orbit renderer uses the same model at continuous texture coordinates, with
 its existing footprint sampling when zoomed out. It checks each terrain location
-once per draw, reuses fits while VRAM words and neighbour samples are unchanged,
-and resolves palette colours at draw time. HD off retains the old path.
+at most once per draw, reuses fits while VRAM words and neighbour samples are unchanged,
+and resolves palette colours at draw time. Its 4096-entry cache probes at most
+32 slots per lookup and never evicts an entry used in the current draw. When
+those slots are occupied, new locations retain native pixels for that draw,
+bounding solver calls even under adversarial collisions. HD off retains the old path.
 
 The mathematical edges have no texture-resolution limit, but the output still
 has one: the standard HD surface is 4x, and the orbit compositor currently draws
@@ -114,12 +119,16 @@ ROM-free tests:
 
 - `tests/test_course_checker.py` checks native-centre identity, continuous
   straight edges, crossings, all 32 checker phases across adjacent tiles,
-  ambiguous-corner rejection,
+  all four corner rotations in both palette polarities at native and fractional
+  coordinates, ambiguous-corner rejection,
   and rejection of unsupported patterns.
 - `tests/test_course_orbit_render.py` also checks magnified checker rendering,
   repeatability, palette changes, streamed tile invalidation and guest-state
   preservation with HD on.
 
+- The orbit cache regression alternates colliding locations for 5,000 samples,
+  exhausts their probe window, and changes VRAM between draws. It checks that
+  resident locations are not refitted per pixel and changed content is refitted.
 - `tests/test_hd_tiles.py` builds the real PPU against synthetic scenes. A
   nearest-neighbour source must reproduce the nearest-scaled native frame
   exactly, with every line on the HD path and no fallback pixels. It checks
@@ -128,7 +137,9 @@ ROM-free tests:
   that flipped tiles process only that pixel. Explicit
   scenes check that transparent HD subpixels reveal the layer below, that
   opaque ones grow over transparent pixels, flips, the single-layer shortcut,
-  the line policy, layer-specific cache isolation, neighbour-border flips, biased-span rejection,
+  the line policy, layer-specific cache isolation, neighbour-border flips,
+  negative and wrapped coordinates for all four tilemap
+  sizes, unwrapped widescreen-provider coordinates, biased-span rejection,
   and that unsupported lines stay native.
 - `tests/test_hd_scaler.py` checks the scaler: flat images are unchanged,
   diagonals become monotone staircases, output is palette-locked, and
