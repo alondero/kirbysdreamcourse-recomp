@@ -1,5 +1,10 @@
 # HUD inventory and edge-placement study — issue #31
 
+**Placement recommendations superseded:** the follow-up [quiet/expanded study](hud-expansion.md)
+keeps the shot HUD in place and treats the full panel as an extension of the
+same ability badge. [Open the revised three options](hud-expansion.html?variant=C).
+The original five variants below remain a historical design record.
+
 Design exploration, 2026-11-07. No game behavior or settings have changed.
 Open `hud-prototype.html` directly in a browser, or run
 `python -m http.server 8031` from the repository and visit
