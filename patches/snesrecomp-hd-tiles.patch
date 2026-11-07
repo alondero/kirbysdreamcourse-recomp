@@ -1,0 +1,781 @@
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index dd967c33..53474309 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -71,6 +71,9 @@ void ppu_sec_read(double *eval, double *line, double *bg, double *spr,
+ 
+ static void PpuDrawWholeLine(Ppu *ppu, uint y);
+ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line);
++static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line);
++static void PpuHdTilesBeginLine(Ppu *ppu);
++static void PpuHdTilesFree(struct PpuHdTiles *tiles);
+ 
+ static bool ppu_evaluateSprites(Ppu* ppu, int line);
+ static uint16_t ppu_getVramRemap(Ppu* ppu);
+@@ -86,6 +89,7 @@ Ppu* ppu_init(void) {
+ }
+ 
+ void ppu_free(Ppu* ppu) {
++  if (ppu) PpuHdTilesFree(ppu->hdTiles);
+   free(ppu);
+ }
+ 
+@@ -95,6 +99,7 @@ void ppu_reset(Ppu* ppu) {
+     uint8_t *renderBuffer = ppu->renderBuffer;
+     uint32_t renderFlags = ppu->renderFlags;
+     PpuMode7HdSurface mode7Hd = ppu->mode7Hd;
++    struct PpuHdTiles *hdTiles = ppu->hdTiles;
+     uint32_t overlayPitch[kPpuOverlaySource_Count];
+     uint8_t *overlayBuffer[kPpuOverlaySource_Count];
+     memcpy(overlayPitch, ppu->overlayRenderPitch, sizeof(overlayPitch));
+@@ -104,6 +109,7 @@ void ppu_reset(Ppu* ppu) {
+     ppu->renderPitch = (uint32_t)pitch;
+     ppu->renderFlags = renderFlags;
+     ppu->mode7Hd = mode7Hd;
++    ppu->hdTiles = hdTiles;
+     memcpy(ppu->overlayRenderPitch, overlayPitch, sizeof(overlayPitch));
+     memcpy(ppu->overlayRenderBuffer, overlayBuffer, sizeof(overlayBuffer));
+   }
+@@ -852,6 +858,7 @@ static void PpuRunLineJob(Ppu* ppu, int line, bool pixels, bool live) {
+     }
+ 
+     // evaluate sprites
++    if (pixels) PpuHdTilesBeginLine(ppu);
+     ClearBackdrop(ppu, &ppu->objBuffer);
+     if (ppu->overlayRenderBuffer[kPpuOverlaySource_Obj])
+       memset(&ppu->overlayBuffers[kPpuOverlaySource_Obj], 0,
+@@ -871,7 +878,7 @@ static void PpuRunLineJob(Ppu* ppu, int line, bool pixels, bool live) {
+       if (live) debug_server_on_ppu_line_drawn(line, 0, ppu->bgmode);
+       ppu_draw_whole_line_legacy(ppu, line);
+     }
+-    if (ppu->mode7Hd.pixels)
++    if (ppu->mode7Hd.pixels && !PpuDrawTileHdLine(ppu, (unsigned)line))
+       PpuDrawMode7HdLine(ppu, (unsigned)line);
+   }
+ }
+@@ -1110,6 +1117,281 @@ static bool PpuViewportAllows(Ppu *ppu, uint layer, int screen_x,
+ }
+ 
+ // Draw a whole line of a 4bpp background layer into bgBuffers
++
++/* ---- HD tile replacement: records and cache ------------------------------
++ * While a tile source and an HD surface are bound, the Mode 1 8x8 drawers and
++ * OBJ evaluation record, for each native pixel, which character each source
++ * offered there (including its transparent pixels), with palette, priority
++ * and flips. The line pass after scanout resolves every HD subpixel from those
++ * records. Records are only trusted for layers drawn directly into the line's
++ * priority buffers; anything else keeps the native line. */
++enum { kPpuHdSources = 5, kPpuHdObj = 4,
++       kPpuHdFlipX = 1, kPpuHdFlipY = 2, kPpuHdBpp4 = 4,
++       kPpuHdCacheSlots = 16384 };
++typedef struct PpuHdTileRecord {
++  uint16_t address, z;      /* first character word; priority|layer|palette */
++  uint8_t col, row, flags;  /* unflipped character pixel; flips and depth */
++  uint8_t unused;
++  uint16_t stamp;           /* valid for the current line only */
++  uint16_t entry;           /* cache slot + 1 with an HD image, else 0 */
++} PpuHdTileRecord;
++/* One source image with per-texel summaries, bit (row * 8 + col) of the
++ * unflipped character: every subpixel opaque, every subpixel transparent, or
++ * every subpixel equal to the native pixel. They let the line pass skip
++ * per-subpixel priority resolution where the outcome is already known. */
++typedef struct PpuHdImage {
++  uint64_t opaque, clear, same;
++  uint8_t indices[];
++} PpuHdImage;
++typedef struct PpuHdTileEntry {
++  uint64_t hash;
++  PpuHdTileQuery key;
++  PpuHdImage *image;        /* NULL: the source kept this character native */
++  bool used;
++} PpuHdTileEntry;
++typedef struct PpuHdTileMemo {
++  uint16_t address, palette;
++  uint8_t bpp;
++  bool valid;
++  uint16_t entry;
++} PpuHdTileMemo;
++struct PpuHdTiles {
++  PpuHdTileFill *fill;
++  void *context;
++  PpuHdLinePolicy *policy;
++  void *policy_context;
++  unsigned scale;
++  uint16_t stamp;
++  uint8_t recorded[2];      /* BG layers drawn straight into bgBuffers[screen] */
++  bool recording;
++  unsigned count;
++  PpuHdTileStats stats;
++  PpuHdTileMemo memo[kPpuHdSources];
++  PpuHdTileEntry *entries;
++  uint8_t any[kPpuBufWidth]; /* some record at this pixel has an HD image */
++  PpuHdTileRecord records[2][kPpuHdSources][kPpuBufWidth];
++};
++
++static void PpuHdTilesClearCache(struct PpuHdTiles *t) {
++  for (unsigned i = 0; i < kPpuHdCacheSlots; ++i)
++    free(t->entries[i].image);
++  memset(t->entries, 0, sizeof(*t->entries) * kPpuHdCacheSlots);
++  memset(t->memo, 0, sizeof(t->memo));
++  t->count = 0;
++}
++
++static void PpuHdTilesFree(struct PpuHdTiles *t) {
++  if (!t) return;
++  if (t->entries) PpuHdTilesClearCache(t);
++  free(t->entries);
++  free(t);
++}
++
++bool PpuSetHdTiles(Ppu *ppu, PpuHdTileFill *fill, void *context) {
++  if (!ppu) return false;
++  if (!fill) {
++    PpuHdTilesFree(ppu->hdTiles);
++    ppu->hdTiles = NULL;
++    return true;
++  }
++  struct PpuHdTiles *t = ppu->hdTiles;
++  if (!t) {
++    t = calloc(1, sizeof(*t));
++    if (!t) return false;
++    t->entries = calloc(kPpuHdCacheSlots, sizeof(*t->entries));
++    if (!t->entries) { free(t); return false; }
++    ppu->hdTiles = t;
++  } else {
++    PpuHdTilesClearCache(t);
++  }
++  t->fill = fill;
++  t->context = context;
++  memset(&t->stats, 0, sizeof(t->stats));
++  return true;
++}
++
++bool PpuSetHdTilePolicy(Ppu *ppu, PpuHdLinePolicy *policy, void *context) {
++  if (!ppu || (!ppu->hdTiles && policy)) return false;
++  if (ppu->hdTiles) {
++    ppu->hdTiles->policy = policy;
++    ppu->hdTiles->policy_context = policy ? context : NULL;
++  }
++  return true;
++}
++
++void PpuInvalidateHdTiles(Ppu *ppu) {
++  if (ppu && ppu->hdTiles) PpuHdTilesClearCache(ppu->hdTiles);
++}
++
++void PpuGetHdTileStats(Ppu *ppu, PpuHdTileStats *stats) {
++  if (!stats) return;
++  memset(stats, 0, sizeof(*stats));
++  if (!ppu || !ppu->hdTiles) return;
++  *stats = ppu->hdTiles->stats;
++  stats->cached_tiles = ppu->hdTiles->count;
++}
++
++static void PpuHdTilesBeginLine(Ppu *ppu) {
++  struct PpuHdTiles *t = ppu->hdTiles;
++  if (!t) return;
++  const PpuMode7HdSurface *surface = &ppu->mode7Hd;
++  t->recording = surface->pixels && surface->scale > 1 &&
++      surface->scale <= kPpuHdTileMaxScale && PPU_mode(ppu) == 1;
++  if (!t->recording) return;
++  /* Cached images are scale-specific. Clear only between lines so a pointer
++   * fetched for this line cannot be freed while it is being sampled. */
++  if (t->scale != surface->scale || t->count >= kPpuHdCacheSlots * 3 / 4) {
++    PpuHdTilesClearCache(t);
++    t->scale = surface->scale;
++  }
++  memset(t->memo, 0, sizeof(t->memo));
++  memset(t->any, 0, sizeof(t->any));
++  t->recorded[0] = t->recorded[1] = 0;
++  if (++t->stamp == 0) {
++    memset(t->records, 0, sizeof(t->records));
++    t->stamp = 1;
++  }
++}
++
++static inline PpuHdTileRecord *PpuHdRecordRow(Ppu *ppu, unsigned screen,
++                                              unsigned source) {
++  struct PpuHdTiles *t = ppu->hdTiles;
++  return t && t->recording ? t->records[screen][source] : NULL;
++}
++
++static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
++                            const PpuHdTileRecord *rec);
++
++static inline void PpuHdRecordBgSpan(Ppu *ppu, PpuHdTileRecord *rec,
++                                     unsigned source,
++                                     size_t first, unsigned count,
++                                     uint32_t tile, unsigned raw_x,
++                                     unsigned raw_y, unsigned tileadr,
++                                     unsigned bpp, PpuZbufType zhi,
++                                     PpuZbufType zlo, unsigned palette_shift) {
++  const bool flip_x = (tile & 0x4000) != 0, flip_y = (tile & 0x8000) != 0;
++  PpuHdTileRecord value = {
++    (uint16_t)((tileadr + (tile & 0x3ff) * (bpp * 4)) & 0x7fff),
++    (uint16_t)(((tile & 0x2000) ? zhi : zlo) + ((tile & 0x1c00) >> palette_shift)),
++    0, (uint8_t)(flip_y ? 7 - (raw_y & 7) : (raw_y & 7)),
++    (uint8_t)((bpp == 4 ? kPpuHdBpp4 : 0) | (flip_x ? kPpuHdFlipX : 0) |
++              (flip_y ? kPpuHdFlipY : 0)),
++    0, ppu->hdTiles->stamp, 0
++  };
++  /* One lookup per character span; the cache is stable within a line. */
++  value.entry = PpuHdLookup(ppu, source, &value);
++  for (unsigned k = 0; k < count && first + k < kPpuBufWidth; ++k) {
++    unsigned raw = (raw_x + k) & 7;
++    value.col = (uint8_t)(flip_x ? 7 - raw : raw);
++    rec[first + k] = value;
++    if (value.entry) ppu->hdTiles->any[first + k] = 1;
++  }
++}
++
++static inline unsigned PpuHdNativeIndex(const uint16_t *vram,
++                                        const PpuHdTileRecord *rec) {
++  unsigned c = rec->col, r = rec->row;
++  unsigned w = vram[(rec->address + r) & 0x7fff];
++  unsigned v = (w >> (7 - c) & 1) | (w >> (15 - c) & 1) << 1;
++  if (rec->flags & kPpuHdBpp4) {
++    w = vram[(rec->address + 8 + r) & 0x7fff];
++    v |= (w >> (7 - c) & 1) << 2 | (w >> (15 - c) & 1) << 3;
++  }
++  return v;
++}
++
++static uint64_t PpuHdHash(const PpuHdTileQuery *q) {
++  /* Words and colours are 64 contiguous bytes; mix them a word at a time. */
++  uint64_t hash = 0x9e3779b97f4a7c15ull ^ q->bpp;
++  const uint8_t *bytes = (const uint8_t *)q->words;
++  for (size_t i = 0; i < sizeof(q->words) + sizeof(q->colors); i += 8) {
++    uint64_t word;
++    memcpy(&word, bytes + i, 8);
++    hash = (hash ^ word) * 0xff51afd7ed558ccdull;
++    hash ^= hash >> 32;
++  }
++  return hash;
++}
++
++static void PpuHdSummarise(const PpuHdTileQuery *q, PpuHdImage *image) {
++  const unsigned s = q->scale, side = 8 * s;
++  image->opaque = image->clear = image->same = 0;
++  for (unsigned r = 0; r < 8; ++r)
++    for (unsigned c = 0; c < 8; ++c) {
++      unsigned w = q->words[r];
++      unsigned native = (w >> (7 - c) & 1) | (w >> (15 - c) & 1) << 1;
++      if (q->bpp == 4) {
++        w = q->words[8 + r];
++        native |= (w >> (7 - c) & 1) << 2 | (w >> (15 - c) & 1) << 3;
++      }
++      bool opaque = true, clear = true, same = true;
++      for (unsigned y = 0; y < s; ++y)
++        for (unsigned x = 0; x < s; ++x) {
++          const uint8_t v = image->indices[(r * s + y) * side + c * s + x];
++          opaque &= v != 0;
++          clear &= v == 0;
++          same &= v == native;
++        }
++      const uint64_t bit = 1ull << (r * 8 + c);
++      if (opaque) image->opaque |= bit;
++      if (clear) image->clear |= bit;
++      if (same) image->same |= bit;
++    }
++}
++
++/* Content-addressed: the same character and colours share one image even
++ * when a game streams it through different VRAM slots. */
++static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
++                            const PpuHdTileRecord *rec) {
++  struct PpuHdTiles *t = ppu->hdTiles;
++  const unsigned bpp = (rec->flags & kPpuHdBpp4) ? 4 : 2;
++  const uint16_t palette = rec->z & 0xff;
++  PpuHdTileMemo *memo = &t->memo[source];
++  if (memo->valid && memo->address == rec->address &&
++      memo->palette == palette && memo->bpp == bpp)
++    return memo->entry;
++  PpuHdTileQuery q;
++  memset(&q, 0, sizeof(q));
++  const uint16_t *vram = PpuRenderVram(ppu);
++  for (unsigned i = 0; i < bpp * 4; ++i)
++    q.words[i] = vram[(rec->address + i) & 0x7fff];
++  for (unsigned i = 1; i < (1u << bpp); ++i)
++    q.colors[i] = ppu->cgram[(palette + i) & 0xff];
++  q.bpp = (uint8_t)bpp;
++  q.scale = (uint8_t)t->scale;
++  const uint64_t hash = PpuHdHash(&q);
++  const size_t key_bytes = offsetof(PpuHdTileQuery, scale);
++  unsigned slot = (unsigned)hash & (kPpuHdCacheSlots - 1);
++  uint16_t found = 0;
++  for (;;) {
++    PpuHdTileEntry *e = &t->entries[slot];
++    if (!e->used) {
++      if (t->count + 1 >= kPpuHdCacheSlots) break; /* full until next line */
++      const size_t bytes = sizeof(PpuHdImage) + (size_t)64 * t->scale * t->scale;
++      PpuHdImage *image = malloc(bytes);
++      if (image && !t->fill(&q, image->indices, t->context)) {
++        free(image);
++        image = NULL;
++      }
++      if (image) PpuHdSummarise(&q, image);
++      e->used = true;
++      e->hash = hash;
++      e->key = q;
++      e->image = image;
++      ++t->count;
++      found = image ? (uint16_t)(slot + 1) : 0;
++      break;
++    }
++    if (e->hash == hash && !memcmp(&e->key, &q, key_bytes)) {
++      found = e->image ? (uint16_t)(slot + 1) : 0;
++      break;
++    }
++    slot = (slot + 1) & (kPpuHdCacheSlots - 1);
++  }
++  *memo = (PpuHdTileMemo){rec->address, palette, (uint8_t)bpp, true, found};
++  return found;
++}
++
+ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+                                    uint y, bool sub, uint layer,
+                                    PpuZbufType zhi, PpuZbufType zlo) {
+@@ -1146,6 +1428,11 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+   const uint16 *addr;
+   bool ws_shadow = WsShadowLayerActive(layer) || WsShadowHasTileProvider(layer);
+ #define WS_TILE(t, sx) (ws_shadow ? WsShadowResolveTile8x8(layer, (sx), y, (uint16_t)ppu->hScroll[layer], (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
++  PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
++      PpuHdRecordRow(ppu, sub, layer) : NULL;
++  if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
++#define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
++    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 4, zhi, zlo, kPaletteShift); } while (0)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -1162,6 +1449,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+       int curw = IntMin(8 - (x & 7), w);
+       w -= curw;
+       uint32 tile = WS_TILE(*tp, ws_sx);
++      HD_RECORD(curw, tile, x & 7);
+       ws_sx += curw;
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+@@ -1183,6 +1471,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     // Handle full tiles in the middle
+     while (w >= 8) {
+       uint32 tile = WS_TILE(*tp, ws_sx);
++      HD_RECORD(8, tile, 0);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1202,6 +1491,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     // Handle remaining clipped part
+     if (w) {
+       uint32 tile = WS_TILE(*tp, ws_sx);
++      HD_RECORD(w, tile, 0);
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+       uint32 bits = READ_BITS(ta, tile & 0x3ff);
+@@ -1216,6 +1506,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     }
+   }
+ #undef WS_TILE
++#undef HD_RECORD
+ #undef READ_BITS
+ #undef DO_PIXEL
+ #undef DO_PIXEL_HFLIP
+@@ -1649,6 +1940,11 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+     layer, (int)(dstz - dstbuf->data) - kPpuExtraLeftRight, y, \
+     (uint16_t)(ppu->hScroll[layer] + ws_bias[windex]), \
+     (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
++  PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
++      PpuHdRecordRow(ppu, sub, layer) : NULL;
++  if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
++#define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
++    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 2, zhi, zlo, kPaletteShift); } while (0)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -1665,6 +1961,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+       int curw = IntMin(8 - (x & 7), w);
+       w -= curw;
+       uint32 tile = SCENERY_TILE(*tp);
++      HD_RECORD(curw, tile, x & 7);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1685,6 +1982,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+     // Handle full tiles in the middle
+     while (w >= 8) {
+       uint32 tile = SCENERY_TILE(*tp);
++      HD_RECORD(8, tile, 0);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1704,6 +2002,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+     // Handle remaining clipped part
+     if (w) {
+       uint32 tile = SCENERY_TILE(*tp);
++      HD_RECORD(w, tile, 0);
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+       uint32 bits = READ_BITS(ta, tile & 0x3ff);
+@@ -1719,6 +2018,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+   }
+ #undef SCENERY_TILE
+ #undef NEXT_TP
++#undef HD_RECORD
+ #undef READ_BITS
+ #undef DO_PIXEL
+ #undef DO_PIXEL_HFLIP
+@@ -2712,6 +3012,240 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
+   }
+ }
+ 
++/* ---- HD tile replacement: line composition ------------------------------
++ * Resolve each native pixel's recorded sources once at native resolution and
++ * require the exact native priority values and colour. Only then compose its
++ * subpixels from HD images; otherwise copy the native pixel. This keeps
++ * windows, widescreen margins, host objects and anything not modelled here
++ * authoritative, at the cost of native pixels where they occur. */
++typedef struct PpuHdCandidate {
++  const PpuHdTileRecord *rec;
++  const PpuHdImage *image;  /* NULL: sample the native character */
++  const uint8_t *line;      /* this subrow of the texel, NULL when native */
++  int step;                 /* -1 when flipped horizontally */
++  unsigned native_index;
++} PpuHdCandidate;
++
++/* Point each image candidate at subrow sy of its texel, honouring flips. */
++static inline void PpuHdSelectSubrow(PpuHdCandidate *c, unsigned count,
++                                     unsigned scale, unsigned sy) {
++  for (unsigned k = 0; k < count; ++k) {
++    const PpuHdTileRecord *r = c[k].rec;
++    if (!c[k].image) { c[k].line = NULL; continue; }
++    const bool fx = (r->flags & kPpuHdFlipX) != 0;
++    const unsigned y = r->row * scale + ((r->flags & kPpuHdFlipY) ? scale - 1 - sy : sy);
++    c[k].line = c[k].image->indices + y * 8 * scale + r->col * scale + (fx ? scale - 1 : 0);
++    c[k].step = fx ? -1 : 1;
++  }
++}
++
++static inline bool PpuHdTexel(const PpuHdCandidate *c, uint64_t mask) {
++  return (mask >> (c->rec->row * 8 + c->rec->col)) & 1;
++}
++
++enum { kPpuHdResolveFull, kPpuHdResolveNative, kPpuHdResolveWinner };
++/* How one screen's subpixels resolve at this native pixel. Native: all equal
++ * the native value. Winner: all come from the native winner, which is opaque
++ * at every subpixel with every higher source clear. Values share no carry
++ * between the priority byte and the palette byte, so the high byte orders
++ * sources. */
++static inline unsigned PpuHdClassify(const PpuHdCandidate *c, unsigned count,
++                                     unsigned *winner) {
++  unsigned w = count;
++  uint16_t best = 0x0500;
++  for (unsigned k = 0; k < count; ++k) {
++    uint16_t value = (uint16_t)(c[k].rec->z + c[k].native_index);
++    if (c[k].native_index && value > best) { best = value; w = k; }
++  }
++  const unsigned top = w < count ? (unsigned)(c[w].rec->z >> 8) : 0;
++  for (unsigned k = 0; k < count; ++k) {
++    if (k == w) continue;
++    const unsigned level = c[k].rec->z >> 8;
++    if (w < count && level < top) continue;
++    if (w < count && level == top) return kPpuHdResolveFull;
++    const bool clear = c[k].image ? PpuHdTexel(&c[k], c[k].image->clear)
++                                  : c[k].native_index == 0;
++    if (!clear) return kPpuHdResolveFull;
++  }
++  *winner = w;
++  if (w == count || !c[w].image) return kPpuHdResolveNative;
++  if (!PpuHdTexel(&c[w], c[w].image->opaque)) return kPpuHdResolveFull;
++  return PpuHdTexel(&c[w], c[w].image->same) ? kPpuHdResolveNative
++                                              : kPpuHdResolveWinner;
++}
++
++static inline uint16_t PpuHdResolveNative(const PpuHdCandidate *c, unsigned count) {
++  uint16_t best = 0x0500;
++  for (unsigned k = 0; k < count; ++k) {
++    uint16_t value = (uint16_t)(c[k].rec->z + c[k].native_index);
++    if (c[k].native_index && value > best) best = value;
++  }
++  return best;
++}
++
++static inline uint16_t PpuHdResolveAt(const PpuHdCandidate *c, unsigned count,
++                                      unsigned sx) {
++  uint16_t best = 0x0500;
++  for (unsigned k = 0; k < count; ++k) {
++    unsigned index = c[k].line ? c[k].line[(int)sx * c[k].step] : c[k].native_index;
++    uint16_t value = (uint16_t)(c[k].rec->z + index);
++    if (index && value > best) best = value;
++  }
++  return best;
++}
++
++static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
++  struct PpuHdTiles *t = ppu->hdTiles;
++  const PpuMode7HdSurface *surface = &ppu->mode7Hd;
++  if (!t || !t->recording || !line || line > surface->height) return false;
++  const unsigned width = surface->width, scale = surface->scale;
++  if (!ppu->renderBuffer || width != 256u + 2u * ppu->extraLeftRight ||
++      ppu->renderPitch < width * sizeof(uint32_t))
++    return false;
++  const bool sub_rendered = PPU_preventMathMode(ppu) != 3 &&
++      PPU_addSubscreen(ppu) && PPU_mathEnabled(ppu) && ppu->screenEnabled[1] != 0;
++  bool supported = PPU_mode(ppu) == 1 && !PPU_forcedBlank(ppu) &&
++      !PPU_interlace(ppu) && !PPU_pseudoHires(ppu) &&
++      !(PPU_mosaicSize(ppu) > 1 && (ppu->mosaic & 0x0f));
++  for (unsigned source = 0; supported && source < kPpuOverlaySource_Count; ++source)
++    if (PpuOverlayActiveOnLine(ppu, (PpuOverlaySource)source, (int)line - 1))
++      supported = false;
++  /* A layer hidden behind the top pixel cannot be checked per pixel, so every
++   * enabled background must have been recorded for the line. */
++  for (unsigned screen = 0; supported && screen < (sub_rendered ? 2u : 1u); ++screen)
++    for (unsigned layer = 0; layer < 3; ++layer)
++      if (IS_SCREEN_ENABLED(ppu, screen, layer) &&
++          !(t->recorded[screen] & (1u << layer)))
++        supported = false;
++  const int left = -(int)ppu->extraLeftCur, right = 256 + ppu->extraRightCur;
++  uint8_t keep[kPpuBufWidth];
++  if (supported && t->policy) {
++    memset(keep, 0, sizeof(keep));
++    supported = t->policy(ppu, line, left, (unsigned)(right - left), keep,
++                          t->policy_context);
++  }
++  if (!supported) {
++    ++t->stats.native_lines;
++    return false;
++  }
++
++  uint8_t visibility[kPpuBufWidth] = {0};
++  PpuWindows window;
++  for (unsigned screen = 0; screen < 2; ++screen) {
++    if (!IS_SCREEN_ENABLED(ppu, screen, 4)) continue;
++    if (IS_SCREEN_WINDOWED(ppu, screen, 4))
++      PpuWindows_Calc(&window, ppu, 4, (int)line);
++    else
++      PpuWindows_Clear(&window, ppu, 4, (int)line);
++    PpuHdMarkWindow(visibility, &window, (uint8_t)(1u << screen), false);
++  }
++  PpuWindows_Calc(&window, ppu, 5, (int)line);
++  PpuHdMarkWindow(visibility, &window, 16, true);
++
++  const uint16_t *vram = PpuRenderVram(ppu);
++  const uint32_t *native = (const uint32_t *)(ppu->renderBuffer +
++      (line - 1) * ppu->renderPitch);
++  uint8_t *first = (uint8_t *)surface->pixels + (line - 1) * scale * surface->pitch;
++  const uint16_t stamp = t->stamp;
++  for (unsigned j = 0; j < width; ++j) {
++    const int x = (int)j - (int)ppu->extraLeftRight;
++    const uint32_t want = native[j];
++    PpuHdCandidate cand[2][kPpuHdSources];
++    unsigned count[2] = {0, 0};
++    bool composed = false;
++    if (x >= left && x < right && !(t->policy && keep[x - left])) {
++      const size_t i = (size_t)(x + kPpuExtraLeftRight);
++      bool any_image = false;
++      for (unsigned screen = 0; t->any[i] && screen < (sub_rendered ? 2u : 1u); ++screen) {
++        for (unsigned source = 0; source < kPpuHdSources; ++source) {
++          const PpuHdTileRecord *rec = source == kPpuHdObj ?
++              &t->records[0][kPpuHdObj][i] : &t->records[screen][source][i];
++          if (rec->stamp != stamp) continue;
++          if (source == kPpuHdObj && !(visibility[i] & (1u << screen))) continue;
++          PpuHdCandidate *c = &cand[screen][count[screen]++];
++          c->rec = rec;
++          c->image = rec->entry ? t->entries[rec->entry - 1].image : NULL;
++          any_image |= c->image != NULL;
++        }
++      }
++      /* Without an HD image the result is the native pixel; only a pixel we
++       * would replace needs the exactness check. */
++      bool valid = any_image;
++      for (unsigned screen = 0; valid && screen < 2; ++screen)
++        for (unsigned k = 0; k < count[screen]; ++k)
++          cand[screen][k].native_index = PpuHdNativeIndex(vram, cand[screen][k].rec);
++      uint16_t main = 0x0500, sub = 0x0500;
++      if (valid) {
++        /* OBJ pixels without a matching record came from elsewhere (host
++         * objects, overlays); keep them exact. */
++        const PpuHdTileRecord *obj = &t->records[0][kPpuHdObj][i];
++        uint16_t obj_value = obj->stamp == stamp ?
++            (uint16_t)(obj->z + PpuHdNativeIndex(vram, obj)) : 0x0500;
++        main = PpuHdResolveNative(cand[0], count[0]);
++        sub = sub_rendered ? PpuHdResolveNative(cand[1], count[1]) : 0x0500;
++        valid = ppu->objBuffer.data[i] == obj_value &&
++            main == ppu->bgBuffers[0].data[i] &&
++            (!sub_rendered || sub == ppu->bgBuffers[1].data[i]) &&
++            PpuHdColour(ppu, main, sub, (visibility[i] & 16) != 0, i) == want;
++        if (!valid) ++t->stats.fallback_pixels;
++      }
++      unsigned kind[2] = {kPpuHdResolveNative, kPpuHdResolveNative};
++      unsigned win[2] = {0, 0};
++      if (valid) {
++        ++t->stats.replaced_pixels;
++        kind[0] = PpuHdClassify(cand[0], count[0], &win[0]);
++        if (sub_rendered) kind[1] = PpuHdClassify(cand[1], count[1], &win[1]);
++        /* Every subpixel resolves to the validated native pair. */
++        if (kind[0] == kPpuHdResolveNative && kind[1] == kPpuHdResolveNative)
++          valid = false;
++      }
++      if (valid) {
++        const bool inside = (visibility[i] & 16) != 0;
++        /* Colour depends only on the resolved pair within one native pixel,
++         * and most subpixels resolve to the validated native pair. */
++        uint16_t last_m = main, last_b = sub;
++        uint32_t last_colour = want;
++        for (unsigned sy = 0; sy < scale; ++sy) {
++          uint32_t *row = (uint32_t *)(first + sy * surface->pitch) + j * scale;
++          PpuHdSelectSubrow(cand[0], count[0], scale, sy);
++          if (sub_rendered) PpuHdSelectSubrow(cand[1], count[1], scale, sy);
++          for (unsigned sx = 0; sx < scale; ++sx) {
++            uint16_t value[2] = {main, sub};
++            for (unsigned screen = 0; screen < 2; ++screen) {
++              const PpuHdCandidate *c = cand[screen];
++              if (kind[screen] == kPpuHdResolveFull) {
++                value[screen] = PpuHdResolveAt(c, count[screen], sx);
++              } else if (kind[screen] == kPpuHdResolveWinner) {
++                const PpuHdCandidate *w = &c[win[screen]];
++                value[screen] = (uint16_t)(w->rec->z + w->line[(int)sx * w->step]);
++              }
++            }
++            const uint16_t m = value[0], b = value[1];
++            if (m == main && b == sub) {
++              row[sx] = want;
++              continue;
++            }
++            if (m != last_m || b != last_b) {
++              last_m = m;
++              last_b = b;
++              last_colour = PpuHdColour(ppu, m, b, inside, i);
++            }
++            row[sx] = last_colour;
++          }
++        }
++        composed = true;
++      }
++    }
++    if (!composed)
++      for (unsigned sy = 0; sy < scale; ++sy) {
++        uint32_t *row = (uint32_t *)(first + sy * surface->pitch) + j * scale;
++        for (unsigned sx = 0; sx < scale; ++sx) row[sx] = want;
++      }
++  }
++  ++t->stats.hd_lines;
++  return true;
++}
++
+ static bool PpuWidescreenHudOamSlot(Ppu *ppu, uint8_t index, uint8_t y) {
+   uint8_t slot = index >> 1;
+   bool hud_y = ppu->wsHudOamHeight &&
+@@ -2910,6 +3444,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
+   int spritesFound = 0;
+   int tilesFound = 0;
+   uint8_t foundSprites[128];
++  PpuHdTileRecord *hd_obj = PpuHdRecordRow(ppu, 0, kPpuHdObj);
+ 
+   // Range evaluation walks OAM forward, but tile fetching walks the accepted
+   // sprites backward. This is observable when the 34-sliver limit is reached.
+@@ -3049,6 +3584,19 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
+               }
+         // Lower OAM indices are processed later and overwrite higher ones.
+                 dst[0] = z + pixel;
++                if (hd_obj) {
++                  const bool flip_x = (oam1 & 0x4000) != 0;
++                  const bool flip_y = (oam1 & 0x8000) != 0;
++                  PpuHdTileRecord *r = &hd_obj[dst - ppu->objBuffer.data];
++                  *r = (PpuHdTileRecord){
++                    (uint16_t)((objAdr + usedTile * 16) & 0x7fff), z,
++                    (uint8_t)(7 - shift), (uint8_t)(row & 7),
++                    (uint8_t)(kPpuHdBpp4 | (flip_x ? kPpuHdFlipX : 0) |
++                              (flip_y ? kPpuHdFlipY : 0)),
++                    0, ppu->hdTiles->stamp, 0};
++                  r->entry = PpuHdLookup(ppu, kPpuHdObj, r);
++                  if (r->entry) ppu->hdTiles->any[dst - ppu->objBuffer.data] = 1;
++                }
+                 if(ppu->extraObjectCount)
+                   ppu->objectOrder[dst-ppu->objBuffer.data]=(uint64_t)((slot-first_slot)&127)<<32;
+             }
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index 6a637b35..f40e5945 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -21,6 +21,39 @@ typedef struct PpuMode7HdSurface {
+ typedef void PpuWidescreenLineEnhancer(Ppu *ppu, uint y, bool sub,
+                                        void *context);
+ 
++/* Optional HD tile replacement, drawn into the bound HD surface.
++ *
++ * A host-supplied source fills higher-resolution palette-index images for
++ * 8x8 characters. The PPU records which character, palette and priority each
++ * layer offered at every native pixel, then resolves priority, windows,
++ * colour math and brightness again for every HD subpixel. Indices keep live
++ * palettes, fades and colour cycling. Lines or pixels the recording cannot
++ * reproduce keep the exact native result. Presentation only. */
++enum { kPpuHdTileMaxScale = 4 };
++typedef struct PpuHdTileQuery {
++  /* Planar character data as stored in VRAM: 8 words for 2bpp, 16 for 4bpp.
++   * Unused trailing words are zero. */
++  uint16_t words[16];
++  /* BGR555 colours for indices 1..(1 << bpp) - 1; entry 0 is transparent. */
++  uint16_t colors[16];
++  uint8_t bpp;   /* 2 or 4 */
++  uint8_t scale; /* output texels per native pixel, per axis */
++} PpuHdTileQuery;
++/* Fill (8*scale)^2 row-major indices for the unflipped character; 0 is
++ * transparent. Return false to keep native pixels for this character. The
++ * PPU caches results by content, so a source must be a pure function of the
++ * query. It must not touch guest state. */
++typedef bool PpuHdTileFill(const PpuHdTileQuery *query, uint8_t *indices,
++                           void *context);
++typedef struct PpuHdTileStats {
++  uint32_t hd_lines;        /* lines composed from tile sources */
++  uint32_t native_lines;    /* lines a source could not reproduce */
++  uint32_t replaced_pixels; /* native pixels drawn from at least one HD tile */
++  uint32_t fallback_pixels; /* HD-backed pixels kept native by the check */
++  uint32_t cached_tiles;
++} PpuHdTileStats;
++struct PpuHdTiles;
++
+ typedef struct BgLayer {
+   uint16_t xhScroll;
+   uint16_t xvScroll;
+@@ -358,6 +391,8 @@ struct Ppu {
+   uint8_t *renderBuffer;
+   /* Optional additional presentation surface; never part of guest state. */
+   PpuMode7HdSurface mode7Hd;
++  /* Optional HD tile source and per-line records; owned by the PPU. */
++  struct PpuHdTiles *hdTiles;
+   /* Optional host picture memory. Drawing only: CPU ports and save states
+    * always use vram. The caller owns 32768 words until unbound. */
+   const uint16_t *renderVram;
+@@ -599,6 +634,21 @@ void ppu_drawCapturedLine(Ppu* ppu, int line, bool pixels);
+ bool PpuBindMode7HdSurface(Ppu *ppu, uint32_t *pixels, size_t capacity,
+                             size_t pitch, unsigned width, unsigned height,
+                             unsigned scale);
++/* Enable HD tile replacement for Mode 1 8x8 backgrounds and OBJ on the bound
++ * HD surface (scale 2..4). NULL disables it and frees the cache. Survives
++ * reset; excluded from savestates and detached raster images. */
++bool PpuSetHdTiles(Ppu *ppu, PpuHdTileFill *fill, void *context);
++/* Optional game policy, called for each HD line with that line's live state.
++ * Return false to keep the whole line native, or set keep_native[k] (zeroed
++ * on entry) to keep screen column first_x + k native. NULL removes it. The
++ * policy belongs to the enabled tile source; set it after PpuSetHdTiles. */
++typedef bool PpuHdLinePolicy(const Ppu *ppu, unsigned line, int first_x,
++                             unsigned count, uint8_t *keep_native, void *context);
++bool PpuSetHdTilePolicy(Ppu *ppu, PpuHdLinePolicy *policy, void *context);
++/* Drop cached tiles, for example after a source changes its output. */
++void PpuInvalidateHdTiles(Ppu *ppu);
++/* Cumulative counters since the source was last set. */
++void PpuGetHdTileStats(Ppu *ppu, PpuHdTileStats *stats);
+ void ppu_sec_reset(void);
+ void ppu_sec_read(double *eval, double *line, double *bg, double *spr,
+                   double *compose, double *hdma);
+diff --git a/runner/src/snes/raster_image.h b/runner/src/snes/raster_image.h
+index 77d49b4f..40ebf5b4 100644
+--- a/runner/src/snes/raster_image.h
++++ b/runner/src/snes/raster_image.h
+@@ -68,6 +68,7 @@ static inline bool SnesRasterImageMaterializePrefix(SnesRasterImage *image,
+   p->renderVram = NULL;
+   p->extraObjects = NULL; p->extraObjectCount = 0;
+   p->mode7Hd.pixels = NULL;
++  p->hdTiles = NULL;
+   p->widescreenLineEnhancer = NULL; p->widescreenLineEnhancerContext = NULL;
+   memset(p->overlayRenderBuffer, 0, sizeof(p->overlayRenderBuffer));
+   ppu_drawCapturedLine(p, 0, false);

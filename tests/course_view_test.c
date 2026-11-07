@@ -56,5 +56,29 @@ int main(void)
         assert(KdcCourseSelectTile(ram, layer, 0, 96) == 0);
     }
     assert(KdcCourseSelectTile(ram, 2, 0, 0) == 0);
+
+    /* HUD spans: BG3 entries that differ from the clean scenery map. */
+    static uint16_t map[0x400];
+    memset(ram, 0, sizeof(ram));
+    for (unsigned i = 0; i < 0x400; ++i) {
+        map[i] = (uint16_t)(0x2000 | i);
+        word(0xdadc + 2 * i, map[i]);
+    }
+    int left = -1, right = -1;
+    assert(!KdcHudSpan(map, ram, 176, 0, &left, &right));
+    /* Row 22 (v 176..183): changed tiles at columns 2 and 9 with an unchanged
+     * interior. The span covers both ends, pixel exact. */
+    map[22 * 32 + 2] = 0x0001;
+    map[22 * 32 + 9] = 0x0002;
+    assert(KdcHudSpan(map, ram, 179, 0, &left, &right));
+    assert(left == 16 && right == 79);
+    assert(!KdcHudSpan(map, ram, 175, 0, &left, &right));
+    /* Fine horizontal scroll shifts the span; it wraps at 256 pixels. */
+    assert(KdcHudSpan(map, ram, 179, 3, &left, &right));
+    assert(left == 13 && right == 76);
+    assert(KdcHudSpan(map, ram, 179, 40, &left, &right));
+    assert(left == 32 && right == 239); /* column 2 wrapped to x 232..239 */
+    assert(KdcHudSpan(map, ram, 179, 248, &left, &right));
+    assert(left == 24 && right == 87);
     return 0;
 }

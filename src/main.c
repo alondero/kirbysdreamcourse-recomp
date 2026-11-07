@@ -33,6 +33,7 @@
 #include "course_orbit.h"
 #include "host_clock.h"
 #include "host_api.h"
+#include "hd_textures.h"
 #include <stdlib.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
@@ -127,6 +128,7 @@ static const SnesDesktopHostGame kGameHost = {
     .presentation_hz     = PresentationHz,
     .on_reset            = KdcOrbitReset,
     .draw_frame          = KdcOrbitDraw,
+    .hd_scale            = KdcHdScale,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
     .default_config_ini =

@@ -365,23 +365,16 @@ static void RestoreHud(Render *render, const uint8_t *field)
                            field + ((size_t)y * render->width + x) * 4, 4);
         return;
     }
-    /* The game composites its HUD into BG3 over the clean scenery map.
-     * Preserve the complete occupied horizontal span on each HUD row,
+    /* Preserve the complete occupied horizontal span on each HUD row,
      * including transparent interiors that use the native PPU's color
-     * math and object portraits. No fixed screen rectangle is assumed. */
+     * math and object portraits. */
     const uint16_t *vram = PpuRenderVram(render->ppu);
     int extra = (render->width - 256) / 2;
     for (int y = 0; y < render->height; ++y) {
         unsigned v = (y + render->ppu->vScroll[2] + 1) & 255;
-        int left = 256, right = -1;
-        for (int x = 0; x < 256; ++x) {
-            unsigned u = (x + render->ppu->hScroll[2]) & 255;
-            unsigned index = (v / 8) * 32 + u / 8;
-            if (vram[0x3c00 + index] == KdcReadWord(g_ram, 0xdadc + 2 * index)) continue;
-            if (x < left) left = x;
-            right = x;
-        }
-        if (left > right) continue;
+        int left, right;
+        if (!KdcHudSpan(vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2],
+                        &left, &right)) continue;
         left += extra; right += extra;
         if (left < 0) left = 0;
         if (right >= render->width) right = render->width - 1;

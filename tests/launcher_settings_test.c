@@ -18,6 +18,7 @@ int main(int argc, char **argv)
         CHECK(KdcWidescreenAspect() == 2);
         CHECK(KdcHudEdges());
         CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
+        CHECK(!KdcHdTexturesEnabled());
         return 0;
     }
     RecompLauncherCGameInfo info = {.has_run_ahead = 1, .has_renderer = 1};
@@ -56,7 +57,7 @@ int main(int argc, char **argv)
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "unknown"));
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "edges"));
     CHECK(!KdcHudEdges());
-    CHECK(provider->feature_count(provider->ctx) == 3);
+    CHECK(provider->feature_count(provider->ctx) == 4);
     CHECK(!KdcHighRefreshEnabled());
     CHECK(provider->feature_get(provider->ctx, 2, &feature));
     CHECK(!feature.enabled && !strcmp(feature.id, "high-refresh") && feature.option_count == 1);
@@ -84,7 +85,14 @@ int main(int argc, char **argv)
     CHECK(KdcOrbitEnabled());
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(KdcOrbitEnabled()); /* staged, not applied */
-    CHECK(!provider->feature_get(provider->ctx, 3, &feature));
+    CHECK(provider->feature_get(provider->ctx, 3, &feature));
+    CHECK(!strcmp(feature.id, "hd_textures") && !feature.enabled && !feature.option_count);
+    CHECK(!strcmp(feature.package_id, package.id));
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(!KdcHdTexturesEnabled()); /* off by default */
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
+    CHECK(!KdcHdTexturesEnabled()); /* staged, not applied */
+    CHECK(!provider->feature_get(provider->ctx, 4, &feature));
     CHECK(!provider->feature_get(provider->ctx, 0, NULL));
     CHECK(!provider->feature_enable(provider->ctx, "foreign", "widescreen", 1));
     CHECK(!provider->feature_enable(provider->ctx, NULL, NULL, 1));
@@ -97,6 +105,8 @@ int main(int argc, char **argv)
     provider = KdcLauncherSettings(&widescreen, hash);
     CHECK(provider->feature_get(provider->ctx, 1, &feature));
     CHECK(feature.enabled); /* dismiss discarded the camera change */
+    CHECK(provider->feature_get(provider->ctx, 3, &feature));
+    CHECK(!feature.enabled); /* ... and the HD textures change */
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
     CHECK(!feature.enabled);
     CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
@@ -109,7 +119,9 @@ int main(int argc, char **argv)
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 1));
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
     CHECK(!provider->commit(provider->ctx, "missing.sfc"));
+    CHECK(!KdcHdTexturesEnabled());
     CHECK(provider->last_error(provider->ctx));
     CHECK(!widescreen);
     CHECK(!provider->commit(provider->ctx, argv[3])); /* copier header */
@@ -119,6 +131,7 @@ int main(int argc, char **argv)
     CHECK(widescreen);
     CHECK(KdcHudEdges());
     CHECK(!KdcOrbitEnabled());
+    CHECK(KdcHdTexturesEnabled());
     CHECK(KdcWidescreenAspect() == 2);
     CHECK(!provider->last_error(provider->ctx));
     provider = KdcLauncherSettings(&widescreen, hash);
@@ -134,5 +147,10 @@ int main(int argc, char **argv)
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "high-refresh", "fps", "144"));
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
+    CHECK(provider->feature_get(provider->ctx, 3, &feature));
+    CHECK(feature.enabled);
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 0));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(!KdcHdTexturesEnabled());
     return 0;
 }

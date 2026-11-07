@@ -28,6 +28,39 @@ and [Creative Commons legal code](https://creativecommons.org/licenses/by-sa/4.0
 Upstream component details and exact project pins are in
 [the menu research](docs/menu-research.md).
 
+## Hyllian xBR-lv2-noblend scaler
+
+`src/hd_scaler.c` ports Hyllian's xBR-lv2-noblend shader to palette-indexed
+images for the optional HD textures mode, and is compiled into the game
+executable. Source:
+[libretro/glsl-shaders `xbr/shaders/xbr-lv2-noblend.glsl`](https://github.com/libretro/glsl-shaders/blob/master/xbr/shaders/xbr-lv2-noblend.glsl),
+fetched from `master` on 2026-11-07 (file SHA-256
+`ee799699fa96cf8e517cf563be58ef726f805095c3d5460d59b3f696a8dc09a9`). The
+shader notes that it incorporates ideas from the SABR shader by Joshua
+Street. The notice is also retained in the source file.
+
+```
+Copyright (C) 2011-2016 Hyllian - sergiogdb@gmail.com
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 snesrecomp incorporates the following third-party software.
 
 SNESRecomp's original code is licensed under the PolyForm Noncommercial
