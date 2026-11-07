@@ -29,6 +29,7 @@ class OrbitRendererTest(unittest.TestCase):
                                      str(root / 'src/course_hud.c'),
                                      str(root / 'src/course_camera.c'),
                                      str(root / 'src/course_geometry.c'),
+                                     str(root / 'src/course_checker.c'),
                                      '-lm', '-o', str(executable)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
             result = subprocess.run([str(executable)], capture_output=True)

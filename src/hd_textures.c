@@ -1,5 +1,6 @@
 #include "hd_textures.h"
 #include "hd_scaler.h"
+#include "course_checker.h"
 #include "course_sprites.h"
 #include "course_view.h"
 #include "launcher_settings.h"
@@ -47,6 +48,34 @@ bool KdcHdNearestTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
     return true;
 }
 
+/* Most background spans are empty or uniform. Do not fetch neighbours for
+ * them, or for artwork that cannot qualify for checker reconstruction. */
+static bool NeedsCheckerContext(const PpuHdTileQuery *q, void *context)
+{
+    (void)context;
+    if (q->layer > 1 || q->bpp != 4) return false;
+    /* Eligibility depends on words alone, not palette or position. Repeated
+     * scanlines should not decode the same character 64 times per span. */
+    static struct {
+        uint16_t words[16];
+        bool valid, eligible;
+    } cache[256];
+    uint64_t hash = 0;
+    for (unsigned i = 0; i < sizeof(q->words); i += 8) {
+        uint64_t word;
+        memcpy(&word, (const uint8_t *)q->words + i, sizeof(word));
+        hash = (hash ^ word) * UINT64_C(0xff51afd7ed558ccd);
+        hash ^= hash >> 32;
+    }
+    unsigned slot = (unsigned)hash & 255;
+    if (!cache[slot].valid || memcmp(cache[slot].words, q->words, sizeof(q->words))) {
+        memcpy(cache[slot].words, q->words, sizeof(q->words));
+        cache[slot].eligible = KdcCheckerNeedsContext(q->words);
+        cache[slot].valid = true;
+    }
+    return cache[slot].eligible;
+}
+
 bool KdcHdSmoothTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 {
     (void)context;
@@ -56,6 +85,15 @@ bool KdcHdSmoothTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
     bool uniform = true;
     for (unsigned i = 1; i < 64 && uniform; ++i) uniform = pixels[i] == pixels[0];
     if (uniform) return false;
+    KdcChecker checker;
+    if (q->layer < 2 && q->bpp == 4 && KdcCheckerFit(q->words, q->border, &checker)) {
+        const unsigned side = 8 * q->scale;
+        for (unsigned y = 0; y < side; ++y)
+            for (unsigned x = 0; x < side; ++x)
+                indices[y * side + x] = KdcCheckerSample(&checker,
+                    (x + 0.5) / q->scale, (y + 0.5) / q->scale);
+        return true;
+    }
     float luma[256] = {0};
     luma[0] = -1.0f;
     for (unsigned i = 1; i < (1u << q->bpp); ++i) luma[i] = KdcXbrLuma555(q->colors[i]);
@@ -133,6 +171,8 @@ unsigned KdcHdScale(void)
     /* The PPU lives for the whole process; rebinding only follows the setting. */
     if (ppu != bound || fill != bound_fill) {
         if (ppu && (!PpuSetHdTiles(ppu, fill, NULL) ||
+                    (fill && !PpuSetHdTileContextPolicy(ppu,
+                        fill == KdcHdSmoothTile ? NeedsCheckerContext : NULL)) ||
                     !PpuSetHdTilePolicy(ppu, fill ? HdLinePolicy : NULL, NULL)))
             fill = NULL;
         bound = ppu;

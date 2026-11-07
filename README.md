@@ -102,9 +102,10 @@ and palette. See [camera implementation, tests and limits](docs/orbit-camera.md)
 ## HD textures
 
 Enable **HD textures** on the launcher's **Mods** page to redraw course
-terrain, scenery and sprites at 4x with smoothed edges. Every HD pixel keeps
+terrain, scenery and sprites at 4x. Supported checkerboard edges are drawn
+geometrically, including under orbit zoom; other art uses smoothed edges. Every HD pixel keeps
 one of the original character's palette colours, so palette effects still
-work. Menus, the HUD and the orbit camera's rotated view stay pixel sharp.
+work. Menus and the HUD keep their original pixels.
 HD textures are off by default. See [HD textures](docs/hd-textures.md) for
 how it works, validation and limits.
 

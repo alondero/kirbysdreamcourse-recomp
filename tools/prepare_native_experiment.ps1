@@ -147,6 +147,7 @@ if ($SpcD4Phase) { $patches += 'snesrecomp-spc-indexed-write-state-experiment.pa
 if ($ApuBoundarySync) { $patches += 'snesrecomp-apu-boundary-sync.patch' }
 # Presentation-only HD tiles and surface; inert until the game enables them.
 $patches += 'snesrecomp-hd-tiles.patch'
+$patches += 'snesrecomp-hd-tile-context.patch'
 $patches += 'snesrecomp-hd-present.patch'
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
