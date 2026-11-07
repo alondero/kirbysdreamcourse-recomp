@@ -27,6 +27,7 @@ typedef struct Piece {
     OrbitAnchor anchor;
     uint32_t piece_id;
     int16_t motion_x, motion_y;
+    KdcSpriteView view;
 } Piece;
 typedef struct DrawList {
     Piece pieces[kMaxPieces];
@@ -42,6 +43,7 @@ typedef struct Request {
     uint8_t bank, bucket;
     bool direct, recovered;
     OrbitAnchor anchor;
+    KdcSpriteView view;
 } Request;
 static Request requests[kMaxRequests];
 static unsigned request_count;
@@ -371,6 +373,48 @@ static bool ScorecardTask(const CpuState *cpu, unsigned task)
            (type == 0x8d && callback == 0xd296);
 }
 
+static KdcSpriteView PlayerView(const CpuState *cpu, unsigned player, bool attachment)
+{
+    if (player > 2 || (player & 1)) return (KdcSpriteView){0};
+    unsigned direction = AbsoluteWord(cpu, 0xd75e + player);
+    unsigned facing = AbsoluteWord(cpu, 0xd75a + player);
+    if (direction >= 16 || facing >= 16) return (KdcSpriteView){0};
+    KdcSpriteView view = {KDC_SPRITE_VIEW_BALL, direction, facing, player, attachment};
+    /* The active parasol task uses the active player, unlike the detached
+     * closing effect. Validate both callback and bank before selecting its
+     * graphics family; the renderer additionally verifies the DMA source. */
+    if (player == AbsoluteWord(cpu, 0x1803) && AbsoluteWord(cpu, 0xd85a + player) == 2) {
+        for (unsigned slot = 0; slot < 128; slot += 2) {
+            if ((int16_t)AbsoluteWord(cpu, 0x4e1c + slot) < 0) continue;
+            unsigned update = AbsoluteWord(cpu, 0x509c + slot);
+            unsigned draw = AbsoluteWord(cpu, 0x519c + slot);
+            if ((AbsoluteWord(cpu, 0x521c + slot) & 0x7f) == 5 && draw == 0xb6fc) {
+                /* This stage freezes its displacement at entry. Recover
+                 * that facing from the saved pair, not today's direction. */
+                unsigned matches = 0;
+                for (unsigned i = 0; i < 8; ++i) {
+                    uint16_t x, y;
+                    if (!ReadWord(cpu, 0x85, 0xb6dc + 4 * i, &x) ||
+                        !ReadWord(cpu, 0x85, 0xb6de + 4 * i, &y)) return (KdcSpriteView){0};
+                    if (x == AbsoluteWord(cpu, 0x561c + slot) &&
+                        y == AbsoluteWord(cpu, 0x569c + slot)) {
+                        view.facing = 2 * i;
+                        ++matches;
+                    }
+                }
+                if (matches != 1) return (KdcSpriteView){0};
+                view.family = KDC_SPRITE_VIEW_PARASOL_SIDE;
+            } else if ((AbsoluteWord(cpu, 0x511c + slot) & 0x7f) == 5 && update == 0xb381)
+                view.family = KDC_SPRITE_VIEW_PARASOL_UP;
+            else if ((AbsoluteWord(cpu, 0x511c + slot) & 0x7f) == 5 && update == 0xb503)
+                view.family = KDC_SPRITE_VIEW_PARASOL_TILT;
+            else continue;
+            return view;
+        }
+    }
+    return attachment ? (KdcSpriteView){0} : view;
+}
+
 static void Expand(const CpuState *cpu, const Request *request)
 {
     if (building.invalid) return;
@@ -407,7 +451,7 @@ static void Expand(const CpuState *cpu, const Request *request)
             flags & 1, request->bucket, request->recovered, request->anchor,
             (bank << 16) | layout,
             (int16_t)(request->world_x - request->anchor.origin_x),
-            (int16_t)(request->world_y - request->anchor.origin_y)
+            (int16_t)(request->world_y - request->anchor.origin_y), request->view
         };
         if (flags & 0x80) return;
         layout = (uint16_t)(layout + 5);
@@ -461,6 +505,27 @@ static void Capture(const CpuState *cpu, unsigned bank, uint16_t layout,
                (task < 128 && !(task & 1) && AbsoluteWord(cpu, 0x519c + task) == 0x99fa &&
                 (AbsoluteWord(cpu, 0x521c + task) & 0x7f) == 4)) {
         request->anchor.world = request->anchor.unresolved = false;
+    }
+    /* $81:A0B6 queues the held object from the player's screen-space
+     * attachment registers. Its displaced origin is not a projection-cache
+     * key. Keep the ball anchor and retain the displacement as motion. */
+    unsigned player = cpu->X;
+    if (!direct && (source_pc & 0x7fffff) == 0x01a0b6 && player <= 2 && !(player & 1) &&
+        bank == 0x89 && layout == AbsoluteWord(cpu, 0x6aa4 + player) &&
+        (int16_t)x == (int16_t)AbsoluteWord(cpu, 0x6a9c + player) &&
+        (int16_t)y == (int16_t)AbsoluteWord(cpu, 0x6aa0 + player)) {
+        KdcSpriteView view = PlayerView(cpu, player, true);
+        if (view.family) {
+            request->anchor = BallAnchor(cpu, player);
+            request->anchor.source_pc = source_pc;
+            request->anchor.motion_id = 0x300u + player;
+            request->view = view;
+        }
+    } else if (request->anchor.world && !request->anchor.ground &&
+               (request->anchor.motion_id == 0x100 || request->anchor.motion_id == 0x102) &&
+               ((request->anchor.source_pc & 0x7fffff) == 0x009eec ||
+                (request->anchor.source_pc & 0x7fffff) == 0x009e9e)) {
+        request->view = PlayerView(cpu, (unsigned)(request->anchor.motion_id - 0x100), false);
     }
     /* Resolve queued layouts at $8C12, after the dynamic-layout updater.
      * A direct expander invoked later observes its memory at that call. */
@@ -576,6 +641,19 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
                     true, false, true, 0
                 };
             }
+            /* $85:91F3 turns the last enemy into the cup interior (frame
+             * zero); $84:D2F6 sets its separate type-4A rim to frame one.
+             * The tables at $85:9268/$84:D38D select these three variants.
+             * Both lie on the terrain: billboard depth would raise the
+             * back rim above a ball that merely touches it. Other actors
+             * and animation frames retain their original classification. */
+            unsigned cup_table = AbsoluteWord(cpu, 0x5e1c + slot);
+            unsigned cup_type = AbsoluteWord(cpu, 0x4e1c + slot);
+            if (anchor.world && bank == 0x89 &&
+                (cup_table == 0xcbcb || cup_table == 0xcbd5 || cup_table == 0xcbdf) &&
+                ((cup_type == 0x49 && animation == 0) ||
+                 (cup_type == 0x4a && animation == 1)))
+                anchor.ground = true;
             if (anchor.world) task_anchors[slot / 2] = anchor;
             else if (task_anchors[slot / 2].world) anchor = task_anchors[slot / 2];
             if (anchor.world) anchor.motion_id = TaskMotion(slot);
@@ -823,7 +901,8 @@ void KdcVisitOrbitSprites(const Ppu *ppu, const uint8_t *ram,
                 (int16_t)(piece->world_y - (anchor->world ? anchor->origin_y : camera_y)),
                 piece->attributes, piece->large, piece->bucket,
                 anchor->world, anchor->unresolved, anchor->ground, anchor->source_pc,
-                anchor->motion_id, piece->piece_id, piece->motion_x, piece->motion_y
+                anchor->motion_id, piece->piece_id, piece->motion_x, piece->motion_y,
+                piece->view, {0}, 0
             };
             visitor(&sprite, context);
         }

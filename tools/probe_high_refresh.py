@@ -24,6 +24,7 @@ def main():
                         '-I', str(root / 'src'), '-I', str(source),
                         str(root / 'tools/high_refresh_probe.c'),
                         str(root / 'src/course_orbit.c'),
+                        str(root / 'src/course_sprite_view.c'),
                         str(root / 'src/course_camera.c'),
                         str(root / 'src/course_geometry.c'),
                         str(root / 'src/course_checker.c'),

@@ -298,6 +298,30 @@ static int Scenarios(void)
     Draw();
     EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
 
+    /* A cup rim is a ground surface, including its back half. A ball
+     * contacting that half remains above it at every quarter turn. The
+     * same image drawn as a body incorrectly hides the ball's bottom rows.
+     * Compare against the ball alone so raster coverage is immaterial. */
+    static const double approach[4][2] = {
+        {-0.0625, 0.0625}, {-0.0625, -0.0625},
+        {0.0625, -0.0625}, {0.0625, 0.0625}
+    };
+    for (unsigned angle = 0; angle < 4; ++angle) {
+        custom[0] = Body(2 + approach[angle][0], 2 + approach[angle][1], 1, -8);
+        custom[1] = (KdcOrbitSprite){.x = 2, .y = 2, .z = 1,
+            .offset_x = -4, .offset_y = -4, .attributes = 0x3403,
+            .world = true, .ground = true};
+        NativeAngle();
+        for (unsigned turn = 0; turn < angle; ++turn) QuarterTurn();
+        custom_count = 1;
+        Draw();
+        unsigned body_pixels = CountColor(pixels, red, &cx, &cy);
+        custom_count = 2;
+        Draw();
+        EXPECT(body_pixels > 0 && CountColor(pixels, red, &cx, &cy) == body_pixels);
+    }
+    custom_count = 1;
+
     /* Ground decals keep the original image at the native angle, then turn
      * with the course: a quarter turn exchanges its screen-space width and
      * height relationship, as for the terrain artwork beneath it. */
@@ -432,6 +456,8 @@ static int Scenarios(void)
     Snapshot();
     Draw();
     EXPECT(memcmp(first, pixels, sizeof(first)) != 0);
+    uint16_t checker_words[16 * 16];
+    memcpy(checker_words, ppu.vram + 16, sizeof(checker_words));
     for (unsigned tile = 1; tile <= 16; ++tile)
         for (unsigned y = 0; y < 8; ++y) ppu.vram[tile * 16 + y] = 0x00ff;
     Snapshot();
@@ -441,6 +467,79 @@ static int Scenarios(void)
     Draw();
     EXPECT(memcmp(first, pixels, sizeof(first)) == 0);
     ppu.cgram[3] = 0;
+    /* Camera-relative artwork reaches the real texel sampler. Synthetic
+     * DMA tables select a red native view and white quarter-turn view,
+     * without modifying the emulated VRAM or the original sprite list. */
+    const uint8_t transfer[] = {0, 32, 0, 0, 0x80, 0x8d, 0, 0x7c, 0xff};
+    memcpy(rom + 0x38000, transfer, sizeof(transfer));
+    memcpy(rom + 0x38009, transfer, sizeof(transfer));
+    rom[0x38009 + 3] = 32;
+    rom[0x3ab5e] = 0; rom[0x3ab5f] = 0x80;
+    rom[0x3ab5e + 24] = 9; rom[0x3ab5f + 24] = 0x80;
+    for (unsigned y = 0; y < 8; ++y) {
+        rom[0x68000 + 2 * y] = 255;
+        rom[0x68020 + 2 * y + 1] = 255;
+        ppu.vram[0x7c00 + y] = 255;
+    }
+    ppu.cgram[130] = 0x7fff;
+    custom_count = 1;
+    custom[0] = Body(2, 2, 3, -8);
+    custom[0].attributes = 0x31c0;
+    custom[0].view = (KdcSpriteView){.family = KDC_SPRITE_VIEW_BALL};
+    Ball(2, 2, 0);
+    Snapshot();
+    NativeAngle();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    QuarterTurn();
+    Draw();
+    EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
+    EXPECT(custom[0].view_tiles[0] == 0);
+    /* Checker reconstruction and directional artwork coexist in one draw,
+     * including reuse of unchanged checker entries on the next draw. */
+    memcpy(ppu.vram + 16, checker_words, sizeof(checker_words));
+    hd_enabled = true;
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
+    memcpy(first, pixels, sizeof(first));
+    Draw();
+    EXPECT(memcmp(first, pixels, sizeof(first)) == 0);
+    hd_enabled = false;
+    Snapshot();
+    /* Stale matching tiles in an inactive OBJ page are not evidence. */
+    ppu.obsel = 0;
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[0x1c00 + y] = 255;
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    ppu.obsel = 3;
+    Snapshot();
+    NativeAngle();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    /* An attachment changes front/back order relative to its own body,
+     * without relying on a depth bias or the original queue order. */
+    custom[0].view.family = KDC_SPRITE_VIEW_NONE;
+    custom[0].view_tiles[0] = 0x68000;
+    custom[0].motion_id = 0x100;
+    custom[1] = custom[0];
+    custom[1].motion_id = 0x300;
+    custom[1].view.attachment = true;
+    custom[1].view_tiles[0] = 0x68020;
+    custom[1].view_order = 1;
+    custom_count = 2;
+    Draw();
+    EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
+    custom[1].view_tiles[0] = 0; /* UP/SIDE canopy stays in resident VRAM. */
+    custom[1].attributes = 0x31c1;
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[0x7c10 + y] = 0xff00;
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
+    custom[1].view_order = -1;
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
     Snapshot();
     use_custom = false;
     return failures != 0;

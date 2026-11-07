@@ -116,6 +116,34 @@ int main(void)
     assert(request_count == 2 && requests[1].anchor.world && requests[1].anchor.ground);
     assert(requests[1].anchor.z == 1 && requests[1].anchor.origin_y == 296);
 
+    /* The converted enemy's cup interior and its separate rim task are
+     * horizontal surfaces. Treating either as an upright body lets it
+     * cover a ball touching the far edge of the cup. All three cup
+     * variants use the same producer contract. */
+    static const uint16_t cup_tables[] = {0xcbcb, 0xcbd5, 0xcbdf};
+    for (unsigned table = 0; table < 3; ++table) {
+        for (unsigned rim = 0; rim < 2; ++rim) {
+            KdcResetSprites(ppu);
+            Word(0x4e1c, rim ? 0x4a : 0x49);
+            Word(0x5f9c, 296); Word(0x5d9c, rim);
+            Word(0x5e1c, cup_tables[table]); Word(0x5e9c, rim ? 7 : 9);
+            unsigned pointer = 0x48000 + cup_tables[table] - 0x8000 + rim * 2;
+            rom[pointer] = 0; rom[pointer + 1] = 0x10;
+            KdcObserveSprites(&cpu, 0x80e55e);
+            assert(request_count == 1 && requests[0].anchor.world);
+            assert(requests[0].anchor.ground);
+            assert(requests[0].anchor.x == 8.5 && requests[0].anchor.z == 1);
+        }
+    }
+    KdcResetSprites(ppu);
+    Word(0x4e1c, 0x49); Word(0x5d9c, 1);
+    KdcObserveSprites(&cpu, 0x80e55e);
+    assert(request_count == 1 && !requests[0].anchor.ground);
+    KdcResetSprites(ppu);
+    Word(0x4e1c, 0x4a); Word(0x5d9c, 0);
+    KdcObserveSprites(&cpu, 0x80e55e);
+    assert(request_count == 1 && !requests[0].anchor.ground);
+
     /* The tee stays at the original start after the ball has moved. */
     KdcResetSprites(ppu);
     Word(0x4e1c, 0x6c); Word(0x6924, 320); Word(0x6926, 263);
@@ -233,6 +261,45 @@ int main(void)
     KdcObserveSprites(&cpu, 0x80e776);
     OrbitAnchor clone = RecoverEffectAnchor(&cpu, 8);
     assert(clone.world && clone.x == restored.x && clone.motion_id != restored.motion_id);
+    /* The parasol is queued at a displaced screen origin by $81:A0B6.
+     * It must retain the ball anchor and the draw-time view, even after
+     * the next simulation changes the player's direction. */
+    KdcResetSprites(ppu);
+    memset(ram, 0, sizeof(ram));
+    cpu = (CpuState){.ram = ram, .DB = 0x7e};
+    Word(0x91e, 80); Word(0x93e, 100);
+    Word(0xd8ae, 1); Word(0xd8b6, 2); Word(0xd8ba, 23170);
+    Word(0xd75a, 3); Word(0xd75e, 4); Word(0xd85a, 2);
+    Word(0x4e1c, 0x1a); Word(0x509c, 0xb503); Word(0x511c, 0x85);
+    Word(0x6a9c, 84); Word(0x6aa0, 96); Word(0x6aa4, 0x1000);
+    ram[0x1000] = (uint8_t)-8; Word(0x1001, 0x31c9);
+    ram[0x1003] = (uint8_t)-4; ram[0x1004] = 0x80;
+    source_pc = 0x81a0b6;
+    Capture(&cpu, 0x89, 0x1000, 84, 96, 0, false, false);
+    KdcObserveSprites(&cpu, 0x808c12);
+    KdcObserveSprites(&cpu, 0x8082ca);
+    Word(0xd75a, 9); Word(0xd75e, 10);
+    visits = 0;
+    KdcVisitOrbitSprites(ppu, ram, Visit, NULL);
+    assert(visits == 1 && visited.world && !visited.unresolved);
+    assert(visited.x == 1 && visited.y == 2 && visited.z == 1);
+    assert(visited.motion_x == 4 && visited.motion_y == -4);
+    assert(visited.view.family == KDC_SPRITE_VIEW_PARASOL_TILT && visited.view.attachment);
+    assert(visited.view.direction == 4 && visited.view.facing == 3);
+    /* The in-viewport ball reaches the queue after the actor hook. Its
+     * producer identity, not the queue helper's PC, selects the view. */
+    KdcResetSprites(ppu);
+    Word(0xd85a, 0); Word(0x9e, 0x89); Word(0x8de, 80);
+    Word(0xc0, 0x1000); Word(0xc2, 80);
+    cpu.X = 0; cpu.Y = 100; cpu.A = 0;
+    KdcObserveSprites(&cpu, 0x809eec);
+    KdcObserveSprites(&cpu, 0x808b09);
+    KdcObserveSprites(&cpu, 0x808c12);
+    KdcObserveSprites(&cpu, 0x8082ca);
+    visits = 0;
+    KdcVisitOrbitSprites(ppu, ram, Visit, NULL);
+    assert(visits == 1 && visited.view.family == KDC_SPRITE_VIEW_BALL);
+    assert(visited.view.direction == 10 && !visited.view.attachment);
     ppu_free(ppu);
     return 0;
 }

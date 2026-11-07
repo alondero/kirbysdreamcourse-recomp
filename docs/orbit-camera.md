@@ -96,9 +96,9 @@ sprite shimmer when zoomed out.
 
 Sprite anchors use observed projector output at `$81:A5CC`, verified entity
 registry/task identity and dedicated producer hooks. Original OBJ graphics,
-animation, palettes and piece offsets remain intact. Bodies are billboards
+animation and palettes are retained. Bodies are billboards
 standing on their anchors; rows the original image draws below the anchor
-(the cup ring, shadow pieces drawn with an enemy body, feet) lie on a flat
+(shadow pieces drawn with an enemy body, feet) lie on a flat
 plane at the anchor's height in front of it instead of being buried in the
 terrain; terrain rising towards the camera can still cover them. Anchors within a quarter step below the mesh
 rest on it, absorbing fixed-point height quantization. Ground sprites (the
@@ -107,6 +107,34 @@ each pixel is unprojected to the course and mapped back through the native
 projection, so it turns with the course and follows slopes. Inherently 2D
 particles retain their original motion relative to the spawning actor's
 world anchor.
+
+Kirby's normal ball and the three active parasol stages select camera-relative
+directional artwork from the supplied ROM. `course_sprite_view.c` reads the
+bounded raw DMA records queued by `$80:8696`, verifies their source bytes
+against latched VRAM, and selects the corresponding direction while preserving
+the normal ball's animation phase. It supplies immutable ROM tile offsets to
+the renderer; it never uploads replacement graphics into guest VRAM. The
+normal tables are `$87:AB5E/$C9CB`; parasol tables are
+`$85:B3BC/$B3CC`, `$B54D/$B56D`, and `$B6A1/$B6B1` for the two players.
+Camera yaw is subtracted from the game's 16-direction index. Mirroring and
+the parasol's signed attachment offsets change together with the artwork.
+
+The held-object queue caller at `$81:A0B6` uses `$6A9C/$6AA0/$6AA4` rather
+than the ball's projected origin. Its verified parasol draws now retain the
+ball anchor and their separate local displacement. View metadata is captured
+with the draw request and latched with OAM; selection happens after camera
+interpolation. The final parasol stage freezes its native displacement, so
+that stage recovers its original facing from the saved offset pair and its
+graphics direction from the latched tiles instead of following live direction
+RAM. Unsupported or mismatched graphics retain the original artwork.
+
+The settled cup interior and rim are also ground decals. The converted
+type-49 enemy's animation zero and the separate type-4A task's animation one
+use tables `$89:CBCB/$CBD5/$CBDF`, selected at `$85:91F3` and `$84:D2C3`.
+Their shared registry anchor is the cell center. Projecting the whole cup
+onto the floor keeps its back rim from standing above Kirby when he first
+touches it; the ball still undergoes terrain depth testing as it sinks.
+Other actors and animation frames retain their original classification.
 
 The original game also masks sprites with Mode 1 OBJ priority: priority 0/1
 pieces lie behind every opaque BG1/BG2 pixel, priority 2 behind
@@ -197,6 +225,63 @@ Local Windows validation on 2026-11-05:
   rows below anchors on slopes, decals beside nearer walls at a similar
   height, and HUD rows with panels at both edges.
 
+Cup-contact follow-up on 2026-11-07: a synthetic back-rim overlap regression
+fails with the old billboard classification at all four quarter turns and
+passes with the cup decal classification. Producer fixtures cover the three
+cup tables and reject unrelated animation frames. Hole 1-1 replays at 90 and
+180 degrees each matched all 401 sampled native-view RAM frames (11000-11400);
+first RAM divergence: none. Contact, partial sinking and disappearance into
+the cup were inspected in the captures. Other holes and cup variants have
+fixture coverage only; no new reference-emulator comparison was performed.
+This follow-up used the private recording with SHA-256
+`2417ae3864042c578a03b144373dca4f56cae65691073e016ec0060c5d05c248`.
+
+Directional-artwork follow-up on 2026-11-07: synthetic tests cover animation
+phase preservation, both players, all three parasol stages, frozen final-stage
+facing, attachment anchoring and ordering, and rejection of mismatched graphics
+or an inactive OBJ page. Renderer fixtures exercise the replacement texels and
+resident canopy tiles through the actual compositor. Normal-ball captures at
+0, 90 and 180 degrees preserve sampled RAM exactly; camera-off pixels match
+the original executable, and the turned views select different artwork.
+The 900-frame camera/shot test passes native/interpreter RAM and image parity
+and exact reset-to-native pixels. The 60/120/144/240 Hz synthetic probe reports
+zero guest changes and identical simulation-image hashes at every rate.
+Separate parasol replays cover the upright, tilted and final sideways stages:
+each matches 70 native-view RAM frames (930-999), with no first divergence,
+and all nine post-reset images (991-999) are byte-identical to native output.
+Turned captures show the canopy moving with the selected view, including the
+tilted canopy crossing to the other side of Kirby. These are controlled
+fixtures: possession is granted privately through script `forcepoke` at frame
+600, followed by ordinary shot and activation inputs. The sideways stage then
+occurs naturally; the upright and tilted stages use a one-time stage override
+at frame 965. They do not establish a natural airborne parasol playthrough.
+
+Windows Release builds pass. The full suite ran 66 tests: 57 passed, eight
+optional tests were skipped, and the HD-tile `stats.replaced_pixels == 0`
+assertion failed. The same assertion fails in the unchanged main checkout
+with the same local patched framework; this change does not modify that
+fixture or PPU implementation. The changed renderer fixtures were rerun and
+pass with warnings treated as errors.
+
+Review integration on 2026-11-07 rebased these changes onto `9ddd8ef`
+(native checkerboard rendering). Both source modules are linked in the game,
+renderer fixtures and presentation probe; checker-cache generation advances
+before background rendering while sprite orientation remains after camera
+interpolation. A combined fixture checks directional artwork with checker
+reconstruction enabled and with unchanged checker entries reused on the next
+draw. The bounded attachment scratch buffer remains full-sized to preserve
+within-group OBJ order without imposing a smaller recovered-piece limit.
+
+Validation used an isolated checkout of the same pinned framework with all
+56 patches from the updated `tools/setup.py` profile. Windows Release build
+passed, and the consolidated suite passed all 60 enabled tests (68 total,
+eight optional skips), including the ROM-backed camera replay. First sampled
+RAM divergence: none; reset images match native output. The earlier local
+HD-tile assertion failure is absent with this matching framework profile.
+The strict-warning checker, sprite-view and three orbit-renderer tests pass;
+the 60/120/144/240 Hz probe reports zero guest changes and the same simulation
+image hash at every rate. Runtime/platform coverage limits below still apply.
+
 Recordings, captures, private generated source and ROM-derived images stay in
 ignored `local/`. The hole-completion recording SHA-256 is
 `537d4c7c310d82ca3353d35fe78442698107b56f51d004d94242e962ac6d18fa`;
@@ -210,6 +295,10 @@ terrain artwork; sampling it can duplicate an occluding surface onto another
 surface, and reconstructed cliff backs do not reproduce original textures.
 Characters remain original 2D billboards, not newly modeled characters.
 Unknown sprite producers retain a conservative screen-space fallback.
+Camera-relative artwork currently covers the normal ball and active parasol
+stages. Other powers and detached closing effects retain their original
+artwork. Both players have synthetic coverage; the new runtime view checks
+exercise player one. These changes do not establish all-power compatibility.
 Tall scenery or terrain nearer the camera can hide the player at some angles
 (for example the tree on hole 1-3 at 135 degrees); no see-through silhouette
 is drawn. Ground shadows that the original game draws as background artwork,

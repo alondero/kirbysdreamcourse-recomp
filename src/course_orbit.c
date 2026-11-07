@@ -70,6 +70,42 @@ typedef struct Render {
 static float depth_buffer[kPpuBufWidth * 240];
 static KdcOrbitSprite sprite_buffer[4096];
 static unsigned sprite_count;
+static KdcOrbitSprite ordered_sprites[4096];
+
+static bool PlayerPiece(const KdcOrbitSprite *sprite, unsigned player, unsigned bucket)
+{
+    return sprite->world && !sprite->ground && sprite->bucket == bucket &&
+        sprite->view.player == player && (sprite->view_tiles[0] || sprite->view_order) &&
+        (sprite->motion_id == 0x100u + player || sprite->motion_id == 0x300u + player);
+}
+
+static void OrderAttachments(void)
+{
+    /* Lower OBJ order wins a depth tie. Reorder only the verified player's
+     * pieces within their existing slots and bucket; unrelated sprites keep
+     * their positions and the depth test still handles nearer objects. */
+    for (unsigned player = 0; player <= 2; player += 2) {
+        for (unsigned bucket = 0; bucket < 10; ++bucket) {
+            int order = 0;
+            for (unsigned i = 0; i < sprite_count; ++i)
+                if (PlayerPiece(&sprite_buffer[i], player, bucket) && sprite_buffer[i].view_order)
+                    order = sprite_buffer[i].view_order;
+            if (!order) continue;
+            unsigned count = 0;
+            for (unsigned pass = 0; pass < 2; ++pass) {
+                bool attachment = (pass == 0) == (order > 0);
+                for (unsigned i = 0; i < sprite_count; ++i)
+                    if (PlayerPiece(&sprite_buffer[i], player, bucket) &&
+                        sprite_buffer[i].view.attachment == attachment)
+                        ordered_sprites[count++] = sprite_buffer[i];
+            }
+            unsigned next = 0;
+            for (unsigned i = 0; i < sprite_count; ++i)
+                if (PlayerPiece(&sprite_buffer[i], player, bucket))
+                    sprite_buffer[i] = ordered_sprites[next++];
+        }
+    }
+}
 
 /* Bounded associative lookup. Entries used in this draw cannot be evicted:
  * collisions must never turn raster samples into repeated model fitting.
@@ -508,7 +544,16 @@ static uint32_t SpriteColor(const Render *render, const KdcOrbitSprite *sprite,
     unsigned base = attr & 0x100 ? PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
     unsigned tile = ((((attr & 255) >> 4) + (sy >> 3)) << 4) |
                     (((attr & 15) + (sx >> 3)) & 15);
-    unsigned pixel = TilePixel(PpuRenderVram(render->ppu), tile, base, sx & 7, sy & 7, 4);
+    unsigned pixel;
+    unsigned view_tile = size <= 16 ? sprite->view_tiles[(sy >> 3) * (size / 8) + (sx >> 3)] : 0;
+    if (view_tile && view_tile + 32 <= g_snes->cart->romImageSize) {
+        const uint8_t *data = g_snes->cart->rom + view_tile + (sy & 7) * 2;
+        unsigned shift = 7 - (sx & 7);
+        pixel = ((data[0] >> shift) & 1) | (((data[1] >> shift) & 1) << 1) |
+                (((data[16] >> shift) & 1) << 2) | (((data[17] >> shift) & 1) << 3);
+    } else {
+        pixel = TilePixel(PpuRenderVram(render->ppu), tile, base, sx & 7, sy & 7, 4);
+    }
     return pixel ? Color(render->ppu->cgram[0x80 + 16 * ((attr >> 9) & 7) + pixel]) : 0;
 }
 
@@ -913,6 +958,21 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
         sprite_count = 0;
         KdcVisitOrbitSprites(render.ppu, g_ram, CollectSprite, NULL);
     }
+    /* Select artwork after interpolation, so the view uses the camera of
+     * this presentation while the animation metadata remains frame-latched. */
+    for (unsigned i = 0; i < sprite_count; ++i) {
+        KdcOrbitSprite *sprite = &sprite_buffer[i];
+        if (sprite->world && !sprite->ground && sprite->view.family) {
+            unsigned base = sprite->attributes & 0x100 ?
+                PPU_objTileAdr2(render.ppu) : PPU_objTileAdr1(render.ppu);
+            if (base + (sprite->attributes & 255) * 16 !=
+                0x6000u + (sprite->attributes & 0x1ffu) * 16) continue;
+            KdcApplySpriteView(g_snes->cart->rom, g_snes->cart->romImageSize,
+                PpuRenderVram(render.ppu), sprite->view, render.camera.yaw,
+                SpriteSize(&render, sprite), sprite);
+        }
+    }
+    OrderAttachments();
     if (++checker_generation == 0) memset(checker_cache, 0, sizeof(checker_cache));
     Background(&render);
     Sprites(&render, true, true);
