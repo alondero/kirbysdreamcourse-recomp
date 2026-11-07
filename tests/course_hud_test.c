@@ -85,6 +85,19 @@ int main(void)
             assert(p->presentationObjShift[0] == left - (multi ? 16 : 20));
             assert(!p->presentationObjShift[12]); /* Unrelated/shot OAM. */
             int expanded_shift = p->presentationObjShift[0];
+            /* Normal menu-to-course entry leaves window 2 at 255..0;
+             * developer starts leave 0..0. The qualified selector never
+             * enables window 2, so neither range may disable edge HUD. */
+            p->window2left = 255;
+            p->presentationPrepare(p, 185, NULL);
+            assert(KdcHudActive(p));
+            assert(p->presentationObjShift[0] == expanded_shift);
+            p->windowsel |= 8; /* An enabled window 2 is still unsupported. */
+            p->presentationPrepare(p, 185, NULL);
+            assert(!KdcHudActive(p));
+            p->windowsel &= ~8;
+            p->window2left = 0;
+            p->presentationPrepare(p, 185, NULL);
             uint16_t sampled = 0; int tx = 0, ty = 0;
             KdcHudSample(p, 2, left + (multi ? 32 : 36), 184, &sampled, &tx, &ty, NULL);
             assert(sampled == (multi ? 0x3d40 : 0x3520) && tx == 0 && ty == 0);
