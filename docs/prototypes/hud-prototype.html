@@ -1,0 +1,143 @@
+<!doctype html>
+<!-- Throwaway: five HUD placement concepts, selected by ?variant=A..E.
+     Original schematic art and sample values only. Not linked into the game. -->
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dream Course · HUD studies</title>
+<link rel="icon" href="data:,">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#11141e;color:#f2f0f7;font:15px/1.5 system-ui,sans-serif}button,select,input{font:inherit}button,select{color:inherit;background:#252a3c;border:1px solid #4b526b;border-radius:9px;padding:8px 12px;cursor:pointer}button:hover,button[aria-pressed=true]{background:#efb8d3;color:#222536}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid #ffdc82;outline-offset:3px}header,main{max-width:1600px;margin:auto;padding:24px 36px}header{display:flex;align-items:center;justify-content:space-between;gap:24px;padding-bottom:10px}h1{font-size:28px;letter-spacing:-1px;margin:3px 0}h2{font-size:22px;margin:0 0 10px}.eyebrow{color:#efb8d3;text-transform:uppercase;letter-spacing:3px;font-size:11px;font-weight:750}.muted{color:#aeb4ca}a{color:#efb8d3}.controls{display:flex;gap:14px;flex-wrap:wrap;align-items:end;margin:0 0 20px}.controls label{display:grid;gap:5px;font-size:12px;color:#b8bfd3}.controls .check{display:flex;align-items:center;padding:9px 0;gap:6px}.viewport-shell{background:#070911;border:1px solid #363b50;border-radius:15px;overflow:hidden;padding:16px;display:flex;justify-content:center}.viewport{position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;background:#b8d4ec;container-type:size;isolation:isolate}.scene{width:100%;height:100%;position:absolute;inset:0}.hud{position:absolute;inset:0;font-size:2.65cqh;color:#263149;--pad:3cqh;--edge:var(--pad)}.frame{position:absolute;left:50%;top:0;bottom:0;width:114.286cqh;transform:translateX(-50%);border-inline:1px dashed #ffffff90;pointer-events:none}.frame:before{content:'original field · schematic';position:absolute;top:1cqh;left:1cqh;color:#374865;font-size:1.8cqh}.panel{position:absolute;background:#fff8ee;border:1px solid #fff;border-radius:2.6cqh;padding:2.1cqh;box-shadow:0 1cqh 3cqh #26314925;line-height:1.2;min-width:25cqh}.label{font-size:1.8cqh;text-transform:uppercase;letter-spacing:.15cqh;opacity:.72;font-weight:700}.value{font-size:4.5cqh;font-weight:800;letter-spacing:-.18cqh}.row{display:flex;gap:2cqh;align-items:center}.portrait{width:7cqh;height:7cqh;border-radius:50%;background:#f7abc9;display:grid;place-items:center;font-size:2.7cqh;font-weight:800;color:#73384f;border:.5cqh solid #fff;flex-shrink:0}.p2 .portrait{background:#ffda70;color:#6d5623}.energy{display:flex;gap:.65cqh;margin-top:1.2cqh}.pip{width:2.1cqh;height:2.1cqh;background:#e55885;border-radius:50%;border:.3cqh solid #a83258}.pip.empty{background:transparent;opacity:.3}.p2 .pip{background:#e3ac31;border-color:#9b6d14}.p2 .pip.empty{background:transparent}.ability{margin-top:1.2cqh;font-size:2.1cqh}.mini{font-size:1.9cqh;opacity:.75}.player.active{outline:.55cqh solid #e85894;outline-offset:.5cqh}.p2.active{outline-color:#d4a124}.turn{font-size:1.6cqh;text-transform:uppercase;letter-spacing:.13cqh;font-weight:800;margin-bottom:.8cqh}.shot{width:25cqh;min-width:0}.instrument{display:flex;gap:1.3cqh;margin:1.2cqh 0}.spin{width:14cqh;height:14cqh;border-radius:50%;background:#f6bdd5;position:relative;border:.6cqh solid #946080}.spin:before,.spin:after{content:'';position:absolute;background:#734e70}.spin:before{height:.4cqh;left:0;right:0;top:50%}.spin:after{width:.4cqh;top:0;bottom:0;left:50%}.marker{position:absolute;width:2cqh;height:2cqh;background:#fff;border:.4cqh solid #624964;left:calc(50% - 1cqh);top:calc(var(--spin,50%) - 1cqh);z-index:1}.power{height:14cqh;width:3.2cqh;border:.4cqh solid #768468;background:#e9efdc;position:relative;border-radius:1cqh;overflow:hidden}.fill{position:absolute;inset:auto 0 0;background:#76ba70;height:var(--power,68%)}.full .fill{background:#ed72ad}.hint{font-size:1.65cqh;margin-top:.6cqh}.hole{min-width:0}.hole .value{font-size:3.4cqh}.state-note{display:flex;gap:16px;justify-content:space-between;margin:12px 0 22px;font-size:12px;color:#aeb4ca}.description{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:30px;margin-bottom:30px}.description p{margin:0;color:#bdc3d6}.description small{display:block;color:#efb8d3;margin-bottom:7px;text-transform:uppercase;letter-spacing:1.5px}.switcher{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:7px;align-items:center;border:1px solid #5a5269;background:#171b2bee;padding:8px;border-radius:18px;z-index:5;box-shadow:0 8px 30px #0008;backdrop-filter:blur(16px)}.switcher button{white-space:nowrap}.switcher .current{min-width:180px;text-align:center;font-size:13px}.inventory{border-top:1px solid #3b4053;padding:24px 0 110px}.inventory summary{cursor:pointer;font-size:18px}.inventory table{width:100%;border-collapse:collapse;margin-top:16px}.inventory td,.inventory th{padding:12px;text-align:left;border-bottom:1px solid #303649;font-size:13px}.inventory th{color:#efb8d3}.modal{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:83cqh;background:#fff8ee;color:#263149;padding:5cqh;border-radius:2cqh;box-shadow:0 2cqh 8cqh #26314950;text-align:center;font-size:3cqh}.modal h3{font-size:5cqh;margin:0 0 3cqh}.modal p{margin:2cqh 0}.modal .selected{background:#f4c2d8;border-radius:1cqh;padding:1cqh}.dim{position:absolute;inset:0;background:#11182b55}.banner{position:absolute;top:3cqh;left:50%;transform:translateX(-50%);background:#fff8ee;padding:1cqh 3cqh;border-radius:3cqh;font-size:2cqh;white-space:nowrap}.original .player{left:50%;bottom:4cqh;transform:translateX(-50%);width:92cqh;display:flex;align-items:center;gap:3cqh}.original .player .ability{margin:0}.original .shot{left:calc(50% - 40cqh);bottom:25cqh}.original .hole{left:calc(50% + 17cqh);bottom:7cqh;background:none;border:none;box-shadow:none;padding:0}.original .p2{left:calc(50% + 25cqh);width:38cqh}.original.multi .p1{left:calc(50% - 25cqh);width:38cqh}.original.multi .hole{top:5cqh;bottom:auto;left:50%;transform:translateX(-50%);background:#fff8ee;padding:1cqh 2cqh}.original .player .extra{display:none}
+.original .player{display:block;width:38cqh;left:calc(50% - 25cqh)}
+.original .p2{left:calc(50% + 25cqh)}
+.original .player .ability{margin-top:1.2cqh}
+.original .turn{display:none}
+.original .shot{bottom:31cqh}
+.original.multi .hole{top:11cqh}
+.shot.owner2 .spin{background:#ffe29c;border-color:#a68b51}
+/* A: familiar square corner blocks, with one left-side shot cluster. */
+.a .panel{border:.65cqh solid #775b9b;border-radius:0;box-shadow:.7cqh .7cqh 0 #382a55;font-family:monospace;padding:1.5cqh;background:#fffbea}.a .p1{left:var(--edge);bottom:var(--pad)}.a .p2{right:var(--edge);bottom:var(--pad)}.a .hole{right:var(--edge);top:var(--pad)}.a .shot{left:var(--edge);bottom:30cqh}.a .portrait{border-radius:0}.a .turn{display:none}
+/* B: low dock; player details read horizontally, shot instrument is separate. */
+.b .p1{left:var(--edge);bottom:var(--pad);min-width:42cqh}.b .p2{left:calc(var(--edge) + 46cqh);bottom:var(--pad);min-width:42cqh}.b .player .ability{position:absolute;right:2cqh;top:2cqh;max-width:15cqh}.b .hole{left:var(--edge);top:var(--pad);border-radius:5cqh}.b .shot{right:var(--edge);bottom:var(--pad)}.b .panel{background:#fffbf3ed}
+/* C: vertical rails use margin height, not just corner width. */
+.c .player{top:var(--pad);bottom:var(--pad);width:26cqh;min-width:0;border-radius:1cqh;background:#24344bea;color:#fff}.c .p1{left:var(--edge)}.c .p2{right:var(--edge)}.c .player .row{flex-direction:column;align-items:start}.c .player .value{font-size:5cqh;margin-top:4cqh}.c .ability{border-top:1px solid #ffffff40;padding-top:2cqh}.c .shot{left:calc(var(--edge) + 1cqh);bottom:calc(var(--pad) + 1cqh);width:24cqh;background:#eef5ec}.c .shot.owner2{left:auto;right:calc(var(--edge) + 1cqh)}.c .hole{left:50%;transform:translateX(-50%);top:var(--pad)}
+/* D: minimal persistent top strip; a stable instrument appears on demand. */
+.d .panel{background:#fffaf0e8;box-shadow:none;border:none;border-radius:1cqh}.d .p1{top:var(--pad);left:var(--edge)}.d .p2{top:var(--pad);right:var(--edge)}.d .player{min-width:35cqh}.d .portrait{width:5cqh;height:5cqh;font-size:2cqh}.d .player .value{font-size:3cqh}.d .ability{font-size:1.9cqh}.d .hole{top:var(--pad);left:50%;transform:translateX(-50%)}.d .shot{bottom:var(--pad);left:var(--edge);width:42cqh}.d .instrument{float:left;margin-right:2cqh}.d .shot .hint{padding-top:4cqh}
+/* E: scoreboard hierarchy above the course; lower-right instrument never swaps. */
+.e .p1{top:var(--pad);left:var(--edge)}.e .p2{top:var(--pad);right:var(--edge)}.e .player{width:38cqh;background:#fff5f9;border-top:1.3cqh solid #e66e9f;border-radius:0 0 3cqh 3cqh}.e .p2{background:#fffae8;border-color:#e7ba49}.e .player .value{font-size:6cqh}.e .hole{top:var(--pad);left:50%;transform:translateX(-50%);border-radius:0 0 3cqh 3cqh;background:#293850;color:#fff}.e .shot{bottom:var(--pad);right:var(--edge)}
+@media(max-width:800px){header,main{padding:18px}header{display:block}h1{font-size:24px}.description{grid-template-columns:1fr;gap:16px}.viewport-shell{padding:5px}.switcher{max-width:96%;gap:3px}.switcher .direct{display:none}.controls{gap:10px}.inventory{overflow:auto}}
+</style>
+<header><div><div class="eyebrow">Kirby's Dream Course / Issue 31</div><h1>Give the course room to breathe.</h1></div><div class="muted">Five HUD studies · design prototype<br><small>Original schematic scene · sample data · no game changes</small></div></header>
+<main>
+<div class="controls">
+<label>View aspect<select id="aspect"><option>16:9</option><option selected>21:9</option><option>32:9</option><option>4:3</option></select></label>
+<label>Players<select id="players"><option value="1">Solo</option><option value="2">Two players</option></select></label>
+<label>Scene<select id="phase"><option value="aim">Aiming</option><option value="spin">Set spin</option><option value="power" selected>Set power</option><option value="flight">Ball in motion</option><option value="pause">Pause menu</option><option value="score">Scorecard</option><option value="unknown">Unsupported / transition</option></select></label>
+<label>Active player<select id="active"><option value="1">P1 · pink</option><option value="2">P2 · yellow</option></select></label>
+<label>Safe inset <span id="insetValue">3% of height</span><input id="inset" type="range" min="2" max="7" value="3"></label>
+<label class="check"><input id="reach" type="checkbox" checked>Comfortable reach at 32:9</label>
+<label class="check"><input id="guide" type="checkbox">Original field</label>
+</div>
+<div class="viewport-shell"><div id="viewport" class="viewport"><canvas id="scene" class="scene" aria-label="Schematic isometric course with ball, cup, and world-anchored trajectory"></canvas><div id="hud" class="hud"></div></div></div>
+<div class="state-note"><span id="state"></span><span>Layout preview only · meters are frozen for comparison</span></div>
+<div class="description"><div><small id="variantTag"></small><h2 id="name"></h2><p id="idea"></p></div><div><small>Pinning rule</small><p id="rule"></p></div><div><small>Design tradeoff</small><p id="tradeoff"></p></div></div>
+<details class="inventory"><summary>HUD inventory &amp; evidence boundary</summary>
+<p>Known interface families below come from the manuals, existing source and historical local captures. Exact tile/sprite ownership is only partly established. <a href="hud-inventory.md">Full inventory, source links and implementation gates →</a></p>
+<table><thead><tr><th>Group</th><th>Elements accounted for</th><th>Placement policy</th></tr></thead><tbody>
+<tr><td>Solo status</td><td>Registered symbol/name, portrait, ability, hole, shots, energy, reserves</td><td>Owner group near chosen edge</td></tr>
+<tr><td>Versus status</td><td>Both portraits, abilities, six-slot energy gauges, totals, current-hole stars</td><td>Labelled P1/P2; total and hole score separate</td></tr>
+<tr><td>Shot controls</td><td>Spin crosshair, bar, target, moving marker; power track/fill/full state; companion status</td><td>Move as one instrument; preserve timing and geometry</td></tr>
+<tr><td>World guidance</td><td>Trajectory, bounce marks, OB endpoint warning</td><td>Stay with the course</td></tr>
+<tr><td>Bounded overlays</td><td>Pause, scoreboard, scorecards/digits, dice/handicaps, dialogs, course labels</td><td>Centered scene fallback</td></tr>
+<tr><td>Unqualified</td><td>Boss, endings, rare abilities/messages, every animation and transition</td><td>Original layout until captured and classified</td></tr>
+</tbody></table><p class="muted">The modern labels, cards and active-player badge are proposed additions. The schematic omits original artwork and flashing animations. No timer or wind mechanic is invented. No emulator accuracy or gameplay equivalence is claimed.</p></details>
+</main>
+<nav class="switcher" aria-label="Prototype variants"><button id="prev" aria-label="Previous variant">←</button><span class="current" id="current" aria-live="polite"></span><button class="direct" data-variant="A">A</button><button class="direct" data-variant="B">B</button><button class="direct" data-variant="C">C</button><button class="direct" data-variant="D">D</button><button class="direct" data-variant="E">E</button><button id="next" aria-label="Next variant">→</button></nav>
+<script>
+const concepts = {
+ A:['Original corners','Familiar square panels migrate out of the course center. Keep the original grouping and visual rhythm.','Player status sits in the lower corners. The shot instrument stays above the left group; hole context occupies the upper right.','Closest to the existing game, but the original tile and sprite artwork must be separated reliably. This preview uses schematic shapes.'],
+ B:['Soft dock','A warm, modern bottom dock pairs compact status with a separate shot instrument.','Status grows from the lower left; the shot control pins lower right. Hole context floats at upper left.','Friendly and readable, with less resemblance to the original panel. Two-player status uses more of the bottom edge.'],
+ C:['Side rails','Use the extra horizontal space as two vertical ledgers, leaving the middle open.','Each player owns a side. Shot controls occupy the bottom of the active player’s rail, fixed throughout the shot.','Strong owner association and open center, but more scenery is hidden vertically. The instrument changes sides between turns.'],
+ D:['Quiet strip','Reduce persistent visual weight. Keep status at the top and reveal the shot instrument only during preparation.','Player groups pin to the top corners; shared hole context is top center. The shot instrument has a stable lower-left home.','The lightest treatment; small labels and contextual visibility need playtesting. Critical energy and score remain visible.'],
+ E:['Match scoreboard','Make the two-player rivalry immediately legible with large mirrored scores and clear ownership.','Player cards pin to the upper corners with shared hole context between. The shot instrument always stays lower right.','Best emphasis on versus play; larger top cards obscure more scenery. Solo uses the same hierarchy with shots instead of points.']
+};
+const $ = id => document.getElementById(id);
+let variant = new URLSearchParams(location.search).get('variant') || 'A';
+if (!concepts[variant]) variant = 'A';
+function player(n, multi, active) {
+ const p2=n===2, slots=multi?6:4, energy=p2?4:3;
+ return `<section class="panel player p${n} ${active===n?'active':''}" aria-label="Player ${n} status"><div class="turn">${active===n?'● Your shot':'Waiting'} · P${n}</div><div class="row"><div class="portrait">P${n}</div><div><div class="label">${multi?'Player '+n:'Registered symbol'}</div><div class="value">${multi?(p2?'09':'12'):'02'} <span class="mini">${multi?'pts total':'shots'}</span></div></div></div><div class="energy" aria-label="Energy ${energy} of ${slots}">${Array.from({length:slots},(_,i)=>`<i class="pip ${i>=energy?'empty':''}"></i>`).join('')}</div><div class="ability">${p2?'◇ No ability':'✦ Parasol'}<div class="mini">${multi?`${p2?'2':'3'} stars this hole`:'2 reserve balls'}</div></div></section>`;
+}
+function shot(active, phase) {
+ return `<section class="panel shot owner${active}" aria-label="Shot instrument"><div class="label">P${active} · ${phase==='spin'?'Set spin':'Set power'}</div><div class="instrument"><div class="spin"><i class="marker"></i></div><div class="power"><i class="fill"></i></div></div><div class="hint">A · confirm<br>B · cancel</div></section>`;
+}
+function render() {
+ const multi=$('players').value==='2', active=multi?Number($('active').value):1;
+ $('active').disabled=!multi;
+ const phase=$('phase').value, ratio=$('aspect').value, inset=$('inset').value;
+ const [rw,rh]=ratio.split(':').map(Number);
+ $('viewport').style.aspectRatio=`${rw}/${rh}`;
+ // At very wide ratios use a centered 21:9 comfort region when requested.
+ const edge=$('reach').checked?`max(${inset}cqh, calc((100cqw - 233.333cqh)/2 + ${inset}cqh))`:`${inset}cqh`;
+ const fallback=ratio==='4:3'||phase==='unknown', klass=fallback?'original':variant.toLowerCase();
+ const hud=$('hud');hud.className=`hud ${klass} ${multi?'multi':''}`;hud.style.setProperty('--pad',`${inset}cqh`);hud.style.setProperty('--edge',edge);
+ let html=$('guide').checked?'<div class="frame"></div>':'';
+ if(phase==='pause'||phase==='score') {
+  html+='<div class="dim"></div>';
+  html+=phase==='pause'?'<div class="modal"><div class="label">Centered bounded menu · schematic</div><h3>Paused</h3><p class="selected">Continue</p><p>Course select</p><p>Quit</p></div>':`<div class="modal"><div class="label">Centered scorecard · schematic</div><h3>Hole 03 complete</h3><p>${multi?'P1 · 3 stars　 /　 P2 · 2 stars':'Shots · 02'}</p><p class="selected">${multi?'Course totals · 12 : 09':'Course total · 08 shots'}</p><p class="mini">Digits remain attached to the scorecard.</p></div>`;
+ } else {
+  html+=player(1,multi,active)+(multi?player(2,true,active):'');
+  html+='<section class="panel hole"><div class="label">Hole</div><div class="value">03 <span class="mini">/ 08</span></div></section>';
+  if(phase==='spin'||phase==='power') html+=shot(active,phase);
+  if(fallback) html+='<div class="banner">Centered fallback · schematic</div>';
+ }
+ hud.innerHTML=html;
+ $('insetValue').textContent=`${inset}% of height`;
+ const [name,idea,rule,tradeoff]=concepts[variant];
+ $('name').textContent=name;$('idea').textContent=idea;$('rule').textContent=rule;$('tradeoff').textContent=tradeoff;
+ $('variantTag').textContent=`Study ${variant} / 05`;$('current').textContent=`${variant} · ${name}`;
+ $('state').textContent=`${ratio} · ${multi?'2 players':'Solo'} · P${active} · ${$('phase').selectedOptions[0].textContent} · ${fallback?'Centered fallback':$('reach').checked?'21:9 reach limit':'Outer-edge anchors'} · inset ${inset}%`;
+ document.querySelectorAll('[data-variant]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.variant===variant)));
+ drawScene();
+}
+function choose(key) {variant=key;const url=new URL(location.href);url.searchParams.set('variant',key);history.replaceState(null,'',url);render();}
+function cycle(step) {const keys=Object.keys(concepts);choose(keys[(keys.indexOf(variant)+step+5)%5]);}
+$('prev').onclick=()=>cycle(-1);$('next').onclick=()=>cycle(1);
+document.querySelectorAll('[data-variant]').forEach(b=>b.onclick=()=>choose(b.dataset.variant));
+document.querySelectorAll('.controls input,.controls select').forEach(e=>e.oninput=render);
+document.addEventListener('keydown',e=>{if(e.target.closest('input,textarea,select,[contenteditable]'))return;if(e.key==='ArrowRight'||e.key==='ArrowLeft'){e.preventDefault();cycle(e.key==='ArrowRight'?1:-1);}});
+window.addEventListener('popstate',()=>{const key=new URLSearchParams(location.search).get('variant');variant=concepts[key]?key:'A';render();});
+function drawScene(){
+ const canvas=$('scene'), box=$('viewport').getBoundingClientRect(), dpr=devicePixelRatio||1;
+ canvas.width=Math.round(box.width*dpr);canvas.height=Math.round(box.height*dpr);
+ const c=canvas.getContext('2d');c.scale(dpr,dpr);const w=box.width,h=box.height,s=h/600;
+ c.fillStyle='#b9d5e9';c.fillRect(0,0,w,h);
+ // All scenery is original vector geometry; no game art or captured assets.
+ c.fillStyle='#dce9ef';for(let i=0;i<8;i++){const x=(i*211+40)%(w+100);c.beginPath();c.ellipse(x,h*.19+(i%3)*h*.08,90*s,20*s,0,0,Math.PI*2);c.fill();}
+ c.save();c.translate(w/2,h*.45);c.scale(s,s);
+ const point=(x,y,z=0)=>[(x-y)*38,(x+y)*18-z];
+ function poly(pts,fill){c.fillStyle=fill;c.beginPath();pts.forEach((p,i)=>i?c.lineTo(...p):c.moveTo(...p));c.closePath();c.fill();}
+ const originY=-140; c.translate(0,originY);
+ for(let x=0;x<9;x++)for(let y=0;y<9;y++){
+  const a=point(x,y),b=point(x+1,y),d=point(x,y+1),e=point(x+1,y+1);
+  if(x===8)poly([b,e,[e[0],e[1]+65],[b[0],b[1]+65]],'#7c937c');
+  if(y===8)poly([d,e,[e[0],e[1]+65],[d[0],d[1]+65]],'#627e78');
+  poly([a,b,e,d],(x+y)%2?'#c1d6a0':'#dce7b8');
+ }
+ function orb(x,y,color,r=11){const p=point(x,y);c.fillStyle='#35574730';c.beginPath();c.ellipse(p[0],p[1]+3,r*1.1,5,0,0,Math.PI*2);c.fill();c.fillStyle=color;c.beginPath();c.arc(p[0],p[1]-r,r,0,Math.PI*2);c.fill();c.strokeStyle='#4a6470';c.lineWidth=2;c.stroke();}
+ const phase=$('phase').value;
+ if(!['flight','pause','score','unknown'].includes(phase)){
+  const isP2=$('players').value==='2'&&$('active').value==='2';
+  const start=isP2?point(6.6,5.4):point(5.8,6.4),end=point(2.5,3.1);c.beginPath();c.moveTo(start[0],start[1]-14);c.quadraticCurveTo(80,-55,end[0],end[1]-10);c.strokeStyle='#fffdf5';c.lineWidth=4;c.setLineDash([5,9]);c.stroke();c.setLineDash([]);
+  c.strokeStyle='#6c8b69';c.beginPath();c.ellipse(end[0],end[1],12,5,0,0,Math.PI*2);c.stroke();
+ }
+ const p2Moving=$('players').value==='2'&&$('active').value==='2';
+ orb(phase==='flight'&&!p2Moving?4:5.8,phase==='flight'&&!p2Moving?4.5:6.4,'#f393be',14);
+ if($('players').value==='2')orb(phase==='flight'&&p2Moving?4:6.6,phase==='flight'&&p2Moving?4.5:5.4,'#ffd96d',13);
+ for(const [x,y] of [[2,5],[6,2],[3,2]]){const p=point(x,y);c.fillStyle='#f0bb54';c.beginPath();for(let i=0;i<10;i++){const a=i*Math.PI/5-Math.PI/2,r=i%2?6:13;const px=p[0]+Math.cos(a)*r,py=p[1]-15+Math.sin(a)*r;i?c.lineTo(px,py):c.moveTo(px,py);}c.closePath();c.fill();}
+ const cup=point(1.8,2);c.fillStyle='#365760';c.beginPath();c.ellipse(cup[0],cup[1],12,6,0,0,Math.PI*2);c.fill();c.fillStyle='#fff7df';c.fillRect(cup[0]+10,cup[1]-50,3,50);poly([[cup[0]+13,cup[1]-50],[cup[0]+37,cup[1]-42],[cup[0]+13,cup[1]-33]],'#dd78a0');
+ c.restore();
+}
+new ResizeObserver(drawScene).observe($('viewport'));render();
+</script>
+</html>
