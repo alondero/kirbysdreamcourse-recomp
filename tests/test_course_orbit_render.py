@@ -26,6 +26,7 @@ class OrbitRendererTest(unittest.TestCase):
                                      '-I', str(root / 'src'), '-I', str(source),
                                      str(root / 'tests' / fixture),
                                      str(root / 'src/course_orbit.c'),
+                                     str(root / 'src/course_hud.c'),
                                      str(root / 'src/course_camera.c'),
                                      str(root / 'src/course_geometry.c'),
                                      '-lm', '-o', str(executable)], capture_output=True)

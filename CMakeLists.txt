@@ -53,9 +53,14 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_ANALOG_INPU
 if(NOT KDC_ANALOG_INPUT_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-camera-input.patch; tools/setup.ps1 includes it")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HUD_API
+     REGEX "presentationWindows" LIMIT_COUNT 1)
+if(NOT KDC_HUD_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-hud-presentation.patch; tools/setup.ps1 includes it")
+endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/gen_stubs.c
-    src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c)
+    src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")
 set(KDC_FUNCTIONS_DIR "${CMAKE_SOURCE_DIR}/recomp" CACHE PATH "Local generated function declarations")

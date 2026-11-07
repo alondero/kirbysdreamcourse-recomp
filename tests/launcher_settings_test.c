@@ -16,6 +16,7 @@ int main(int argc, char **argv)
     CHECK(argc == 5 || argc == 6 || argc == 7);
     if (argc == 7) {
         CHECK(KdcWidescreenAspect() == 2);
+        CHECK(KdcHudEdges());
         CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
         return 0;
     }
@@ -49,10 +50,16 @@ int main(int argc, char **argv)
            provider->feature_set_option);
     CHECK(!provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, NULL));
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "invalid", "1"));
+    CHECK(!KdcHudEdges());
+    CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 1, &option));
+    CHECK(option.choice_count == 2 && !strcmp(option.value, "centered"));
+    CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "unknown"));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "edges"));
+    CHECK(!KdcHudEdges());
     CHECK(provider->feature_count(provider->ctx) == 3);
     CHECK(!KdcHighRefreshEnabled());
     CHECK(provider->feature_get(provider->ctx, 2, &feature));
-    CHECK(!feature.enabled && !strcmp(feature.id, "high-refresh"));
+    CHECK(!feature.enabled && !strcmp(feature.id, "high-refresh") && feature.option_count == 1);
     CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "high-refresh", 0, &option));
     CHECK(option.choice_count == 8 && !strcmp(option.value, "display"));
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "high-refresh", "fps", "999"));
@@ -95,6 +102,9 @@ int main(int argc, char **argv)
     CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 0, &option));
     CHECK(!strcmp(option.value, "auto"));
 
+    CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "widescreen", 1, &option));
+    CHECK(!strcmp(option.value, "centered"));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "edges"));
     /* PLAY/RESUME applies the setting that the host will persist. */
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 1));
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
@@ -107,6 +117,7 @@ int main(int argc, char **argv)
     CHECK(!widescreen);
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(widescreen);
+    CHECK(KdcHudEdges());
     CHECK(!KdcOrbitEnabled());
     CHECK(KdcWidescreenAspect() == 2);
     CHECK(!provider->last_error(provider->ctx));

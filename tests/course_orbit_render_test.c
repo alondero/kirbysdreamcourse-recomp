@@ -30,6 +30,9 @@ static unsigned custom_count;
 static bool use_custom;
 
 bool KdcIsCourse(const Ppu *value) { return value == &ppu && course; }
+void PpuSetBackgroundSample(Ppu *p, bool (*sample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *), void *ctx) {
+    p->backgroundSample = sample; p->backgroundSampleContext = ctx;
+}
 bool KdcOrbitEnabled(void) { return true; }
 
 void KdcVisitOrbitSprites(const Ppu *value, const uint8_t *ram,

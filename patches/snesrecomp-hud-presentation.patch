@@ -1,0 +1,138 @@
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -338,6 +338,16 @@
+   bool lineHasSprites;
+   // Active kPpuRenderFlags_* set by PpuBeginDrawing. Kept outside the stable
+   // snapshot region because it is host rendering policy, not emulated state.
++  /* Presentation sampling: host-only, outside the guest snapshot spans. */
++  bool (*backgroundSample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *);
++  void *backgroundSampleContext;
++  void (*presentationPrepare)(Ppu *, int, void *);
++  void *presentationContext;
++  /* Optional override: sorted edges[0..nr], at most seven spans;
++   * bits mark masked spans. Return false to keep hardware windows.
++   * The caller must qualify the scene and native window configuration. */
++  bool (*presentationWindows)(const Ppu *, unsigned, int, int16_t *, uint8_t *, uint8_t *);
++  int16_t presentationObjShift[128];
+   uint32_t renderFlags;
+   PpuPixelPrioBufs bgBuffers[2];
+   PpuPixelPrioBufs objBuffer;
+@@ -1035,4 +1045,11 @@
+     uint16_t left_elastic_x0, uint16_t left_elastic_x1,
+     uint16_t right_elastic_x0, uint16_t right_elastic_x1);
+
++/* Optional 2bpp source remap. Coordinates are unscrolled screen pixels;
++ * returned tile/pixel coordinates retain native decode and composition.
++ * A false result keeps the original sample. Reset clears the callback. */
++void PpuSetBackgroundSample(Ppu *ppu,
++    bool (*sample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *),
++    void *context);
++
+ #endif
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -909,6 +909,7 @@
+
+ static void PpuWindows_CalcWithExtra(PpuWindows *win, Ppu *ppu, uint layer,
+                                      int y, int extra_left, int extra_right) {
++  if (ppu->presentationWindows && ppu->presentationWindows(ppu, layer, y, win->edges, &win->nr, &win->bits)) return;
+   // Evaluate which spans to render based on the window settings.
+   // There are at most 5 windows.
+   // Algorithm from Snes9x
+@@ -1632,6 +1633,37 @@
+     ws_bias[4] = -(int16)ppu->extraLeftRight;
+   } else {
+     PpuApplyMarginGap(ppu, layer, &win, ws_bias);
++  }
++  if (ppu->backgroundSample) {
++    const uint16_t *vram = PpuRenderVram(ppu);
++    for (size_t wi = 0; wi < win.nr; ++wi) {
++      if (win.bits & (1 << wi)) continue;
++      for (int sx = win.edges[wi]; sx < win.edges[wi + 1]; ++sx) {
++        unsigned u = (unsigned)(sx + ppu->hScroll[layer]);
++        unsigned v = y + ppu->vScroll[layer];
++        unsigned map = PPU_bgTilemapAdr(ppu, layer) + ((v >> 3) & 31) * 32 + ((u >> 3) & 31);
++        if ((u & 256) && PPU_bgTilemapWider(ppu, layer)) map += 1024;
++        if ((v & 256) && PPU_bgTilemapHigher(ppu, layer)) map += PPU_bgTilemapWider(ppu, layer) ? 2048 : 1024;
++        uint16_t tile = vram[map & 0x7fff];
++        if (WsShadowHasTileProvider(layer))
++          tile = WsShadowResolveTile8x8(layer, sx, v, ppu->hScroll[layer], map, tile);
++        int px = u & 7, py = v & 7;
++        uint16_t sampled_tile = tile;
++        int sampled_x = px, sampled_y = py;
++        if (ppu->backgroundSample(ppu, layer, sx, (int)y, &sampled_tile, &sampled_x, &sampled_y, ppu->backgroundSampleContext)) {
++          tile = sampled_tile; px = sampled_x; py = sampled_y;
++        }
++        if (tile & 0x4000) px ^= 7;
++        if (tile & 0x8000) py ^= 7;
++        unsigned bits = vram[(PPU_bgTileAdr(ppu, layer) + (tile & 1023) * 8 + (py & 7)) & 0x7fff] >> (7 - (px & 7));
++        unsigned color = (bits & 1) | ((bits >> 7) & 2);
++        if (!color) continue;
++        PpuZbufType z = ((tile & 0x2000) ? zhi : zlo) + ((tile & 0x1c00) >> 8);
++        PpuZbufType *dst = &dstbuf->data[sx + kPpuExtraLeftRight];
++        if (z > *dst) *dst = z + color;
++      }
++    }
++    return;
+   }
+   y += ppu->vScroll[layer];
+   int sc_offs = PPU_bgTilemapAdr(ppu, layer) + (((y >> 3) & 0x1f) << 5);
+@@ -2852,6 +2884,13 @@
+   return ppu->wsOamMotionGraceOn && ppu->wsOamMotionGrace[slot] != 0;
+ }
+
++void PpuSetBackgroundSample(Ppu *ppu,
++    bool (*sample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *),
++    void *context) {
++  ppu->backgroundSample = sample;
++  ppu->backgroundSampleContext = context;
++}
++
+ void PpuSetExtraObjects(Ppu *ppu,const PpuExtraObject *objects,size_t count) {
+   ppu->extraObjects=objects;ppu->extraObjectCount=objects?count:0;
+ }
+@@ -2893,6 +2932,8 @@
+ }
+
+ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
++  if (ppu->presentationPrepare) ppu->presentationPrepare(ppu, line, ppu->presentationContext);
++
+   if(ppu->extraObjectProvider)
+     ppu->extraObjectProvider(ppu,line,ppu->extraObjectContext);
+   if(ppu->extraObjectCount) {
+@@ -2949,7 +2990,7 @@
+     int spriteSize = spriteSizes[PPU_objSize(ppu)][(ppu->highOam[index >> 3] >> ((index & 7) + 1)) & 1];
+     int x = PpuDecodeOamX(ppu, index);
+     const uint8_t sprite_y = ppu->oam[index] >> 8;
+-    const bool full_budget_hud =
++    const bool full_budget_hud = ppu->presentationObjShift[index >> 1] ||
+         PpuWidescreenHudOamSlot(ppu, index, sprite_y) &&
+         (ppu->wsHudSplitHeight & 0x80);
+     const int left_extra =
+@@ -2957,6 +2998,7 @@
+     const int right_extra =
+         full_budget_hud ? ppu->extraLeftRight : ppu->extraRightCur;
+     x = PpuAdjustWidescreenHudOamX(ppu, index, sprite_y, x);
++    x += ppu->presentationObjShift[index >> 1];
+         if(PPU_objInterlace(ppu)) row = row * 2 + (ppu->evenFrame ? 0 : 1);
+         int oam1 = ppu->oam[index + 1];
+         int objAdr = (oam1 & 0x100) ? PPU_objTileAdr2(ppu) : PPU_objTileAdr1(ppu);
+@@ -3018,7 +3060,7 @@
+              * business in the margin, and clipping it at the screen edge
+              * beats popping it out a whole sprite at a time. */
+             const bool ws_clip_left =
+-                ws_edge_clip_on && ppu->wsOamLeftHintStrict &&
++                !ppu->presentationObjShift[slot] && ws_edge_clip_on && ppu->wsOamLeftHintStrict &&
+                 !(ppu->wsOamLeftHint[slot >> 3] & (1u << (slot & 7))) &&
+                 !(ppu->wsOamMotionGraceOn && ppu->wsOamMotionGrace[slot]);
+             PpuOverlayCapture *obj_capture =
+@@ -3062,7 +3104,8 @@
+    * holes, so incomplete host lists never erase native margin objects. */
+   if(ppu->extraObjectMargins && ppu->extraObjectCount) {
+     for(unsigned i=0;i<kPpuBufWidth;++i)
+-      if(i<kPpuExtraLeftRight || i>=kPpuExtraLeftRight+256)
++      if((i<kPpuExtraLeftRight || i>=kPpuExtraLeftRight+256) &&
++         (ppu->objectOrder[i] == UINT64_MAX || !ppu->presentationObjShift[(first_slot + (ppu->objectOrder[i] >> 32)) & 127]))
+         ppu->objectOrder[i]=UINT64_MAX;
+   }
+   bool extra=ppu->extraObjectCount && PpuComposeExtraObjects(

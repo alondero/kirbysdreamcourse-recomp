@@ -47,6 +47,8 @@
 #include "snes/ws_shadow.h"
 #include "course_view.h"
 #include "course_sprites.h"
+#include "course_hud.h"
+#include "launcher_settings.h"
 #include "dev_start.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -119,6 +121,7 @@ void GameDrawPpuFrame(void)
     PpuSetExtraSpace(g_snes->ppu, g_ws_extra);
     KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
     KdcPrepareSprites(g_snes->ppu, g_ram, g_ws_extra);
+    KdcPrepareHud(g_snes->ppu, g_ram, g_ws_extra, KdcHudEdges());
     snes_beam_frame_driver_draw_ppu_frame();
     KdcReportSprites(snes_frame_counter);
 }
