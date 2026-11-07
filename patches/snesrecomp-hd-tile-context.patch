@@ -1,0 +1,272 @@
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1127,7 +1127,7 @@
+  * records. Records are only trusted for layers drawn directly into the line's
+  * priority buffers; anything else keeps the native line. */
+ enum { kPpuHdSources = 5, kPpuHdObj = 4,
+-       kPpuHdFlipX = 1, kPpuHdFlipY = 2, kPpuHdBpp4 = 4,
++       kPpuHdFlipX = 1, kPpuHdFlipY = 2, kPpuHdBpp4 = 4, kPpuHdNoBorder = 8,
+        kPpuHdCacheSlots = 16384 };
+ typedef struct PpuHdTileRecord {
+   uint16_t address, z;      /* first character word; priority|layer|palette */
+@@ -1155,9 +1155,12 @@
+   uint8_t bpp;
+   bool valid;
+   uint16_t entry;
++  unsigned x, y;
++  uint8_t flags;
+ } PpuHdTileMemo;
+ struct PpuHdTiles {
+   PpuHdTileFill *fill;
++  PpuHdTileContextPolicy *context_policy;
+   void *context;
+   PpuHdLinePolicy *policy;
+   void *policy_context;
+@@ -1168,6 +1171,14 @@
+   unsigned count;
+   PpuHdTileStats stats;
+   PpuHdTileMemo memo[kPpuHdSources];
++  /* Border decoding is shared by repeated scanlines and repeated characters.
++   * Keys include live neighbour words/attributes, so DMA and providers cannot
++   * leave stale context even when their addresses or identities are reused. */
++  struct {
++    uint16_t key[137]; /* centre palette/flips + eight (attributes + 16 words) */
++    uint8_t border[80];
++    bool valid;
++  } borders[512];
+   PpuHdTileEntry *entries;
+   uint8_t any[kPpuBufWidth]; /* some recorded HD subpixel differs from native */
+   PpuHdTileRecord records[2][kPpuHdSources][kPpuBufWidth];
+@@ -1208,6 +1219,15 @@
+   t->fill = fill;
+   t->context = context;
+   memset(&t->stats, 0, sizeof(t->stats));
++  return true;
++}
++
++bool PpuSetHdTileContextPolicy(Ppu *ppu, PpuHdTileContextPolicy *policy) {
++  if (!ppu || !ppu->hdTiles) return false;
++  if (ppu->hdTiles->context_policy != policy) {
++    PpuHdTilesClearCache(ppu->hdTiles);
++    ppu->hdTiles->context_policy = policy;
++  }
+   return true;
+ }
+
+@@ -1261,7 +1281,7 @@
+ }
+
+ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+-                            const PpuHdTileRecord *rec);
++                            const PpuHdTileRecord *rec, unsigned raw_x, unsigned raw_y);
+
+ static inline void PpuHdRecordBgSpan(Ppu *ppu, PpuHdTileRecord *rec,
+                                      unsigned source,
+@@ -1269,18 +1289,18 @@
+                                      uint32_t tile, unsigned raw_x,
+                                      unsigned raw_y, unsigned tileadr,
+                                      unsigned bpp, PpuZbufType zhi,
+-                                     PpuZbufType zlo, unsigned palette_shift) {
++                                     PpuZbufType zlo, unsigned palette_shift, bool border_valid) {
+   const bool flip_x = (tile & 0x4000) != 0, flip_y = (tile & 0x8000) != 0;
+   PpuHdTileRecord value = {
+     (uint16_t)((tileadr + (tile & 0x3ff) * (bpp * 4)) & 0x7fff),
+     (uint16_t)(((tile & 0x2000) ? zhi : zlo) + ((tile & 0x1c00) >> palette_shift)),
+     0, (uint8_t)(flip_y ? 7 - (raw_y & 7) : (raw_y & 7)),
+     (uint8_t)((bpp == 4 ? kPpuHdBpp4 : 0) | (flip_x ? kPpuHdFlipX : 0) |
+-              (flip_y ? kPpuHdFlipY : 0)),
++              (flip_y ? kPpuHdFlipY : 0) | (border_valid ? 0 : kPpuHdNoBorder)),
+     0, ppu->hdTiles->stamp, 0
+   };
+   /* One lookup per character span; the cache is stable within a line. */
+-  value.entry = PpuHdLookup(ppu, source, &value);
++  value.entry = PpuHdLookup(ppu, source, &value, raw_x, raw_y);
+   for (unsigned k = 0; k < count && first + k < kPpuBufWidth; ++k) {
+     unsigned raw = (raw_x + k) & 7;
+     value.col = (uint8_t)(flip_x ? 7 - raw : raw);
+@@ -1307,7 +1327,7 @@
+
+ static uint64_t PpuHdHash(const PpuHdTileQuery *q) {
+   /* Words and colours are 64 contiguous bytes; mix them a word at a time. */
+-  uint64_t hash = 0x9e3779b97f4a7c15ull ^ q->bpp;
++  uint64_t hash = 0x9e3779b97f4a7c15ull ^ q->bpp ^ ((uint64_t)q->layer << 8);
+   const uint8_t *bytes = (const uint8_t *)q->words;
+   for (size_t i = 0; i < sizeof(q->words) + sizeof(q->colors); i += 8) {
+     uint64_t word;
+@@ -1315,6 +1335,8 @@
+     hash = (hash ^ word) * 0xff51afd7ed558ccdull;
+     hash ^= hash >> 32;
+   }
++  for (unsigned i = 0; i < sizeof(q->border); ++i)
++    hash = (hash ^ q->border[i]) * 0xff51afd7ed558ccdull;
+   return hash;
+ }
+
+@@ -1344,16 +1366,92 @@
+     }
+ }
+
++/* Neighbour evidence follows the same tilemap/provider as the native BG.
++ * Store indices in the centre tile's unflipped coordinate system. A different
++ * palette or transparent neighbour cannot establish an opaque geometric edge. */
++static void PpuHdBorder(Ppu *ppu, unsigned layer, const PpuHdTileRecord *rec,
++                         unsigned raw_x, unsigned raw_y, uint8_t border[80]) {
++  const uint16_t *vram = PpuRenderVram(ppu);
++  const int ox = (int)(raw_x & ~7u), oy = (int)(raw_y & ~7u);
++  uint32_t neighbours[9];
++  const bool provider = WsShadowLayerActive(layer) || WsShadowHasTileProvider(layer);
++  /* Resolve each neighbouring character once, not once per border pixel. */
++  for (int row = 0; row < 3; ++row)
++    for (int column = 0; column < 3; ++column) {
++      int x = ox + (column - 1) * 8, y = oy + (row - 1) * 8;
++      /* Native tilemaps repeat every 256 or 512 pixels. */
++      unsigned mx = (unsigned)x & 511u, my = (unsigned)y & 511u;
++      unsigned address = PPU_bgTilemapAdr(ppu, layer) + ((my >> 3 & 31) * 32) + (mx >> 3 & 31);
++      if ((mx & 256) && PPU_bgTilemapWider(ppu, layer)) address += 0x400;
++      if ((my & 256) && PPU_bgTilemapHigher(ppu, layer))
++        address += PPU_bgTilemapWider(ppu, layer) ? 0x800 : 0x400;
++      address &= 0x7fff;
++      uint32_t tile = vram[address];
++      if (provider)
++        tile = WsShadowResolveTile8x8(layer, x - (int)ppu->hScroll[layer], (unsigned)y,
++            (uint16_t)ppu->hScroll[layer], (uint16_t)address, (uint16_t)tile);
++      neighbours[row * 3 + column] = tile;
++    }
++  uint16_t key[137];
++  key[0] = (uint16_t)((rec->z & 0xff) | ((rec->flags & 3) << 8));
++  unsigned at_key = 1;
++  for (unsigned i = 0; i < 9; ++i) {
++    if (i == 4) continue; /* the border never samples the centre character */
++    uint32_t tile = neighbours[i];
++    key[at_key++] = (uint16_t)(tile & 0xdc00);
++    unsigned at = (PPU_bgTileAdr(ppu, layer) + (tile & 1023) * 16) & 0x7fff;
++    memcpy(key + at_key, vram + at, 32); /* 16-word aligned; cannot wrap */
++    at_key += 16;
++  }
++  uint32_t hash = 2166136261u;
++  for (unsigned i = 0; i < 137; ++i) hash = (hash ^ key[i]) * 16777619u;
++  hash = (hash ^ (hash >> 16)) * 0x7feb352du;
++  hash ^= hash >> 15;
++  unsigned slot = hash & 511;
++  struct PpuHdTiles *tiles = ppu->hdTiles;
++  if (tiles->borders[slot].valid && !memcmp(tiles->borders[slot].key, key, sizeof(key))) {
++    memcpy(border, tiles->borders[slot].border, 80);
++    return;
++  }
++  for (int k = 0; k < 80; ++k) {
++    int x, y;
++    if (k < 48) {
++      int row = k / 12;
++      x = k % 12 - 2; y = row < 2 ? row - 2 : row + 6;
++    } else {
++      int column = (k - 48) / 8;
++      x = column < 2 ? column - 2 : column + 6; y = (k - 48) % 8;
++    }
++    if (rec->flags & kPpuHdFlipX) x = 7 - x;
++    if (rec->flags & kPpuHdFlipY) y = 7 - y;
++    unsigned column = x < 0 ? 0 : x >= 8 ? 2 : 1;
++    unsigned row = y < 0 ? 0 : y >= 8 ? 2 : 1;
++    uint32_t tile = neighbours[row * 3 + column];
++    if (((tile >> 10 & 7) * 16) != (rec->z & 0xff)) { border[k] = 0; continue; }
++    unsigned tx = (unsigned)x & 7, ty = (unsigned)y & 7;
++    if (tile & 0x4000) tx = 7 - tx;
++    if (tile & 0x8000) ty = 7 - ty;
++    unsigned at = (PPU_bgTileAdr(ppu, layer) + (tile & 1023) * 16 + ty) & 0x7fff;
++    unsigned a = vram[at], b = vram[(at + 8) & 0x7fff], shift = 7 - tx;
++    border[k] = (uint8_t)((a >> shift & 1) | (a >> (shift + 7) & 2) |
++                         (b >> shift & 1) << 2 | (b >> (shift + 7) & 2) << 2);
++  }
++  memcpy(tiles->borders[slot].key, key, sizeof(key));
++  memcpy(tiles->borders[slot].border, border, 80);
++  tiles->borders[slot].valid = true;
++}
++
+ /* Content-addressed: the same character and colours share one image even
+  * when a game streams it through different VRAM slots. */
+ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+-                            const PpuHdTileRecord *rec) {
++                            const PpuHdTileRecord *rec, unsigned raw_x, unsigned raw_y) {
+   struct PpuHdTiles *t = ppu->hdTiles;
+   const unsigned bpp = (rec->flags & kPpuHdBpp4) ? 4 : 2;
+   const uint16_t palette = rec->z & 0xff;
+   PpuHdTileMemo *memo = &t->memo[source];
+   if (memo->valid && memo->address == rec->address &&
+-      memo->palette == palette && memo->bpp == bpp)
++      memo->palette == palette && memo->bpp == bpp &&
++      memo->x == (raw_x & ~7u) && memo->y == (raw_y & ~7u) && memo->flags == rec->flags)
+     return memo->entry;
+   PpuHdTileQuery q;
+   memset(&q, 0, sizeof(q));
+@@ -1363,6 +1461,10 @@
+   for (unsigned i = 1; i < (1u << bpp); ++i)
+     q.colors[i] = ppu->cgram[(palette + i) & 0xff];
+   q.bpp = (uint8_t)bpp;
++  q.layer = (uint8_t)source;
++  if (source < 2 && bpp == 4 && !(rec->flags & kPpuHdNoBorder) &&
++      t->context_policy && t->context_policy(&q, t->context))
++    PpuHdBorder(ppu, source, rec, raw_x, raw_y, q.border);
+   q.scale = (uint8_t)t->scale;
+   const uint64_t hash = PpuHdHash(&q);
+   const size_t key_bytes = offsetof(PpuHdTileQuery, scale);
+@@ -1393,7 +1495,7 @@
+     }
+     slot = (slot + 1) & (kPpuHdCacheSlots - 1);
+   }
+-  *memo = (PpuHdTileMemo){rec->address, palette, (uint8_t)bpp, true, found};
++  *memo = (PpuHdTileMemo){rec->address, palette, (uint8_t)bpp, true, found, raw_x & ~7u, raw_y & ~7u, rec->flags};
+   return found;
+ }
+
+@@ -1437,7 +1539,7 @@
+       PpuHdRecordRow(ppu, sub, layer) : NULL;
+   if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
+ #define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
+-    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 4, zhi, zlo, kPaletteShift); } while (0)
++    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (unsigned)((int)(dstz - dstbuf->data) - kPpuExtraLeftRight + ppu->hScroll[layer] + ws_bias[windex]), y, tileadr, 4, zhi, zlo, kPaletteShift, ws_bias[windex] == 0); } while (0)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -1980,7 +2082,7 @@
+       PpuHdRecordRow(ppu, sub, layer) : NULL;
+   if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
+ #define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
+-    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 2, zhi, zlo, kPaletteShift); } while (0)
++    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 2, zhi, zlo, kPaletteShift, false); } while (0)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -3648,7 +3750,7 @@
+                     (uint8_t)(kPpuHdBpp4 | (flip_x ? kPpuHdFlipX : 0) |
+                               (flip_y ? kPpuHdFlipY : 0)),
+                     0, ppu->hdTiles->stamp, 0};
+-                  r->entry = PpuHdLookup(ppu, kPpuHdObj, r);
++                  r->entry = PpuHdLookup(ppu, kPpuHdObj, r, 0, 0);
+                   if (r->entry && !(ppu->hdTiles->entries[r->entry - 1].image->same &
+                                     (1ull << (r->row * 8 + r->col))))
+                     ppu->hdTiles->any[dst - ppu->objBuffer.data] = 1;
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -36,7 +36,12 @@
+   uint16_t words[16];
+   /* BGR555 colours for indices 1..(1 << bpp) - 1; entry 0 is transparent. */
+   uint16_t colors[16];
++  /* Two native pixels around the unflipped tile: two top/bottom rows
++   * of 12, then two left/right columns of 8. Zero means transparent or unavailable (OBJ,
++   * other palette, unsupported layer, or no context-policy request). Included in the content cache key. */
++  uint8_t border[80];
+   uint8_t bpp;   /* 2 or 4 */
++  uint8_t layer; /* BG1..BG4 = 0..3; OBJ = 4; part of the cache key */
+   uint8_t scale; /* output texels per native pixel, per axis */
+ } PpuHdTileQuery;
+ /* Fill (8*scale)^2 row-major indices for the unflipped character; 0 is
+@@ -45,6 +50,10 @@
+  * query. It must not touch guest state. */
+ typedef bool PpuHdTileFill(const PpuHdTileQuery *query, uint8_t *indices,
+                            void *context);
++/* Optional cheap request for neighbour evidence before a content-cache lookup.
++ * The query has words, colours, bpp and layer; border is still zero. */
++typedef bool PpuHdTileContextPolicy(const PpuHdTileQuery *query, void *context);
++bool PpuSetHdTileContextPolicy(Ppu *ppu, PpuHdTileContextPolicy *policy);
+ typedef struct PpuHdTileStats {
+   uint32_t hd_lines;        /* lines composed from tile sources */
+   uint32_t native_lines;    /* lines a source could not reproduce */

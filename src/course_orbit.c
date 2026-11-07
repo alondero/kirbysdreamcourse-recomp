@@ -4,6 +4,8 @@
 #include "course_view.h"
 #include "course_sprites.h"
 #include "course_hud.h"
+#include "course_checker.h"
+#include "hd_textures.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes/cart.h"
@@ -62,11 +64,81 @@ typedef struct Render {
     Ppu *ppu;
     KdcCourseGeometry geometry;
     KdcCourseCamera camera;
+    bool hd;
 } Render;
 
 static float depth_buffer[kPpuBufWidth * 240];
 static KdcOrbitSprite sprite_buffer[4096];
 static unsigned sprite_count;
+
+/* Bounded associative lookup. Entries used in this draw cannot be evicted:
+ * collisions must never turn raster samples into repeated model fitting.
+ * On bucket exhaustion, new locations keep their native pixels for the draw.
+ * Fits survive unchanged live words and neighbour indices between draws. */
+static struct CheckerCache {
+    uint16_t words[16];
+    uint8_t border[kKdcCheckerBorderSize];
+    KdcChecker checker;
+    unsigned generation, layer;
+    int column, row;
+    bool valid, matched;
+} checker_cache[4096];
+static unsigned checker_generation;
+
+static struct CheckerCache *CheckerLocation(int column, int row, unsigned layer)
+{
+    unsigned first = ((unsigned)row * 131u + (unsigned)column) * 2u + layer;
+    struct CheckerCache *available = NULL;
+    for (unsigned i = 0; i < 32; ++i) {
+        struct CheckerCache *entry = &checker_cache[(first + i) & 4095];
+        if (entry->valid && entry->column == column && entry->row == row && entry->layer == layer)
+            return entry;
+        if (!available && (!entry->valid || entry->generation != checker_generation))
+            available = entry;
+    }
+    return available;
+}
+
+static unsigned TilePixel(const uint16_t *vram, unsigned tile,
+                           unsigned base, int x, int y, unsigned bpp);
+
+static unsigned TerrainPixel(const Render *render, const uint16_t *vram,
+                              unsigned layer, unsigned tile, double u, double v)
+{
+    if (!render->hd) return 0;
+    int column = (int)floor(u / 8), row = (int)floor(v / 8);
+    struct CheckerCache *cached = CheckerLocation(column, row, layer);
+    if (!cached) return 0;
+    bool same = cached->valid && cached->column == column && cached->row == row && cached->layer == layer;
+    if (!same || cached->generation != checker_generation) {
+        const uint16_t *words = vram + (tile & 1023) * 16;
+        uint8_t border[kKdcCheckerBorderSize] = {0};
+        bool eligible = KdcCheckerNeedsContext(words);
+        for (int k = 0; eligible && k < kKdcCheckerBorderSize; ++k) {
+            int x, y;
+            KdcCheckerBorderPosition(k, &x, &y);
+            if (tile & 0x4000) x = 7 - x;
+            if (tile & 0x8000) y = 7 - y;
+            x += column * 8; y += row * 8;
+            unsigned neighbour = KdcCourseTile(g_ram, layer, KdcTileCoordinate(x), KdcTileCoordinate(y));
+            border[k] = (neighbour & 0x1c00) == (tile & 0x1c00) ?
+                (uint8_t)TilePixel(vram, neighbour, 0, x & 7, y & 7, 4) : 0;
+        }
+        if (!same || memcmp(cached->words, words, sizeof(cached->words)) ||
+            memcmp(cached->border, border, sizeof(border))) {
+            memcpy(cached->words, words, sizeof(cached->words));
+            memcpy(cached->border, border, sizeof(border));
+            cached->matched = eligible && KdcCheckerFit(words, border, &cached->checker);
+        }
+        cached->column = column; cached->row = row; cached->layer = layer;
+        cached->generation = checker_generation; cached->valid = true;
+    }
+    if (!cached->matched) return 0;
+    double x = u - column * 8, y = v - row * 8;
+    if (tile & 0x4000) x = 8 - x;
+    if (tile & 0x8000) y = 8 - y;
+    return KdcCheckerSample(&cached->checker, x, y);
+}
 
 void KdcOrbitReset(void)
 {
@@ -172,6 +244,8 @@ static uint32_t TerrainColor(const Render *render, double u, double v,
     for (unsigned layer = 0; layer < 2; ++layer) {
         words[layer] = KdcCourseTile(g_ram, layer, x / 8, y / 8);
         pixels[layer] = TilePixel(vram, words[layer], 0, x & 7, y & 7, 4);
+        unsigned analytic = TerrainPixel(render, vram, layer, words[layer], u, v);
+        if (analytic) pixels[layer] = analytic;
     }
     int layer = pixels[0] ? 0 : 1;
     if (pixels[1] && (words[1] & 0x2000) && !(words[0] & 0x2000)) layer = 1;
@@ -780,7 +854,8 @@ static void ReportDraw(double alpha)
 static void Background(Render *render)
 {
     const KdcCourseCamera *a = &background_camera, *b = &render->camera;
-    bool same = background_valid && high_refresh &&
+    static bool background_hd;
+    bool same = background_valid && high_refresh && background_hd == render->hd &&
         a->yaw == b->yaw && a->zoom == b->zoom &&
         a->target_x == b->target_x && a->target_y == b->target_y &&
         a->target_z == b->target_z && a->lead_x == b->lead_x && a->lead_y == b->lead_y;
@@ -810,6 +885,7 @@ static void Background(Render *render)
                    (size_t)render->width * 4);
         memcpy(background_depth, render->depth, (size_t)render->width * render->height * sizeof(float));
         background_camera = render->camera;
+        background_hd = render->hd;
         background_valid = true;
     }
 }
@@ -825,7 +901,7 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
     if (PPU_forcedBlank(g_snes->ppu) || PPU_brightness(g_snes->ppu) != 15 ||
         PPU_mosaicSize(g_snes->ppu) > 1) return 0;
     Render render = {.pixels = dst, .pitch = pitch, .width = width, .height = height,
-                     .depth = depth_buffer, .ppu = g_snes->ppu};
+                     .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled()};
     if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
         g_snes->cart->rom, g_snes->cart->romImageSize)) return 0;
     render.camera = ViewCamera(&render);
@@ -837,6 +913,7 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
         sprite_count = 0;
         KdcVisitOrbitSprites(render.ppu, g_ram, CollectSprite, NULL);
     }
+    if (++checker_generation == 0) memset(checker_cache, 0, sizeof(checker_cache));
     Background(&render);
     Sprites(&render, true, true);
     Sprites(&render, true, false);

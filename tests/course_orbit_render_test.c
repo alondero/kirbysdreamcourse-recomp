@@ -33,6 +33,8 @@ bool KdcIsCourse(const Ppu *value) { return value == &ppu && course; }
 void PpuSetBackgroundSample(Ppu *p, bool (*sample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *), void *ctx) {
     p->backgroundSample = sample; p->backgroundSampleContext = ctx;
 }
+static bool hd_enabled;
+bool KdcHdEnabled(void) { return hd_enabled; }
 bool KdcOrbitEnabled(void) { return true; }
 
 void KdcVisitOrbitSprites(const Ppu *value, const uint8_t *ram,
@@ -395,7 +397,49 @@ static int Scenarios(void)
         }
     }
     EXPECT(terrain > 500 && mixed > terrain / 2);
-    for (unsigned y = 0; y < 8; ++y) ppu.vram[16 + y] = 0x00ff;
+    /* A continuous checker across 16 characters, including their borders.
+     * Magnification changes subpixels without changing guest state. */
+    for (unsigned ty = 0; ty < 4; ++ty)
+        for (unsigned tx = 0; tx < 4; ++tx) {
+            unsigned tile = 1 + ty * 4 + tx;
+            for (unsigned y = 0; y < 8; ++y) {
+                unsigned plane = 0;
+                for (unsigned x = 0; x < 8; ++x) {
+                    int u = (int)(tx * 8 + x), v = (int)(ty * 8 + y);
+                    int a = (u + 2 * v + 1 + 128) / 32;
+                    int b = (u - 2 * v + 1 + 128) / 32;
+                    if ((a ^ b) & 1) plane |= 1u << (7 - x);
+                }
+                ppu.vram[tile * 16 + y] = (uint16_t)(0xff | (plane << 8));
+                ppu.vram[tile * 16 + 8 + y] = 0;
+            }
+        }
+    for (unsigned y = 0; y < 64; ++y)
+        for (unsigned x = 0; x < 64; ++x)
+            Word(0x13000 + (y * 64 + x) * 2, 1 + (y % 4) * 4 + x % 4);
+    Snapshot();
+    NativeAngle();
+    Zoom(-32768, 100);
+    Draw();
+    memcpy(first, pixels, sizeof(first));
+    hd_enabled = true;
+    Draw();
+    EXPECT(memcmp(first, pixels, sizeof(first)) != 0);
+    memcpy(first, pixels, sizeof(first));
+    Draw();
+    EXPECT(memcmp(first, pixels, sizeof(first)) == 0);
+    ppu.cgram[3] = 0x001f;
+    Snapshot();
+    Draw();
+    EXPECT(memcmp(first, pixels, sizeof(first)) != 0);
+    for (unsigned tile = 1; tile <= 16; ++tile)
+        for (unsigned y = 0; y < 8; ++y) ppu.vram[tile * 16 + y] = 0x00ff;
+    Snapshot();
+    Draw();
+    memcpy(first, pixels, sizeof(first));
+    hd_enabled = false;
+    Draw();
+    EXPECT(memcmp(first, pixels, sizeof(first)) == 0);
     ppu.cgram[3] = 0;
     Snapshot();
     use_custom = false;

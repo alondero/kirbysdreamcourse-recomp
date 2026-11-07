@@ -432,8 +432,140 @@ static void TestDisableRestoresMode7Surface(void)
     ppu_free(p);
 }
 
+static bool LayerColor(const PpuHdTileQuery *q, uint8_t *indices, void *context)
+{
+    (void)context;
+    memset(indices, q->layer + 1, 64 * q->scale * q->scale);
+    return true;
+}
+
+static void TestLayerCacheIsolation(void)
+{
+    Ppu *p = NewPpu(4, LayerColor);
+    PpuHdTilesBeginLine(p);
+    PpuHdTileRecord record = {.flags = kPpuHdBpp4};
+    /* Identical words and palette on terrain, scenery and OBJ must not
+     * share a replacement when the provider makes a layer-specific choice. */
+    for (unsigned layer = 0; layer < kPpuHdSources; ++layer) {
+        unsigned entry = PpuHdLookup(p, layer, &record, 0, 0);
+        assert(entry);
+        assert(p->hdTiles->entries[entry - 1].image->indices[0] == layer + 1);
+        assert(PpuHdLookup(p, layer, &record, 0, 0) == entry);
+    }
+    ppu_free(p);
+}
+
+static PpuHdTileQuery observed;
+static bool RequestBorder(const PpuHdTileQuery *q, void *context)
+{
+    (void)q;
+    (void)context;
+    return true;
+}
+static bool ObserveBorder(const PpuHdTileQuery *q, uint8_t *indices, void *context)
+{
+    observed = *q;
+    return Nearest(q, indices, context);
+}
+
+static void TestNeighbourBorder(void)
+{
+    Ppu *p = NewPpu(4, ObserveBorder);
+    assert(PpuSetHdTileContextPolicy(p, RequestBorder));
+    for (unsigned i = 0; i < 1024; ++i) p->vram[i] = (uint16_t)(1 | (i % 4) << 14);
+    for (unsigned i = 0; i < 16; ++i) p->vram[0x2010 + i] = (uint16_t)Next();
+    PpuHdTilesBeginLine(p);
+    for (unsigned flip = 0; flip < 4; ++flip) {
+        p->vram[5 * 32 + 4] = (uint16_t)(1 | flip << 14);
+        PpuHdTileRecord record = {.address = 0x2010,
+            .flags = (uint8_t)(kPpuHdBpp4 | (flip & 1 ? kPpuHdFlipX : 0) |
+                                            (flip & 2 ? kPpuHdFlipY : 0))};
+        PpuInvalidateHdTiles(p);
+        assert(PpuHdLookup(p, 0, &record, 32, 40));
+        for (int k = 0; k < 80; ++k) {
+            int x = k < 48 ? k % 12 - 2 : (k - 48) / 8 < 2 ? (k - 48) / 8 - 2 : (k - 48) / 8 + 6;
+            int y = k < 48 ? (k / 12 < 2 ? k / 12 - 2 : k / 12 + 6) : (k - 48) % 8;
+            x = 32 + (flip & 1 ? 7 - x : x);
+            y = 40 + (flip & 2 ? 7 - y : y);
+            unsigned tile = p->vram[(y / 8) * 32 + x / 8];
+            unsigned px = x & 7, py = y & 7;
+            if (tile & 0x4000) px = 7 - px;
+            if (tile & 0x8000) py = 7 - py;
+            assert(observed.border[k] == Decode(p->vram + 0x2010, 4, px, py));
+        }
+    }
+    PpuHdTileRecord plain = {.address = 0x2010, .flags = kPpuHdBpp4};
+    PpuHdTilesBeginLine(p);
+    unsigned before = PpuHdLookup(p, 0, &plain, 32, 40);
+    p->vram[4 * 32 + 4] |= 0x0400; /* neighbour changes palette only */
+    PpuHdTilesBeginLine(p);
+    unsigned after = PpuHdLookup(p, 0, &plain, 32, 40);
+    assert(before != after);
+    /* Biased anchor/margin spans have no supported neighbour context. */
+    plain.flags |= kPpuHdNoBorder;
+    assert(PpuHdLookup(p, 0, &plain, 32, 40));
+    for (unsigned i = 0; i < sizeof(observed.border); ++i) assert(!observed.border[i]);
+    ppu_free(p);
+}
+
+static unsigned provider_calls;
+static uint16_t UnwrappedProvider(int layer, int x, uint32_t y,
+                                 uint16_t scroll, uint16_t real, void *context)
+{
+    (void)real;
+    (void)context;
+    assert(layer == 0 && scroll == 0);
+    assert(x >= 504 && x <= 520);
+    assert(y >= 760 && y <= 776);
+    ++provider_calls;
+    return 4;
+}
+
+static void TestBorderWrapping(void)
+{
+    Ppu *p = NewPpu(4, ObserveBorder);
+    PpuHdTileRecord record = {.address = 0x2010, .flags = kPpuHdBpp4};
+    for (unsigned page = 0; page < 4; ++page) {
+        for (unsigned i = 0; i < 1024; ++i) p->vram[page * 1024 + i] = page + 1;
+        for (unsigned y = 0; y < 8; ++y) {
+            unsigned color = page + 1;
+            p->vram[0x2010 + page * 16 + y] =
+                (color & 1 ? 0xff : 0) | (color & 2 ? 0xff00 : 0);
+            p->vram[0x2018 + page * 16 + y] = color & 4 ? 0xff : 0;
+        }
+    }
+    static const int origins[] = {-520, -264, -8, 0, 248, 256, 504, 512, 768};
+    for (unsigned size = 0; size < 4; ++size) {
+        p->bgXsc[0] = size;
+        int width = size & 1 ? 512 : 256, height = size & 2 ? 512 : 256;
+        for (unsigned a = 0; a < sizeof(origins) / sizeof(*origins); ++a)
+            for (unsigned b = 0; b < sizeof(origins) / sizeof(*origins); ++b) {
+                uint8_t border[80];
+                PpuHdBorder(p, 0, &record, (unsigned)origins[a], (unsigned)origins[b], border);
+                for (int k = 0; k < 80; ++k) {
+                    int x = k < 48 ? k % 12 - 2 : (k - 48) / 8 < 2 ? (k - 48) / 8 - 2 : (k - 48) / 8 + 6;
+                    int y = k < 48 ? (k / 12 < 2 ? k / 12 - 2 : k / 12 + 6) : (k - 48) % 8;
+                    x = ((origins[a] + x) % width + width) % width;
+                    y = ((origins[b] + y) % height + height) % height;
+                    unsigned page = x / 256 + (y / 256) * (width / 256);
+                    assert(border[k] == page + 1);
+                }
+            }
+    }
+    WsShadowSetTileProvider(1, UnwrappedProvider, NULL);
+    uint8_t border[80];
+    PpuHdBorder(p, 0, &record, 512, 768, border);
+    assert(provider_calls == 9);
+    for (unsigned k = 0; k < 80; ++k) assert(border[k] == 4);
+    WsShadowSetTileProvider(0, NULL, NULL);
+    ppu_free(p);
+}
+
 int main(void)
 {
+    TestLayerCacheIsolation();
+    TestNeighbourBorder();
+    TestBorderWrapping();
     TestIdentity(4, false);
     TestIdentity(4, true);
     TestIdentity(2, false);

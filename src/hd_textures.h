@@ -3,8 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* HD textures: re-draw the original 8x8 tiles at 4x with a palette-locked
- * edge-directed scaler (src/hd_scaler.c). The PPU composes each HD subpixel
+/* HD textures: reconstruct regular terrain edges analytically and re-draw
+ * other 8x8 tiles at 4x with a palette-locked scaler. The PPU composes each HD subpixel
  * with the original priorities, windows, colour math and palettes; anything it
  * cannot reproduce stays native. Presentation only: guest state is unchanged.
  *
