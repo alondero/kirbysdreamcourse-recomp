@@ -50,6 +50,28 @@ static const Candidate candidates[] = {
 #undef MASK
 #undef ROW
 #undef CUT
+enum { kCandidates = sizeof(candidates) / sizeof(*candidates) };
+_Static_assert(kCandidates < 256, "candidate indices are stored in bytes");
+
+/* Candidate indices ordered by mask (then index), so an XOR partner is a
+ * binary search rather than a scan. Built once; the order is a pure
+ * function of the constant table. */
+static uint8_t by_mask[kCandidates];
+static bool by_mask_ready;
+
+static void SortCandidatesByMask(void)
+{
+    if (by_mask_ready) return;
+    for (unsigned i = 0; i < kCandidates; ++i) {
+        unsigned at = i;
+        while (at > 0 && candidates[by_mask[at - 1]].mask > candidates[i].mask) {
+            by_mask[at] = by_mask[at - 1];
+            --at;
+        }
+        by_mask[at] = (uint8_t)i;
+    }
+    by_mask_ready = true;
+}
 
 static bool Side(KdcCheckerEdge edge, double x, double y)
 {
@@ -111,6 +133,18 @@ bool KdcCheckerNeedsContext(const uint16_t words[16])
     return Classify(words, colors, &target);
 }
 
+/* Keeps a model that matches the border; false once a second one matches,
+ * because an ambiguous tile has no single geometric reading. */
+static bool KeepIfUnique(const KdcChecker *model, const uint8_t border[kKdcCheckerBorderSize],
+                         KdcChecker *checker, bool *found)
+{
+    if (!BorderMatches(model, border)) return true;
+    if (*found) return false;
+    *checker = *model;
+    *found = true;
+    return true;
+}
+
 bool KdcCheckerFit(const uint16_t words[16], const uint8_t border[kKdcCheckerBorderSize], KdcChecker *checker)
 {
     uint8_t colors[2];
@@ -119,40 +153,70 @@ bool KdcCheckerFit(const uint16_t words[16], const uint8_t border[kKdcCheckerBor
     if (!border) return false;
     for (unsigned k = 0; k < kKdcCheckerBorderSize; ++k)
         if (border[k] != colors[0] && border[k] != colors[1]) return false;
-    const unsigned n = sizeof(candidates) / sizeof(*candidates);
     *checker = (KdcChecker){.colors = {colors[0], colors[1]}};
     bool found = false;
-    for (unsigned i = 0; i < n; ++i)
+    for (unsigned i = 0; i < kCandidates; ++i)
         if (candidates[i].mask == target) {
             KdcChecker model = *checker;
             model.edge[0] = candidates[i].edge;
-            if (!BorderMatches(&model, border)) continue;
-            if (found) return false;
-            *checker = model;
-            found = true;
+            if (!KeepIfUnique(&model, border, checker, &found)) return false;
         }
     if (found) return true;
-    for (unsigned i = 0; i < n; ++i)
-        for (unsigned j = i + 1; j < n; ++j) {
-            if (candidates[i].edge.slope == candidates[j].edge.slope) continue;
-            uint64_t a = candidates[i].mask, b = candidates[j].mask;
-            /* Try both operations: a native intersection match can fail
-             * the border while an XOR using the same edges still matches. */
-            for (unsigned op = 1; op <= 2; ++op) {
-                bool inverted_corner = op == 1 && (a & b) == ~target;
-                if (op == 1 && (a & b) != target && !inverted_corner) continue;
-                if (op == 2 && ((a ^ b) != target || candidates[i].edge.reverse)) continue;
-                /* XOR is unchanged when both sides are inverted; the check
-                 * above retains one representative before uniqueness testing.
-                 * A corner's exterior needs swapped colours, not a different
-                 * geometric model, when the first pixel is inside it. */
-                KdcChecker model = {.colors = {colors[inverted_corner], colors[!inverted_corner]},
-                    .edge = {candidates[i].edge, candidates[j].edge}, .operation = (uint8_t)op};
-                if (!BorderMatches(&model, border)) continue;
-                if (found) return false;
-                *checker = model;
-                found = true;
-            }
+    /* Pairs i < j of nonparallel edges. The result requires a unique model,
+     * so the search order does not matter; only the candidates are pruned.
+     * Intersection: both masks contain the corner (or its complement, whose
+     * exterior swaps colours when the first pixel is inside the corner). */
+    SortCandidatesByMask();
+    for (unsigned inverted = 0; inverted < 2; ++inverted) {
+        const uint64_t goal = inverted ? ~target : target;
+        /* Many candidates share a mask (thresholds beyond the tile give the
+         * empty or full mask), so test each pair of distinct masks once. */
+        uint8_t member[kCandidates], start[kCandidates + 1];
+        unsigned members = 0, groups = 0;
+        for (unsigned k = 0; k < kCandidates; ++k) {
+            const unsigned i = by_mask[k];
+            if ((candidates[i].mask & goal) != goal) continue;
+            if (!members || candidates[member[members - 1]].mask != candidates[i].mask)
+                start[groups++] = (uint8_t)members;
+            member[members++] = (uint8_t)i;
         }
+        start[groups] = (uint8_t)members;
+        for (unsigned g = 0; g < groups; ++g)
+            for (unsigned h = g; h < groups; ++h) {
+                if ((candidates[member[start[g]]].mask & candidates[member[start[h]]].mask) != goal)
+                    continue;
+                for (unsigned p = start[g]; p < start[g + 1]; ++p)
+                    for (unsigned q = g == h ? p + 1 : start[h]; q < start[h + 1]; ++q) {
+                        const bool ordered = member[p] < member[q];
+                        const unsigned i = ordered ? member[p] : member[q];
+                        const unsigned j = ordered ? member[q] : member[p];
+                        if (candidates[i].edge.slope == candidates[j].edge.slope) continue;
+                        KdcChecker model = {.colors = {colors[inverted], colors[!inverted]},
+                            .edge = {candidates[i].edge, candidates[j].edge}, .operation = 1};
+                        if (!KeepIfUnique(&model, border, checker, &found)) return false;
+                    }
+            }
+    }
+    /* XOR: the partner's mask is determined. XOR is unchanged when both sides
+     * are inverted, so the first edge is never reversed: one representative
+     * survives to uniqueness testing. An intersection match can fail the
+     * border while an XOR of the same edges still matches. */
+    for (unsigned i = 0; i < kCandidates; ++i) {
+        if (candidates[i].edge.reverse) continue;
+        const uint64_t want = candidates[i].mask ^ target;
+        unsigned low = 0, high = kCandidates;
+        while (low < high) {
+            unsigned middle = (low + high) / 2;
+            if (candidates[by_mask[middle]].mask < want) low = middle + 1;
+            else high = middle;
+        }
+        for (; low < kCandidates && candidates[by_mask[low]].mask == want; ++low) {
+            const unsigned j = by_mask[low];
+            if (j <= i || candidates[i].edge.slope == candidates[j].edge.slope) continue;
+            KdcChecker model = {.colors = {colors[0], colors[1]},
+                .edge = {candidates[i].edge, candidates[j].edge}, .operation = 2};
+            if (!KeepIfUnique(&model, border, checker, &found)) return false;
+        }
+    }
     return found;
 }

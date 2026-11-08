@@ -743,6 +743,14 @@ static bool Ready(void)
         PPU_brightness(g_snes->ppu) == 15 && PPU_mosaicSize(g_snes->ppu) <= 1;
 }
 
+/* Whether the latest presentation used KdcOrbitDraw's composition. */
+static bool composed;
+
+bool KdcOrbitComposing(void)
+{
+    return composed && Ready();
+}
+
 static bool Nearby(const KdcOrbitSprite *a, const KdcOrbitSprite *b)
 {
     return fabs(a->x - b->x) <= 4 && fabs(a->y - b->y) <= 4 && fabs(a->z - b->z) <= 32;
@@ -935,8 +943,8 @@ static void Background(Render *render)
     }
 }
 
-int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
-                  int width, int height, double alpha)
+static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
+                int width, int height, double alpha)
 {
     if (!camera.active || !focus_ready || !dst || width < 1 || width > kPpuBufWidth ||
         height < 1 || height > 240 || pitch < (size_t)width * 4 ||
@@ -981,4 +989,11 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
     Sprites(&render, false, false);
     RestoreHud(&render, field);
     return 1;
+}
+
+int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
+                  int width, int height, double alpha)
+{
+    composed = Draw(dst, pitch, field, width, height, alpha) != 0;
+    return composed;
 }

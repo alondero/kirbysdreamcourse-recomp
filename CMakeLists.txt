@@ -70,6 +70,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_LAYER_API
 if(NOT KDC_HD_LAYER_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-tile-context.patch after the HD tiles patch")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_PERF_API
+    REGEX "PpuPauseHdTiles" LIMIT_COUNT 1)
+if(NOT KDC_HD_PERF_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-hd-tile-perf.patch after the HD presentation patch")
+endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c

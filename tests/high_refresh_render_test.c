@@ -102,10 +102,15 @@ int main(void)
     Fill(wide_pixels, sizeof(wide_pixels) / sizeof(*wide_pixels));
     assert(KdcOrbitDraw((uint8_t *)wide_pixels, (342 + padding) * 4, NULL, 342, height, 0.5));
     CheckPadding(wide_pixels, 342);
+    assert(KdcOrbitComposing());
+    /* A declined draw shows the PPU frame, so its HD tiles must not stay
+     * paused although the view is otherwise ready. */
     assert(!KdcOrbitDraw((uint8_t *)pixels, stride * 4, NULL, width, height, 0.5));
+    assert(!KdcOrbitComposing());
     Word(0xabb2, KdcReadWord(g_ram, 0xabb2) + 1);
     KdcOrbitCapture(37, width, height); /* Map changed during this simulation. */
     assert(!KdcOrbitDraw((uint8_t *)pixels, stride * 4, NULL, width, height, 0.5));
+    assert(!KdcOrbitComposing());
     KdcOrbitInput(0, 0, false); Snapshot();
     KdcOrbitCapture(38, width, height);
     RedAt(0); memcpy(first, pixels, sizeof(first));

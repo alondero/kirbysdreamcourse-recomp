@@ -1,0 +1,378 @@
+diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
+index 8bd13098..cec56def 100644
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -1508,15 +1508,28 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+   if (!composed)
+     RtlWidescreenPresent(g_hd_native, native_pitch, g_my_pixels, w, h);
+   const size_t row_bytes = (size_t)w * (size_t)scale * 4u;
+-  for (int y = 0; y < h * scale; y++) {
+-    uint32_t *out = (uint32_t *)(dst + (size_t)y * pitch);
+-    if (composed) {
+-      const uint32_t *in = (const uint32_t *)(g_hd_native + (size_t)(y / scale) * native_pitch);
+-      for (int x = 0; x < w * scale; x++) out[x] = in[x / scale];
+-    } else {
+-      memcpy(out, (const uint8_t *)g_hd_surface + (size_t)y * row_bytes, row_bytes);
++  if (composed) {
++    /* Expand each native row once into ordinary memory, then write it to
++     * every subrow; a divide per output pixel cost milliseconds per frame.
++     * Avoid reading back from dst: it can be a write-combined texture
++     * mapping. A row too wide for the scratch row (no current mode) expands
++     * into its first subrow instead, which is correct but slower. */
++    static uint32_t row[kSnesDesktopMaxFrameWidth * kPpuHdTileMaxScale];
++    const bool fits = (size_t)w * (size_t)scale <= sizeof(row) / sizeof(*row);
++    for (int y = 0; y < h; y++) {
++      const uint32_t *in = (const uint32_t *)(g_hd_native + (size_t)y * native_pitch);
++      uint8_t *first = dst + (size_t)y * (size_t)scale * pitch;
++      uint32_t *line = fits ? row : (uint32_t *)first;
++      for (int x = 0; x < w; x++)
++        for (int sx = 0; sx < scale; sx++) line[x * scale + sx] = in[x];
++      for (int sy = fits ? 0 : 1; sy < scale; sy++)
++        memcpy(first + (size_t)sy * pitch, line, row_bytes);
+     }
++    return;
+   }
++  for (int y = 0; y < h * scale; y++)
++    memcpy(dst + (size_t)y * pitch, (const uint8_t *)g_hd_surface + (size_t)y * row_bytes,
++           row_bytes);
+ }
+ 
+ static void DrawPpuFrameWithPerf(void) {
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index eadee7fd..0b3692ba 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -74,6 +74,7 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line);
+ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line);
+ static void PpuHdTilesBeginLine(Ppu *ppu);
+ static void PpuHdTilesFree(struct PpuHdTiles *tiles);
++static void PpuHdTilesForgetCells(struct PpuHdTiles *tiles);
+ 
+ static bool ppu_evaluateSprites(Ppu* ppu, int line);
+ static uint16_t ppu_getVramRemap(Ppu* ppu);
+@@ -110,6 +111,7 @@ void ppu_reset(Ppu* ppu) {
+     ppu->renderFlags = renderFlags;
+     ppu->mode7Hd = mode7Hd;
+     ppu->hdTiles = hdTiles;
++    PpuHdTilesForgetCells(hdTiles); /* reset zeroes the VRAM write count */
+     memcpy(ppu->overlayRenderPitch, overlayPitch, sizeof(overlayPitch));
+     memcpy(ppu->overlayRenderBuffer, overlayBuffer, sizeof(overlayBuffer));
+   }
+@@ -1155,9 +1157,21 @@ typedef struct PpuHdTileMemo {
+   uint8_t bpp;
+   bool valid;
+   uint16_t entry;
+-  unsigned x, y;
+-  uint8_t flags;
+ } PpuHdTileMemo;
++/* Every scanline of a background character cell, on both screens, asks for
++ * the same image: the query depends only on the character, its palette and
++ * flips, the cell's tilemap neighbourhood and the layer registers. A full
++ * lookup resolves nine neighbouring characters and hashes their 272-byte
++ * border key and the 144-byte query, so it runs once per cell per epoch. The epoch advances on every frame, counted VRAM write,
++ * CGRAM change, picture-memory switch or cache clear. */
++enum { kPpuHdCells = 4 << 12 }; /* layer, 32 rows, 128 columns */
++typedef struct PpuHdCellMemo {
++  uint32_t epoch;           /* valid only when equal to the current epoch */
++  uint32_t x, y;            /* cell origin in raw layer coordinates */
++  uint16_t address, palette, hscroll, tileadr;
++  uint8_t flags, source, xsc;
++  uint16_t entry;
++} PpuHdCellMemo;
+ struct PpuHdTiles {
+   PpuHdTileFill *fill;
+   PpuHdTileContextPolicy *context_policy;
+@@ -1168,6 +1182,7 @@ struct PpuHdTiles {
+   uint16_t stamp;
+   uint8_t recorded[2];      /* BG layers drawn straight into bgBuffers[screen] */
+   bool recording;
++  bool paused;              /* host will not present tiles: skip all tile work */
+   unsigned count;
+   PpuHdTileStats stats;
+   PpuHdTileMemo memo[kPpuHdSources];
+@@ -1179,16 +1194,31 @@ struct PpuHdTiles {
+     uint8_t border[80];
+     bool valid;
+   } borders[512];
++  uint32_t epoch;           /* never 0, so zeroed cells are never valid */
++  int seen_frame;
++  uint32_t seen_vram_writes;
++  const uint16_t *seen_vram;
++  uint16_t seen_cgram[256];
++  PpuHdCellMemo cells[kPpuHdCells];
+   PpuHdTileEntry *entries;
+   uint8_t any[kPpuBufWidth]; /* some recorded HD subpixel differs from native */
+   PpuHdTileRecord records[2][kPpuHdSources][kPpuBufWidth];
+ };
+ 
++static void PpuHdTilesForgetCells(struct PpuHdTiles *t) {
++  if (!t) return;
++  if (++t->epoch == 0) {
++    memset(t->cells, 0, sizeof(t->cells));
++    t->epoch = 1;
++  }
++}
++
+ static void PpuHdTilesClearCache(struct PpuHdTiles *t) {
+   for (unsigned i = 0; i < kPpuHdCacheSlots; ++i)
+     free(t->entries[i].image);
+   memset(t->entries, 0, sizeof(*t->entries) * kPpuHdCacheSlots);
+   memset(t->memo, 0, sizeof(t->memo));
++  PpuHdTilesForgetCells(t); /* cell entries name the slots just freed */
+   t->count = 0;
+ }
+ 
+@@ -1212,6 +1242,7 @@ bool PpuSetHdTiles(Ppu *ppu, PpuHdTileFill *fill, void *context) {
+     if (!t) return false;
+     t->entries = calloc(kPpuHdCacheSlots, sizeof(*t->entries));
+     if (!t->entries) { free(t); return false; }
++    t->epoch = 1;
+     ppu->hdTiles = t;
+   } else {
+     PpuHdTilesClearCache(t);
+@@ -1244,6 +1275,10 @@ void PpuInvalidateHdTiles(Ppu *ppu) {
+   if (ppu && ppu->hdTiles) PpuHdTilesClearCache(ppu->hdTiles);
+ }
+ 
++void PpuPauseHdTiles(Ppu *ppu, bool paused) {
++  if (ppu && ppu->hdTiles) ppu->hdTiles->paused = paused;
++}
++
+ void PpuGetHdTileStats(Ppu *ppu, PpuHdTileStats *stats) {
+   if (!stats) return;
+   memset(stats, 0, sizeof(*stats));
+@@ -1256,7 +1291,7 @@ static void PpuHdTilesBeginLine(Ppu *ppu) {
+   struct PpuHdTiles *t = ppu->hdTiles;
+   if (!t) return;
+   const PpuMode7HdSurface *surface = &ppu->mode7Hd;
+-  t->recording = surface->pixels && surface->scale > 1 &&
++  t->recording = !t->paused && surface->pixels && surface->scale > 1 &&
+       surface->scale <= kPpuHdTileMaxScale && PPU_mode(ppu) == 1;
+   if (!t->recording) return;
+   /* Cached images are scale-specific. Clear only between lines so a pointer
+@@ -1265,6 +1300,19 @@ static void PpuHdTilesBeginLine(Ppu *ppu) {
+     PpuHdTilesClearCache(t);
+     t->scale = surface->scale;
+   }
++  /* No register or memory write happens inside a line's render, so checking
++   * here covers mid-frame DMA and HDMA as well as whole-frame replacement
++   * (state loads, resets) between frames. CGRAM is compared rather than
++   * counted: it is 512 bytes and has writers besides $2122. */
++  const uint16_t *vram = PpuRenderVram(ppu);
++  if (t->seen_frame != snes_frame_counter || t->seen_vram_writes != ppu->vramWriteCount ||
++      t->seen_vram != vram || memcmp(t->seen_cgram, ppu->cgram, sizeof(t->seen_cgram))) {
++    t->seen_frame = snes_frame_counter;
++    t->seen_vram_writes = ppu->vramWriteCount;
++    t->seen_vram = vram;
++    memcpy(t->seen_cgram, ppu->cgram, sizeof(t->seen_cgram));
++    PpuHdTilesForgetCells(t);
++  }
+   memset(t->memo, 0, sizeof(t->memo));
+   memset(t->any, 0, sizeof(t->any));
+   t->recorded[0] = t->recorded[1] = 0;
+@@ -1325,21 +1373,29 @@ static inline unsigned PpuHdNativeIndex(const uint16_t *vram,
+   return v;
+ }
+ 
+-static uint64_t PpuHdHash(const PpuHdTileQuery *q) {
+-  /* Words and colours are 64 contiguous bytes; mix them a word at a time. */
+-  uint64_t hash = 0x9e3779b97f4a7c15ull ^ q->bpp ^ ((uint64_t)q->layer << 8);
+-  const uint8_t *bytes = (const uint8_t *)q->words;
+-  for (size_t i = 0; i < sizeof(q->words) + sizeof(q->colors); i += 8) {
++/* Mixes size bytes (a multiple of eight) into hash eight bytes at a time.
++ * Callers still compare their keys in full. */
++static uint64_t PpuHdMix(uint64_t hash, const void *data, size_t size) {
++  const uint8_t *bytes = (const uint8_t *)data;
++  for (size_t i = 0; i < size; i += 8) {
+     uint64_t word;
+     memcpy(&word, bytes + i, 8);
+     hash = (hash ^ word) * 0xff51afd7ed558ccdull;
+     hash ^= hash >> 32;
+   }
+-  for (unsigned i = 0; i < sizeof(q->border); ++i)
+-    hash = (hash ^ q->border[i]) * 0xff51afd7ed558ccdull;
+   return hash;
+ }
+ 
++static uint64_t PpuHdHash(const PpuHdTileQuery *q) {
++  /* Words, colours and border are 144 contiguous bytes. */
++  _Static_assert(offsetof(PpuHdTileQuery, colors) == offsetof(PpuHdTileQuery, words) + 32 &&
++                 offsetof(PpuHdTileQuery, border) == offsetof(PpuHdTileQuery, words) + 64 &&
++                 sizeof(((PpuHdTileQuery *)0)->border) % 8 == 0,
++                 "hashed query fields must be contiguous");
++  return PpuHdMix(0x9e3779b97f4a7c15ull ^ q->bpp ^ ((uint64_t)q->layer << 8),
++                  q->words, 64 + sizeof(q->border));
++}
++
+ static void PpuHdSummarise(const PpuHdTileQuery *q, PpuHdImage *image) {
+   const unsigned s = q->scale, side = 8 * s;
+   image->opaque = image->clear = image->same = 0;
+@@ -1403,8 +1459,8 @@ static void PpuHdBorder(Ppu *ppu, unsigned layer, const PpuHdTileRecord *rec,
+     memcpy(key + at_key, vram + at, 32); /* 16-word aligned; cannot wrap */
+     at_key += 16;
+   }
+-  uint32_t hash = 2166136261u;
+-  for (unsigned i = 0; i < 137; ++i) hash = (hash ^ key[i]) * 16777619u;
++  uint64_t mixed = PpuHdMix(0x9e3779b97f4a7c15ull ^ key[136], key, 136 * sizeof(*key));
++  uint32_t hash = (uint32_t)(mixed ^ (mixed >> 29));
+   hash = (hash ^ (hash >> 16)) * 0x7feb352du;
+   hash ^= hash >> 15;
+   unsigned slot = hash & 511;
+@@ -1448,11 +1504,31 @@ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+   struct PpuHdTiles *t = ppu->hdTiles;
+   const unsigned bpp = (rec->flags & kPpuHdBpp4) ? 4 : 2;
+   const uint16_t palette = rec->z & 0xff;
+-  PpuHdTileMemo *memo = &t->memo[source];
+-  if (memo->valid && memo->address == rec->address &&
+-      memo->palette == palette && memo->bpp == bpp &&
+-      memo->x == (raw_x & ~7u) && memo->y == (raw_y & ~7u) && memo->flags == rec->flags)
+-    return memo->entry;
++  PpuHdTileMemo *memo = NULL;
++  PpuHdCellMemo *cell = NULL, key;
++  if (source < kPpuHdObj) {
++    key = (PpuHdCellMemo){t->epoch, raw_x & ~7u, raw_y & ~7u, rec->address, palette,
++        (uint16_t)ppu->hScroll[source], (uint16_t)PPU_bgTileAdr(ppu, source),
++        rec->flags, (uint8_t)source, ppu->bgXsc[source], 0};
++    /* With a steady scroll the visible cells form a window at most 101
++     * columns by 29 rows per layer, so indexing by position modulo 128x32
++     * does not collide. Raster scroll changes can; that only costs a full
++     * lookup, as every key field is compared. */
++    cell = &t->cells[source << 12 | (key.y >> 3 & 31) << 7 | (key.x >> 3 & 127)];
++    if (cell->epoch == key.epoch && cell->x == key.x && cell->y == key.y &&
++        cell->address == key.address && cell->palette == key.palette &&
++        cell->hscroll == key.hscroll && cell->tileadr == key.tileadr &&
++        cell->flags == key.flags && cell->source == key.source && cell->xsc == key.xsc)
++      return cell->entry;
++  } else {
++    /* OBJ characters have no neighbour context; a run of one sprite's
++     * pixels shares its character. */
++    memo = &t->memo[source];
++    if (memo->valid && memo->address == rec->address &&
++        memo->palette == palette && memo->bpp == bpp)
++      return memo->entry;
++  }
++  ++t->stats.lookups;
+   PpuHdTileQuery q;
+   memset(&q, 0, sizeof(q));
+   const uint16_t *vram = PpuRenderVram(ppu);
+@@ -1476,6 +1552,7 @@ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+       if (t->count + 1 >= kPpuHdCacheSlots) break; /* full until next line */
+       const size_t bytes = sizeof(PpuHdImage) + (size_t)64 * t->scale * t->scale;
+       PpuHdImage *image = malloc(bytes);
++      ++t->stats.misses;
+       if (image && !t->fill(&q, image->indices, t->context)) {
+         free(image);
+         image = NULL;
+@@ -1495,7 +1572,12 @@ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+     }
+     slot = (slot + 1) & (kPpuHdCacheSlots - 1);
+   }
+-  *memo = (PpuHdTileMemo){rec->address, palette, (uint8_t)bpp, true, found, raw_x & ~7u, raw_y & ~7u, rec->flags};
++  if (cell) {
++    key.entry = found;
++    *cell = key;
++  } else {
++    *memo = (PpuHdTileMemo){rec->address, palette, (uint8_t)bpp, true, found};
++  }
+   return found;
+ }
+ 
+@@ -1538,7 +1620,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+   PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
+       PpuHdRecordRow(ppu, sub, layer) : NULL;
+   if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
+-#define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
++#define HD_RECORD(n, t) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
+     (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (unsigned)((int)(dstz - dstbuf->data) - kPpuExtraLeftRight + ppu->hScroll[layer] + ws_bias[windex]), y, tileadr, 4, zhi, zlo, kPaletteShift, ws_bias[windex] == 0); } while (0)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+@@ -1556,7 +1638,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+       int curw = IntMin(8 - (x & 7), w);
+       w -= curw;
+       uint32 tile = WS_TILE(*tp, ws_sx);
+-      HD_RECORD(curw, tile, x & 7);
++      HD_RECORD(curw, tile);
+       ws_sx += curw;
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+@@ -1578,7 +1660,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     // Handle full tiles in the middle
+     while (w >= 8) {
+       uint32 tile = WS_TILE(*tp, ws_sx);
+-      HD_RECORD(8, tile, 0);
++      HD_RECORD(8, tile);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -1598,7 +1680,7 @@ static void PpuDrawBackground_4bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf,
+     // Handle remaining clipped part
+     if (w) {
+       uint32 tile = WS_TILE(*tp, ws_sx);
+-      HD_RECORD(w, tile, 0);
++      HD_RECORD(w, tile);
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+       uint32 bits = READ_BITS(ta, tile & 0x3ff);
+@@ -2081,8 +2163,8 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+   PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
+       PpuHdRecordRow(ppu, sub, layer) : NULL;
+   if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
+-#define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
+-    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 2, zhi, zlo, kPaletteShift, false); } while (0)
++#define HD_RECORD(n, t) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
++    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (unsigned)((int)(dstz - dstbuf->data) - kPpuExtraLeftRight + ppu->hScroll[layer] + ws_bias[windex]), y, tileadr, 2, zhi, zlo, kPaletteShift, false); } while (0)
+   for (size_t windex = 0; windex < win.nr; windex++) {
+     if (win.bits & (1 << windex))
+       continue;  // layer is disabled for this window part
+@@ -2099,7 +2181,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+       int curw = IntMin(8 - (x & 7), w);
+       w -= curw;
+       uint32 tile = SCENERY_TILE(*tp);
+-      HD_RECORD(curw, tile, x & 7);
++      HD_RECORD(curw, tile);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -2120,7 +2202,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+     // Handle full tiles in the middle
+     while (w >= 8) {
+       uint32 tile = SCENERY_TILE(*tp);
+-      HD_RECORD(8, tile, 0);
++      HD_RECORD(8, tile);
+       NEXT_TP();
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+@@ -2140,7 +2222,7 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+     // Handle remaining clipped part
+     if (w) {
+       uint32 tile = SCENERY_TILE(*tp);
+-      HD_RECORD(w, tile, 0);
++      HD_RECORD(w, tile);
+       int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
+       PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
+       uint32 bits = READ_BITS(ta, tile & 0x3ff);
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index d5e781ff..aa8f73fa 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -59,6 +59,8 @@ typedef struct PpuHdTileStats {
+   uint32_t native_lines;    /* lines a source could not reproduce */
+   uint32_t replaced_pixels; /* native pixels drawn from at least one HD tile */
+   uint32_t fallback_pixels; /* HD-backed pixels kept native by the check */
++  uint32_t lookups;         /* content-cache lookups (cell and OBJ memo misses) */
++  uint32_t misses;          /* lookups that asked the source for a new image */
+   uint32_t cached_tiles;
+ } PpuHdTileStats;
+ struct PpuHdTiles;
+@@ -666,6 +668,11 @@ typedef bool PpuHdLinePolicy(const Ppu *ppu, unsigned line, int first_x,
+ bool PpuSetHdTilePolicy(Ppu *ppu, PpuHdLinePolicy *policy, void *context);
+ /* Drop cached tiles, for example after a source changes its output. */
+ void PpuInvalidateHdTiles(Ppu *ppu);
++/* Skip recording, lookups and composition for the lines that follow, keeping
++ * the cache, while the host will not present the tiles (a game-composed
++ * frame, or a policy that would keep every line native). The bound surface
++ * receives the nearest-scaled native line. */
++void PpuPauseHdTiles(Ppu *ppu, bool paused);
+ /* Cumulative counters since the source was last set. */
+ void PpuGetHdTileStats(Ppu *ppu, PpuHdTileStats *stats);
+ void ppu_sec_reset(void);
