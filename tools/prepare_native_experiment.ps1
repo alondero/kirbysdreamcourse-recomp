@@ -149,6 +149,7 @@ if ($ApuBoundarySync) { $patches += 'snesrecomp-apu-boundary-sync.patch' }
 $patches += 'snesrecomp-hd-tiles.patch'
 $patches += 'snesrecomp-hd-tile-context.patch'
 $patches += 'snesrecomp-hd-present.patch'
+$patches += 'snesrecomp-hd-tile-perf.patch'
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
     git -C $framework apply --check $patch

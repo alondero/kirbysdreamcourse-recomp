@@ -1,6 +1,7 @@
 #include "hd_textures.h"
 #include "hd_scaler.h"
 #include "course_checker.h"
+#include "course_orbit.h"
 #include "course_sprites.h"
 #include "course_view.h"
 #include "launcher_settings.h"
@@ -180,6 +181,12 @@ unsigned KdcHdScale(void)
     }
     /* Sampled between frames, like the other course presentation hooks. */
     course_active = ppu && KdcIsCourse(ppu);
+    /* Outside courses every line stays native; while the orbit view composes
+     * the frame the host presents that composition instead of the tiles.
+     * Either way the tile work would be discarded, so skip it. The orbit
+     * state is a frame old here: a view switch can show one frame without
+     * HD detail, never stale tiles. */
+    if (fill && ppu) PpuPauseHdTiles(ppu, !course_active || KdcOrbitComposing());
     /* Developer diagnostic: KDC_HD_STATS=1 prints cumulative counters. */
     static int reported = -1;
     if (fill && ppu && snes_frame_counter % 300 == 0 && snes_frame_counter != reported &&
@@ -188,9 +195,10 @@ unsigned KdcHdScale(void)
         PpuHdTileStats s;
         PpuGetHdTileStats(ppu, &s);
         fprintf(stderr, "[hd] frame=%d hd_lines=%llu native_lines=%llu replaced=%llu "
-                "fallback=%llu cached=%u\n", snes_frame_counter,
+                "fallback=%llu lookups=%llu misses=%llu cached=%u\n", snes_frame_counter,
                 (unsigned long long)s.hd_lines, (unsigned long long)s.native_lines,
                 (unsigned long long)s.replaced_pixels, (unsigned long long)s.fallback_pixels,
+                (unsigned long long)s.lookups, (unsigned long long)s.misses,
                 (unsigned)s.cached_tiles);
     }
     return fill ? kKdcHdScale : 1;

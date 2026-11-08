@@ -498,6 +498,7 @@ static void TestNeighbourBorder(void)
     PpuHdTilesBeginLine(p);
     unsigned before = PpuHdLookup(p, 0, &plain, 32, 40);
     p->vram[4 * 32 + 4] |= 0x0400; /* neighbour changes palette only */
+    p->vramWriteCount++;           /* as a $2118/$2119 or DMA write counts it */
     PpuHdTilesBeginLine(p);
     unsigned after = PpuHdLookup(p, 0, &plain, 32, 40);
     assert(before != after);
@@ -561,8 +562,109 @@ static void TestBorderWrapping(void)
     ppu_free(p);
 }
 
+/* Content lookups (and neighbour-border decoding) are the dominant HD cost.
+ * Every scanline of a character cell asks for the same image, so a frame
+ * must resolve each visible cell once, not once per scanline. */
+static unsigned context_calls, fill_calls;
+static bool CountContext(const PpuHdTileQuery *q, void *context)
+{
+    (void)q;
+    (void)context;
+    ++context_calls;
+    return true;
+}
+static bool CountFill(const PpuHdTileQuery *q, uint8_t *indices, void *context)
+{
+    ++fill_calls;
+    return Nearest(q, indices, context);
+}
+
+static Ppu *SingleCharacterScene(void)
+{
+    Ppu *p = NewPpu(4, CountFill);
+    assert(PpuSetHdTileContextPolicy(p, CountContext));
+    for (unsigned i = 0; i < 0x400; ++i) p->vram[i] = 1; /* BG1: character 1, palette 0 */
+    for (unsigned i = 0; i < 16; ++i) p->vram[0x2010 + i] = (uint16_t)Next();
+    for (unsigned i = 0; i < 256; ++i) p->cgram[i] = (uint16_t)(Next() & 0x7fff);
+    p->screenEnabled[0] = 0x01;
+    p->screenEnabled[1] = 0x00;
+    p->hScroll[0] = 3; p->vScroll[0] = 5;
+    return p;
+}
+
+static void TestOneLookupPerCell(void)
+{
+    Ppu *p = SingleCharacterScene();
+    /* BG3 (2bpp) alternates characters, so a key without the cell position
+     * would miss on every span. Sprites are parked off screen. */
+    for (unsigned i = 0; i < 0x400; ++i) p->vram[0x800 + i] = (uint16_t)(1 + (i & 1));
+    for (unsigned i = 0; i < 16; ++i) p->vram[0x4008 + i] = (uint16_t)Next();
+    for (unsigned i = 0; i < 256; i += 2) p->oam[i] = 0xf000;
+    p->screenEnabled[0] = 0x05;
+    p->hScroll[2] = 3; p->vScroll[2] = 5;
+    context_calls = 0;
+    Render(p);
+    AssertNearest(4);
+    /* 256x224 with a 3,5 scroll touches 33x29 cells per layer. */
+    assert(context_calls > 0 && context_calls <= 33 * 29);
+    PpuHdTileStats stats;
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.lookups <= 2 * 33 * 29);
+    ppu_free(p);
+}
+
+static void TestCellLookupsFollowWrites(void)
+{
+    Ppu *p = SingleCharacterScene();
+    Render(p);
+    /* A counted VRAM write in the same frame (as $2118/$2119 or DMA make)
+     * must not reuse a cell's earlier image. */
+    for (unsigned i = 0; i < 16; ++i) p->vram[0x2010 + i] = (uint16_t)Next();
+    p->vramWriteCount++;
+    Render(p);
+    AssertNearest(4);
+    /* A palette change between lines re-keys the following lines. */
+    ppu_drawCapturedLine(p, 0, true);
+    for (int line = 1; line <= 100; ++line) ppu_drawCapturedLine(p, line, true);
+    const unsigned before = fill_calls;
+    p->cgram[1] ^= 0x1234;
+    for (int line = 101; line <= kHeight; ++line) ppu_drawCapturedLine(p, line, true);
+    assert(fill_calls > before);
+    AssertNearest(4);
+    /* A new frame never trusts the previous frame's cells: hosts may replace
+     * VRAM wholesale between frames (state loads, soft reset). */
+    for (unsigned i = 0; i < 16; ++i) p->vram[0x2010 + i] = (uint16_t)Next();
+    ++snes_frame_counter;
+    Render(p);
+    AssertNearest(4);
+    ppu_free(p);
+}
+
+/* While the host will not present the tiles (the game composes its own
+ * frame, or the policy would keep every line native), no recording, lookup
+ * or composition runs and the surface is the nearest-scaled native frame. */
+static void TestPauseSkipsTileWork(void)
+{
+    Ppu *p = NewPpu(4, Opaque);
+    RandomScene(p);
+    PpuPauseHdTiles(p, true);
+    Render(p);
+    AssertNearest(4);
+    PpuHdTileStats stats;
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.lookups == 0 && stats.hd_lines == 0 && stats.cached_tiles == 0);
+    PpuPauseHdTiles(p, false);
+    Render(p);
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.lookups > 0 && stats.hd_lines > 0);
+    ppu_free(p);
+}
+
 int main(void)
 {
+    TestPauseSkipsTileWork();
+    TestOneLookupPerCell();
+    TestCellLookupsFollowWrites();
     TestLayerCacheIsolation();
     TestNeighbourBorder();
     TestBorderWrapping();

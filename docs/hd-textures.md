@@ -32,10 +32,15 @@ The work is split between a generic framework patch and a small game policy.
    is enabled, the Mode 1 8x8 background drawers and sprite evaluation
    record, for every native pixel and layer, which character was offered
    there, with its palette, priority and flips. Transparent pixels are
-   recorded too, so an HD edge can grow over them. Each character span is
-   looked up once in a content-addressed cache: the same character words and
-   palette colours share one image even when the game streams them through
-   different video memory slots.
+   recorded too, so an HD edge can grow over them. Images live in a
+   content-addressed cache: the same character words and palette colours
+   share one image even when the game streams them through different video
+   memory slots. A full lookup (resolve nine neighbouring characters, hash
+   their border key and the query, probe) runs once per background character
+   cell per frame, not once per
+   scanline: `snesrecomp-hd-tile-perf.patch` remembers each cell's result,
+   keyed by its position, character, palette, flips and layer registers, until
+   the frame, a counted VRAM write, CGRAM contents or the cache change.
 2. **Scaling** (`src/course_checker.c`, `src/hd_scaler.c`). A cache miss asks
    the game for the HD image. For BG1/BG2, opaque two-colour characters are
    first tested against straight isometric edges (1:1 and 2:1, including
@@ -44,7 +49,10 @@ The work is split between a generic framework patch and a small game policy.
    half-planes are compile-time constants. A model is accepted only if it
    reproduces all 64 original pixel centres and the 80 neighbouring samples
    in a two-pixel border, with at least eight interior pixels of each colour,
-   and the fit is unique. Ambiguous corner fits stay on the
+   and the fit is unique. The search only pairs candidates whose masks
+   contain the target (an intersection can match nothing else) and finds an
+   XOR partner by its mask, testing each pair of distinct masks once; because
+   the fit must be unique, this pruning cannot change the result. Ambiguous corner fits stay on the
    existing path rather than choosing a phase that could disagree with a
    neighbouring tile. Accepted edges are evaluated at each output sample, keeping
    the original palette indices and tile flips. This avoids rounded checker
@@ -73,9 +81,17 @@ The work is split between a generic framework patch and a small game policy.
    spans where the panel is composited over the clean scenery map (the same
    rule the orbit camera uses, `KdcHudSpan` in `src/course_view.h`), plus the
    screen-anchored sprite pieces recovered by `src/course_sprites.c`.
+   When the result would be discarded, the game pauses tile work entirely
+   (`PpuPauseHdTiles`): outside courses, and while the orbit view composes
+   the presented frame itself. Paused lines get the nearest-scaled native
+   line. The orbit decision uses the previous presentation (`KdcOrbitComposing`
+   reports whether the last orbit draw composed and the view is still ready),
+   so the first frame after leaving the view, or a frame the orbit view
+   declines to draw, can show without HD detail. It never shows stale tiles.
 5. **Presentation** (`patches/snesrecomp-hd-present.patch`). The desktop host
    binds a 4x surface for the next frame and presents it only after a whole
-   frame has been drawn into it. Screenshots taken while HD is active are 4x
+   frame has been drawn into it. A game-composed frame (the orbit view) is
+   nearest-scaled a row at a time instead. Screenshots taken while HD is active are 4x
    (1024x896, or wider in widescreen). Thumbnails, frame dumps and the overlay
    backdrop keep using the native frame.
 
@@ -121,7 +137,14 @@ ROM-free tests:
   straight edges, crossings, all 32 checker phases across adjacent tiles,
   all four corner rotations in both palette polarities at native and fractional
   coordinates, ambiguous-corner rejection,
-  and rejection of unsupported patterns.
+  and rejection of unsupported patterns. Its equivalence fixture keeps the
+  original exhaustive pair search as an oracle: 4,000 models sampled from the
+  candidate set (a quarter with perturbed borders) and 2,000 irregular
+  two-colour patterns must give identical fits. With `KDC_TEST_TIMING=1` it
+  also requires the pruned search to be at least 4x faster in the same
+  process; that wall-time check is not run in CI.
+- `tests/test_course_orbit_render.py` also checks that `KdcOrbitComposing`
+  turns off after a declined orbit draw, so HD tile work resumes.
 - `tests/test_course_orbit_render.py` also checks magnified checker rendering,
   repeatability, palette changes, streamed tile invalidation and guest-state
   preservation with HD on.
@@ -140,7 +163,10 @@ ROM-free tests:
   the line policy, layer-specific cache isolation, neighbour-border flips,
   negative and wrapped coordinates for all four tilemap
   sizes, unwrapped widescreen-provider coordinates, biased-span rejection,
-  and that unsupported lines stay native.
+  and that unsupported lines stay native. Work-count checks require one
+  content lookup per visible cell per frame on both a 4bpp and a 2bpp layer,
+  new lookups after a counted VRAM write, a palette change between lines or a
+  new frame, and no tile work at all while paused.
 - `tests/test_hd_scaler.py` checks the scaler: flat images are unchanged,
   diagonals become monotone staircases, output is palette-locked, and
   rotating the input rotates the output.
@@ -205,7 +231,9 @@ Results on `normal:1:1`, frame 380, recorded 2026-11-07:
 
 Developer switches for headless checks: `KDC_HD=0|1` overrides the saved
 choice. `KDC_HD_SOURCE=nearest` selects the exact nearest-neighbour source
-used as the identity oracle. `KDC_HD_STATS=1` prints cumulative counters.
+used as the identity oracle. `KDC_HD_STATS=1` prints cumulative counters,
+including `lookups` (full content lookups, after the per-cell and sprite
+memos) and `misses` (images requested from the source).
 
 ### Performance diagnosis, 2026-11-07
 
@@ -248,7 +276,8 @@ This runs `normal:1:1` with deterministic no-input starts, widescreen, audio off
 VSync off, and no frame delay. It profiles frames 350–605, after course loading.
 The screenshot comparison occurs at frame 340, before timing starts, so image
 encoding does not inflate composition time. Omit `--display` for SDL dummy;
-use `--native-width` to disable widescreen. Logs, captures and JSON measurements
+use `--native-width` to disable widescreen, and `--scenario shot` or
+`--scenario orbit` for the moving cases described below. Logs, captures and JSON measurements
 stay in ignored `local/`. `--max-raster-ms` optionally enforces a local budget;
 wall-time thresholds are sensitive to other workloads and are not CI tests.
 
@@ -258,6 +287,73 @@ native width and widescreen. These checks establish preservation of the previous
 renderer, not new fidelity to the pinned reference emulator. Linux, other holes,
 extreme aspect ratios, and sustained high-refresh play are not qualified by this
 bounded run.
+
+### Lookup and orbit costs, 2026-11-08
+
+Play with HD on fell well short of 60 fps. Timers inside the PPU during a
+scripted shot (ball rolling, camera following) attributed most of the 9.5 ms
+HD overhead to bookkeeping, not to generating HD images:
+
+- About 27,000 full content lookups per frame, 6,700 of them decoding a
+  neighbour border: roughly 6.5 ms. The neighbour context made each lookup
+  depend on the cell position, so the per-line memo, keyed by the previous
+  span, almost never hit, and every scanline of every cell repeated the work.
+  BG3 also passed only the in-tile x offset as its position.
+- Composition of the ~15,000 pixels per frame that really change: ~2.5 ms,
+  plus ~0.3 ms of nearest row seeding.
+- Image generation: under 0.1 ms per frame on average, but each checker fit
+  scanned all ~27,700 candidate pairs (about 19 µs each in the fixture), and
+  the orbit view fits every newly visible location: 38 ms on its first frame.
+- With the orbit view (and therefore high refresh), the host presents the
+  game's own composition, so the whole PPU tile pass was discarded, and that
+  composition was nearest-scaled with a divide per output pixel.
+
+The per-cell memo, the BG3 position, pausing discarded work, the pruned fit,
+row-wise expansion and wider hash mixing address these. Full lookups fell to
+about 4,700 per frame. `benchmark_hd.py --scenario` reproduces the moving
+cases: `shot` plays a scripted shot (1100 frames, three A presses from
+frame 600), and `orbit` plays the same shot while `KDC_CAMERA_SCRIPT` turns the
+orbit view at frames 500, 700 and 900. Both profile frames 350–1100 and
+compare a 4x screenshot of frame 800 in a separate untimed run, because
+encoding it inside the window adds about 250 ms to one frame.
+
+```powershell
+python tools/benchmark_hd.py --executable local/guarded-build/KirbyDreamCourseRecomp.exe --baseline local/baseline-build/KirbyDreamCourseRecomp.exe --repeat 1 --display
+python tools/benchmark_hd.py --executable local/guarded-build/KirbyDreamCourseRecomp.exe --baseline local/baseline-build/KirbyDreamCourseRecomp.exe --repeat 1 --display --scenario shot
+python tools/benchmark_hd.py --executable local/guarded-build/KirbyDreamCourseRecomp.exe --baseline local/baseline-build/KirbyDreamCourseRecomp.exe --repeat 1 --display --scenario orbit
+```
+
+`local/baseline-build` held a Release build of the previous commit. Results on
+a Ryzen 9 3900X, Direct3D display, widescreen, unpaced, HD on (means over the
+window; max is the slowest frame; fps is the whole run):
+
+| Scenario | Stage | Before | After |
+| --- | --- | --- | --- |
+| still (default) | HD raster | 9.145 ms | 5.101 ms |
+| | Unpaced fps | 77.2 | 97.1 |
+| shot | HD raster | 9.597 ms | 5.110 ms |
+| | Unpaced fps | 69.5 | 94.4 |
+| orbit | HD raster | 9.661 ms | 2.148 ms |
+| | Orbit composition (`compose`, mean / max) | 10.245 / 48.6 ms (frame 501) | 6.572 / 16.6 ms |
+| | Unpaced fps | 46.9 | 77.2 |
+
+HD off measured about 1.0 ms of raster in the same runs (142 fps still and
+shot, 101 fps orbit), unchanged between builds. With `--native-width` the
+same scenarios measured shot 6.968 → 3.665 ms raster (81.9 → 106.2 fps) and
+orbit 7.053 → 1.444 ms raster, composition 8.904 / 33.6 → 5.852 / 13.5 ms
+(54.8 → 86.2 fps). Every run's screenshot was byte-identical to the previous
+build's. The worst orbit frame was the view's
+first, which fits every newly visible location. A first version of the
+row-wise expansion read back from the presentation buffer; on a real display
+that is a write-combined texture mapping, and orbit composition rose to 20 ms.
+It now expands into ordinary memory. Wall-clock numbers remain indicative.
+
+Remaining costs, in rough order: the orbit view rebuilds each visible
+location's 80-sample border every draw (80 tile lookups per location);
+composition of changed pixels is serial per line; and the 4x frame is still
+seeded, copied and uploaded by the CPU. Moving composition to the GPU, from an
+uploaded native frame, per-pixel tile records and an HD tile atlas, would
+remove the last two but is a larger change.
 
 ## Known limits
 
@@ -272,5 +368,11 @@ bounded run.
   A HUD piece whose anchor is unresolved is treated as course art.
 - The orbit camera evaluates checker geometry at its own output pixels, but
   the composed frame is still nearest-scaled for presentation.
-- The HD path costs a few milliseconds per frame. It has not been measured
-  on slower machines or Linux.
+- The HD path costs about 4 ms of CPU per frame on the development PC (about
+  1 ms in the orbit view, plus its own checker sampling). It has not been
+  measured on slower machines or Linux.
+- The per-cell memo trusts a cell for the rest of the frame unless VRAM is
+  written through counted paths, CGRAM changes, or the frame advances. A
+  widescreen tile provider whose answer changes mid-frame without such a
+  write could give one frame of stale neighbour context; the exactness check
+  still keeps every native pixel centre.
