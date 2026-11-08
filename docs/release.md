@@ -57,9 +57,12 @@ python .agents/skills/release/scripts/release.py smoke-windows --archive local/r
 
 The shared build calls ordinary setup with release version/defaults enabled.
 It uses the same framework pin, patches, generated-code configuration and
-interpreter fallback as development. Fresh `local/guarded*` paths are required;
-existing outputs are preserved rather than silently overwritten. An optional
-`-SdlSource` supports an already verified SDL 3.4.10 source tree.
+interpreter fallback as development. Setup refreshes the framework and game
+code in the existing `local/guarded*` paths and replaces the executable in
+`local/guarded-build`; it resets and cleans the pinned framework checkout
+before applying patches. Saves and settings in the build directory remain in
+place.
+An optional `-SdlSource` supports an already verified SDL 3.4.10 source tree.
 
 The framework fetches SDL 3.4.10 with its pinned SHA-256 and links SDL and the
 MinGW runtime statically by default. Staging walks the PE import closure and
