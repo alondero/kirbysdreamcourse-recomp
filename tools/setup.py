@@ -69,8 +69,8 @@ def build(args):
     project = local / args.name
     output = local / f"{args.name}-build"
     for directory in (framework, project, output):
-        if directory.exists():
-            raise ValueError(f"{directory} already exists; choose a fresh --name")
+        if directory.exists() and not directory.is_dir():
+            raise ValueError(f"{directory} exists but is not a directory")
     if not pristine.exists():
         run("git", "clone", "-c", "core.autocrlf=false", "--no-checkout",
             "https://github.com/RetroPortingToolKit/snesrecomp.git", pristine)
@@ -79,8 +79,24 @@ def build(args):
         raise ValueError("local/snesrecomp is not at the pinned revision")
     if git_output(pristine, "status", "--porcelain"):
         raise ValueError("local/snesrecomp has local changes; use a clean pinned checkout")
-    run("git", "clone", "-c", "core.autocrlf=false", "--no-hardlinks", "--no-checkout", pristine, framework)
-    run("git", "-C", framework, "checkout", "--detach", FRAMEWORK_REV)
+    if framework.exists():
+        if not (framework / ".git").exists():
+            raise ValueError(f"{framework} is not a Git checkout")
+        local_root = local.resolve()
+        resolved_framework = framework.resolve()
+        framework_root = Path(git_output(framework, "rev-parse", "--show-toplevel")).resolve()
+        if (not resolved_framework.is_relative_to(local_root) or
+                framework_root != resolved_framework):
+            raise ValueError(f"{framework} is not an independent framework checkout")
+        if git_output(framework, "rev-parse", "HEAD") != FRAMEWORK_REV:
+            raise ValueError(f"{framework} is not at the pinned revision")
+        # This clone is a generated build input. Reset its prior patch stack so
+        # every rebuild applies the current complete stack from the same pin.
+        run("git", "-C", framework, "reset", "--hard", FRAMEWORK_REV)
+        run("git", "-C", framework, "clean", "-fdx")
+    else:
+        run("git", "clone", "-c", "core.autocrlf=false", "--no-hardlinks", "--no-checkout", pristine, framework)
+        run("git", "-C", framework, "checkout", "--detach", FRAMEWORK_REV)
     patches = list(PATCHES)
     if args.apu_boundary_sync:
         patches.append("apu-boundary-sync")
@@ -88,8 +104,9 @@ def build(args):
         patch = ROOT / "patches" / f"snesrecomp-{name}.patch"
         run("git", "-C", framework, "apply", "--check", patch)
         run("git", "-C", framework, "apply", patch)
+    project.mkdir(parents=True, exist_ok=True)
     config = project / "recomp"
-    config.mkdir(parents=True)
+    config.mkdir(parents=True, exist_ok=True)
     for bank_cfg in (ROOT / "recomp").glob("bank*.cfg"):
         shutil.copy2(bank_cfg, config)
     symbols = (ROOT / "recomp/symbols.toml").read_text(encoding="utf-8-sig")
