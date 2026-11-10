@@ -16,6 +16,27 @@ static double RedAt(double alpha)
     return x;
 }
 
+static double HdRedAt(double alpha)
+{
+    enum { w = width * 4, h = height * 4, pitch = (w + padding) * 4 };
+    static uint32_t output[(w + padding) * h];
+    hd_enabled = true;
+    Fill(output, sizeof(output) / sizeof(*output));
+    assert(KdcOrbitDrawHd((uint8_t *)output, pitch, NULL, width, height, alpha, 4));
+    double sum = 0;
+    unsigned count = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x)
+            if (output[y * (w + padding) + x] == red) { sum += x; ++count; }
+        for (int x = w; x < w + padding; ++x) assert(output[y * (w + padding) + x] == 0xdeadbeef);
+    }
+    assert(count);
+    assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
+    assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
+    hd_enabled = false;
+    return (sum / count - 1.5) / 4;
+}
+
 int main(void)
 {
     assert(!OrbitFixtureMain());
@@ -32,12 +53,15 @@ int main(void)
     KdcOrbitCapture(1, width, height);
     double start = RedAt(1);
     assert(RedAt(0) == start); /* No history yet. */
+    assert(fabs(HdRedAt(1) - start) < 0.5);
+    assert(RedAt(1) == start); /* Changing output size invalidates the background cache. */
     custom[0].x += 0.5;
     KdcOrbitInput(0, 0, false);
     KdcOrbitCapture(2, width, height);
     double end = RedAt(1), middle = RedAt(0.5);
     assert(end > start + 10 && middle > start + 3 && middle < end - 3);
     assert(RedAt(0) == start);
+    assert(fabs(HdRedAt(0.5) - middle) < 0.5);
     assert(RedAt(1) == end); /* Repeated presents do not advance the camera. */
 
     /* Actor movement survives an animation-layout change. The current
@@ -66,6 +90,7 @@ int main(void)
         KdcOrbitInput(32767, 0, false);
         KdcOrbitCapture(frame, width, height);
     }
+    assert(isfinite(HdRedAt(0.5)));
     RedAt(0); memcpy(first, pixels, sizeof(first));
     RedAt(0.5);
     assert(memcmp(first, pixels, sizeof(first)));

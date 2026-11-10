@@ -129,6 +129,7 @@ static const SnesDesktopHostGame kGameHost = {
     .on_reset            = KdcOrbitReset,
     .draw_frame          = KdcOrbitDraw,
     .hd_scale            = KdcHdScale,
+    .draw_hd_frame       = KdcOrbitDrawHd,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
     .default_config_ini =

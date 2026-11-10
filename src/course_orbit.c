@@ -39,8 +39,8 @@ static int previous_piece[4096], previous_anchor[4096];
 static bool continuous;
 static bool background_valid;
 static KdcCourseCamera background_camera;
-static uint32_t background_pixels[kPpuBufWidth * 240];
-static float background_depth[kPpuBufWidth * 240];
+static uint32_t background_pixels[kPpuBufWidth * 240 * kKdcHdScale * kKdcHdScale];
+static float background_depth[kPpuBufWidth * 240 * kKdcHdScale * kKdcHdScale];
 
 void KdcOrbitConfigure(bool enabled, bool controls)
 {
@@ -60,6 +60,7 @@ typedef struct Render {
     uint8_t *pixels;
     size_t pitch;
     int width, height;
+    int scale;
     float *depth;
     Ppu *ppu;
     KdcCourseGeometry geometry;
@@ -67,7 +68,7 @@ typedef struct Render {
     bool hd;
 } Render;
 
-static float depth_buffer[kPpuBufWidth * 240];
+static float depth_buffer[kPpuBufWidth * 240 * kKdcHdScale * kKdcHdScale];
 static KdcOrbitSprite sprite_buffer[4096];
 static unsigned sprite_count;
 static KdcOrbitSprite ordered_sprites[4096];
@@ -270,7 +271,107 @@ static unsigned TilePixel(const uint16_t *vram, unsigned tile,
            ((plane >> 14) & 4) | ((plane >> 21) & 8);
 }
 
-static uint32_t TerrainColor(const Render *render, double u, double v,
+/* Share the PPU's palette-locked tile source with the composed view. The
+ * source is stable during a draw; revalidate content once per draw so VRAM
+ * uploads, animation and palette cycling cannot leave stale replacements. */
+static uint64_t art_generation;
+static const uint8_t *HdArtTileLookup(const Render *render, unsigned address, bool rom,
+                                unsigned palette, unsigned bpp)
+{
+    enum { count = 4096, side = 8 * kKdcHdScale };
+    static struct Art {
+        unsigned address, palette, bpp;
+        uint64_t generation;
+        bool rom, valid;
+        PpuHdTileQuery query;
+        uint8_t pixels[side * side];
+    } cache[count];
+    unsigned hash = address ^ (palette << 17) ^ (rom ? 0x55555555u : 0) ^ (bpp << 25);
+    hash ^= hash >> 16; hash *= 0x7feb352du; hash ^= hash >> 15;
+    unsigned bucket = (hash & (count / 4 - 1)) * 4;
+    struct Art *entry = NULL, *available = NULL;
+    bool same = false;
+    for (unsigned i = 0; i < 4; ++i) {
+        struct Art *candidate = &cache[bucket + i];
+        if (candidate->valid && candidate->address == address && candidate->rom == rom &&
+            candidate->palette == palette && candidate->bpp == bpp) {
+            entry = candidate; same = true; break;
+        }
+        if (!available && (!candidate->valid || candidate->generation != art_generation))
+            available = candidate;
+    }
+    if (!entry) entry = available;
+    /* Never evict artwork used by this draw: a full bucket must not trigger
+     * an expensive rescale on every alternating source pixel. */
+    if (!entry) return NULL;
+    if (!same || entry->generation != art_generation) {
+        PpuHdTileQuery q = {.bpp = bpp, .layer = 4, .scale = kKdcHdScale};
+        for (unsigned i = 0; i < bpp * 4; ++i)
+            q.words[i] = rom ? g_snes->cart->rom[address + 2 * i] |
+                (uint16_t)g_snes->cart->rom[address + 2 * i + 1] << 8 :
+                PpuRenderVram(render->ppu)[(address + i) & 0x7fff];
+        for (unsigned i = 1; i < (1u << bpp); ++i) q.colors[i] = render->ppu->cgram[palette + i];
+        if (!same || memcmp(&q, &entry->query, sizeof(q))) {
+            if (!KdcHdSmoothTile(&q, entry->pixels, NULL))
+                KdcHdNearestTile(&q, entry->pixels, NULL);
+            entry->query = q;
+        }
+        entry->address = address; entry->palette = palette; entry->bpp = bpp;
+        entry->rom = rom; entry->valid = true; entry->generation = art_generation;
+    }
+    return entry->pixels;
+}
+
+/* Adjacent output samples normally visit the same character. Admitted
+ * images cannot move until the next draw, so keep that pointer directly. */
+static const uint8_t *HdArtTile(const Render *render, unsigned address, bool rom,
+                              unsigned palette, unsigned bpp)
+{
+    static uint64_t generation;
+    static unsigned last_address, last_palette, last_bpp;
+    static bool valid, last_rom;
+    static const uint8_t *pixels;
+    if (!valid || generation != art_generation || last_address != address ||
+        last_palette != palette || last_bpp != bpp || last_rom != rom) {
+        pixels = HdArtTileLookup(render, address, rom, palette, bpp);
+        generation = art_generation; last_address = address;
+        last_palette = palette; last_bpp = bpp; last_rom = rom; valid = true;
+    }
+    return pixels;
+}
+
+static unsigned HdArtPixel(const Render *render, unsigned address, bool rom,
+                           unsigned palette, unsigned bpp, double x, double y)
+{
+    enum { side = 8 * kKdcHdScale };
+    const uint8_t *pixels = HdArtTile(render, address, rom, palette, bpp);
+    if (!pixels) {
+        unsigned sx = (unsigned)floor(x) & 7, sy = (unsigned)floor(y) & 7, pixel = 0;
+        for (unsigned plane = 0; plane < bpp / 2; ++plane) {
+            unsigned at = address + plane * 8 + sy;
+            unsigned word = rom ? g_snes->cart->rom[address + plane * 16 + sy * 2] |
+                (unsigned)g_snes->cart->rom[address + plane * 16 + sy * 2 + 1] << 8 :
+                PpuRenderVram(render->ppu)[at & 0x7fff];
+            pixel |= (((word >> (7 - sx)) & 1) | ((word >> (14 - sx)) & 2)) << (plane * 2);
+        }
+        return pixel;
+    }
+    unsigned sx = (unsigned)floor(x * kKdcHdScale) & (side - 1);
+    unsigned sy = (unsigned)floor(y * kKdcHdScale) & (side - 1);
+    return pixels[sy * side + sx];
+}
+
+static unsigned HdBgPixel(const Render *render, unsigned tile, unsigned base,
+                          unsigned bpp, double x, double y)
+{
+    x -= floor(x / 8) * 8; y -= floor(y / 8) * 8;
+    if (tile & 0x4000) x = nextafter(8 - x, 0);
+    if (tile & 0x8000) y = nextafter(8 - y, 0);
+    return HdArtPixel(render, (base + (tile & 1023) * bpp * 4) & 0x7fff,
+                       false, ((tile >> 10) & 7) * (1u << bpp), bpp, x, y);
+}
+
+static uint32_t TerrainColorUncached(const Render *render, double u, double v,
                               uint32_t fallback)
 {
     int x = (int)floor(u), y = (int)floor(v);
@@ -279,7 +380,9 @@ static uint32_t TerrainColor(const Render *render, double u, double v,
     unsigned words[2], pixels[2];
     for (unsigned layer = 0; layer < 2; ++layer) {
         words[layer] = KdcCourseTile(g_ram, layer, x / 8, y / 8);
-        pixels[layer] = TilePixel(vram, words[layer], 0, x & 7, y & 7, 4);
+        pixels[layer] = render->hd && render->scale > 1 ?
+            HdBgPixel(render, words[layer], 0, 4, u, v) :
+            TilePixel(vram, words[layer], 0, x & 7, y & 7, 4);
         unsigned analytic = TerrainPixel(render, vram, layer, words[layer], u, v);
         if (analytic) pixels[layer] = analytic;
     }
@@ -287,6 +390,101 @@ static uint32_t TerrainColor(const Render *render, double u, double v,
     if (pixels[1] && (words[1] & 0x2000) && !(words[0] & 0x2000)) layer = 1;
     if (!pixels[layer]) return fallback;
     return Color(render->ppu->cgram[((words[layer] >> 10) & 7) * 16 + pixels[layer]]);
+}
+
+/* Cache resolved terrain at source HD texel centres. Camera motion changes
+ * only sampling coordinates. Revalidate each visible location once per draw
+ * against both layers, palettes and the checker's complete neighbour evidence,
+ * so animation elsewhere does not force every tile to be regenerated. */
+static uint32_t TerrainColor(const Render *render, double u, double v, uint32_t fallback)
+{
+    if (!render->hd || render->scale <= 1 || u < 0 || v < 0)
+        return TerrainColorUncached(render, u, v, fallback);
+    enum { side = 8 * kKdcHdScale, count = 4096, ways = 8 };
+    static struct TerrainArt {
+        int x, y;
+        uint64_t generation;
+        bool valid;
+        struct TerrainSource {
+            struct TerrainLayer {
+                uint16_t words[16], colors[16];
+                uint8_t border[kKdcCheckerBorderSize];
+                bool matched;
+            } layers[2];
+            uint16_t tiles[2];
+        } source;
+        uint32_t pixels[side * side];
+    } cache[count];
+    unsigned texel_x = (unsigned)(u * kKdcHdScale), texel_y = (unsigned)(v * kKdcHdScale);
+    int x = texel_x / side, y = texel_y / side;
+    unsigned hash = (unsigned)x * 0x9e3779b9u ^ (unsigned)y * 0x85ebca6bu;
+    hash ^= hash >> 16;
+    unsigned bucket = (hash & (count / ways - 1)) * ways;
+    struct TerrainArt *entry = NULL, *available = NULL;
+    for (unsigned i = 0; i < ways; ++i) {
+        struct TerrainArt *candidate = &cache[bucket + i];
+        if (candidate->valid && candidate->x == x && candidate->y == y) {
+            entry = candidate; break;
+        }
+        if (!available && (!candidate->valid || candidate->generation != art_generation)) available = candidate;
+    }
+    if (!entry) {
+        if (!available) return TerrainColorUncached(render, u, v, fallback);
+        entry = available;
+        entry->valid = false;
+    }
+    if (!entry->valid || entry->generation != art_generation) {
+        struct TerrainSource source = {0};
+        const uint16_t *vram = PpuRenderVram(render->ppu);
+        for (unsigned layer = 0; layer < 2; ++layer) {
+            unsigned tile = source.tiles[layer] = KdcCourseTile(g_ram, layer, x, y);
+            struct TerrainLayer *q = &source.layers[layer];
+            memcpy(q->words, vram + (tile & 1023) * 16, sizeof(q->words));
+            memcpy(q->colors, render->ppu->cgram + ((tile >> 10) & 7) * 16, sizeof(q->colors));
+            (void)TerrainPixel(render, vram, layer, tile, x * 8 + 0.125, y * 8 + 0.125);
+            struct CheckerCache *checker = CheckerLocation(x, y, layer);
+            if (checker && checker->valid && checker->column == x && checker->row == y && checker->layer == layer) {
+                memcpy(q->border, checker->border, sizeof(q->border));
+                q->matched = checker->matched;
+            }
+        }
+        if (!entry->valid || memcmp(&entry->source, &source, sizeof(source))) {
+            /* Build both layer images locally. Cache pressure in the sprite
+             * artwork cache must never bake its temporary native fallback
+             * into a persistent terrain raster. */
+            uint8_t layers[2][side * side];
+            for (unsigned layer = 0; layer < 2; ++layer) {
+                PpuHdTileQuery q = {.bpp = 4, .layer = source.layers[layer].matched ? layer : 4,
+                                   .scale = kKdcHdScale};
+                memcpy(q.words, source.layers[layer].words, sizeof(q.words));
+                memcpy(q.colors, source.layers[layer].colors, sizeof(q.colors));
+                memcpy(q.border, source.layers[layer].border, sizeof(q.border));
+                if (!KdcHdSmoothTile(&q, layers[layer], NULL))
+                    KdcHdNearestTile(&q, layers[layer], NULL);
+            }
+            for (unsigned sy = 0; sy < side; ++sy) {
+                for (unsigned sx = 0; sx < side; ++sx) {
+                    unsigned pixels[2];
+                    for (unsigned layer = 0; layer < 2; ++layer) {
+                        unsigned tile = source.tiles[layer];
+                        unsigned tx = tile & 0x4000 ? side - 1 - sx : sx;
+                        unsigned ty = tile & 0x8000 ? side - 1 - sy : sy;
+                        pixels[layer] = layers[layer][ty * side + tx];
+                    }
+                    unsigned layer = pixels[0] ? 0 : 1;
+                    if (pixels[1] && (source.tiles[1] & 0x2000) && !(source.tiles[0] & 0x2000)) layer = 1;
+                    entry->pixels[sy * side + sx] = pixels[layer] ?
+                        Color(source.layers[layer].colors[pixels[layer]]) : 0;
+                }
+            }
+            entry->source = source;
+        }
+        entry->x = x; entry->y = y; entry->valid = true; entry->generation = art_generation;
+    }
+    unsigned sx = texel_x & (side - 1);
+    unsigned sy = texel_y & (side - 1);
+    uint32_t color = entry->pixels[sy * side + sx];
+    return color ? color : fallback;
 }
 
 /* Texel footprint per output pixel, rounded: near 1x (above about 0.67x)
@@ -438,15 +636,15 @@ static void Scenery(Render *render, bool hud)
         PPU_bigTiles(render->ppu, 2))
         return;
     const uint16_t *vram = PpuRenderVram(render->ppu);
-    int extra = (render->width - 256) / 2;
-    for (int y = 0; y < render->height; ++y) {
-        uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
-        for (int x = 0; x < render->width; ++x) {
-            int screen_x = x - extra;
+    int native_width = render->width / render->scale;
+    int extra = (native_width - 256) / 2;
+    for (int y = 0; y < render->height; y += render->scale) {
+        for (int x = 0; x < render->width; x += render->scale) {
+            int screen_x = x / render->scale - extra;
             if (hud && (screen_x < 0 || screen_x >= 256)) continue;
             uint16_t scroll = render->ppu->hScroll[2];
             unsigned u = (unsigned)(screen_x + scroll) & 255;
-            unsigned v = (y + render->ppu->vScroll[2] + 1) & 255;
+            unsigned v = (y / render->scale + render->ppu->vScroll[2] + 1) & 255;
             /* The clean map's opposite edges do not join. As in the native
              * widescreen margins, reflect whole tiles outside the field. */
             bool flip;
@@ -457,7 +655,23 @@ static void Scenery(Render *render, bool hud)
             if (hud && live == clean) continue;
             unsigned tile = hud ? live : clean;
             unsigned pixel = TilePixel(vram, tile, 0x4000, u & 7, v & 7, 2);
-            if (pixel) row[x] = Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + pixel]);
+            const uint8_t *art = !hud && render->hd && render->scale > 1 ?
+                HdArtTile(render, (0x4000 + (tile & 1023) * 8) & 0x7fff,
+                          false, ((tile >> 10) & 7) * 4, 2) : NULL;
+            for (int sy = 0; sy < render->scale; ++sy) {
+                uint32_t *row = (uint32_t *)(render->pixels + (y + sy) * render->pitch);
+                for (int sx = 0; sx < render->scale; ++sx) {
+                    unsigned sample = pixel;
+                    if (art) {
+                        unsigned tx = (u & 7) * 4 + (2 * sx + 1) * 4 / (2 * render->scale);
+                        unsigned ty = (v & 7) * 4 + (2 * sy + 1) * 4 / (2 * render->scale);
+                        if (tile & 0x4000) tx = 31 - tx;
+                        if (tile & 0x8000) ty = 31 - ty;
+                        sample = art[ty * 32 + tx];
+                    }
+                    if (sample) row[x + sx] = Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + sample]);
+                }
+            }
         }
     }
 }
@@ -467,31 +681,33 @@ static void RestoreHud(Render *render, const uint8_t *field)
     if (!field || render->ppu->bgXsc[2] != 0x3c ||
         PPU_bgTileAdr(render->ppu, 2) != 0x4000) return;
     if (KdcHudActive(render->ppu)) {
-        int extra = (render->width - 256) / 2;
+        int native_width = render->width / render->scale;
+        int extra = (native_width - 256) / 2;
         for (int y = 0; y < render->height; ++y)
             for (int x = 0; x < render->width; ++x)
-                if (KdcHudOverlayPixel(render->ppu, x - extra, y + 1))
+                if (KdcHudOverlayPixel(render->ppu, x / render->scale - extra, y / render->scale + 1))
                     memcpy(render->pixels + y * render->pitch + x * 4,
-                           field + ((size_t)y * render->width + x) * 4, 4);
+                           field + ((size_t)(y / render->scale) * native_width + x / render->scale) * 4, 4);
         return;
     }
     /* Preserve the complete occupied horizontal span on each HUD row,
      * including transparent interiors that use the native PPU's color
      * math and object portraits. */
     const uint16_t *vram = PpuRenderVram(render->ppu);
-    int extra = (render->width - 256) / 2;
+    int native_width = render->width / render->scale;
+    int extra = (native_width - 256) / 2;
     for (int y = 0; y < render->height; ++y) {
-        unsigned v = (y + render->ppu->vScroll[2] + 1) & 255;
+        unsigned v = (y / render->scale + render->ppu->vScroll[2] + 1) & 255;
         int left, right;
         if (!KdcHudSpan(vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2],
                         &left, &right)) continue;
-        left += extra; right += extra;
+        left = (left + extra) * render->scale;
+        right = (right + extra + 1) * render->scale - 1;
         if (left < 0) left = 0;
         if (right >= render->width) right = render->width - 1;
-        if (left <= right)
-            memcpy(render->pixels + y * render->pitch + left * 4,
-                   field + ((size_t)y * render->width + left) * 4,
-                   (size_t)(right - left + 1) * 4);
+        for (int x = left; x <= right; ++x)
+            memcpy(render->pixels + y * render->pitch + x * 4,
+                   field + ((size_t)(y / render->scale) * native_width + x / render->scale) * 4, 4);
     }
 }
 
@@ -536,9 +752,19 @@ static uint32_t SpriteColor(const Render *render, const KdcOrbitSprite *sprite,
     if (!(source_x >= 0 && source_x < size && source_y >= 0 && source_y < size)) return 0;
     int sx = (int)source_x, sy = (int)source_y;
     unsigned attr = sprite->attributes;
-    if (native && NativeMasked(render, (attr >> 12) & 3,
-            native[0] + sprite->offset_x + sx, native[1] + sprite->offset_y + sy))
-        return 0;
+    if (native) {
+        static const KdcOrbitSprite *last_sprite;
+        static uint64_t generation;
+        static uint8_t masks[64 * 64];
+        if (last_sprite != sprite || generation != art_generation) {
+            memset(masks, 0, sizeof(masks));
+            last_sprite = sprite; generation = art_generation;
+        }
+        uint8_t *mask = &masks[sy * 64 + sx];
+        if (!*mask) *mask = NativeMasked(render, (attr >> 12) & 3,
+            native[0] + sprite->offset_x + sx, native[1] + sprite->offset_y + sy) ? 2 : 1;
+        if (*mask == 2) return 0;
+    }
     if (attr & 0x4000) sx = size - 1 - sx;
     if (attr & 0x8000) sy = size - 1 - sy;
     unsigned base = attr & 0x100 ? PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
@@ -553,6 +779,14 @@ static uint32_t SpriteColor(const Render *render, const KdcOrbitSprite *sprite,
                 (((data[16] >> shift) & 1) << 2) | (((data[17] >> shift) & 1) << 3);
     } else {
         pixel = TilePixel(PpuRenderVram(render->ppu), tile, base, sx & 7, sy & 7, 4);
+    }
+    if (sprite->world && render->hd && render->scale > 1) {
+        double tx = attr & 0x4000 ? nextafter(size - source_x, 0) : source_x;
+        double ty = attr & 0x8000 ? nextafter(size - source_y, 0) : source_y;
+        unsigned palette = 0x80 + 16 * ((attr >> 9) & 7);
+        bool from_rom = view_tile && view_tile + 32 <= g_snes->cart->romImageSize;
+        pixel = HdArtPixel(render, from_rom ? view_tile : (base + tile * 16) & 0x7fff,
+                           from_rom, palette, 4, tx, ty);
     }
     return pixel ? Color(render->ppu->cgram[0x80 + 16 * ((attr >> 9) & 7) + pixel]) : 0;
 }
@@ -622,22 +856,57 @@ static void Decal(Render *render, const KdcOrbitSprite *sprite)
         step = fmax(hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]),
                     hypot(p[2][0] - p[0][0], p[2][1] - p[0][1])) / samples;
     }
+    /* Inverse orthographic projection is affine in screen X/Y and depth.
+     * Precompute it once instead of repeating trigonometry at every HD pixel. */
+    double inverse[4][3] = {{0}}, plane[3][2] = {{0}};
+    if (render->scale > 1) {
+        for (unsigned i = 0; i < 4; ++i) {
+            double wx, wy, wz;
+            if (!KdcCameraUnproject(&render->camera, i == 1, i == 2, i == 3,
+                    render->width, render->height, &wx, &wy, &wz)) return;
+            KdcCourseGeometryProject(&render->geometry, wx, wy, wz, &inverse[i][0], &inverse[i][1]);
+            inverse[i][2] = wz;
+        }
+        for (unsigned i = 1; i < 4; ++i)
+            for (unsigned j = 0; j < 3; ++j) inverse[i][j] -= inverse[0][j];
+        for (unsigned i = 0; i < 3; ++i) {
+            double wx, wy, unused;
+            if (!KdcCameraUnprojectPlane(&render->camera, i == 1, i == 2, sprite->z,
+                    render->width, render->height, &wx, &wy, &unused)) return;
+            KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z, &plane[i][0], &plane[i][1]);
+        }
+        for (unsigned i = 1; i < 3; ++i)
+            for (unsigned j = 0; j < 2; ++j) plane[i][j] -= plane[0][j];
+    }
     const double native[2] = {native_x, native_y};
     for (int y = y0; y < y1; ++y) {
         uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
         for (int x = x0; x < x1; ++x) {
             float depth = render->depth[y * render->width + x];
-            double wx, wy, wz, unused;
-            if (depth == -FLT_MAX) {
-                /* Over the void (a ball leaving the course) keep the plane. */
-                wz = sprite->z;
-                if (!KdcCameraUnprojectPlane(&render->camera, x + 0.5, y + 0.5, wz,
-                        render->width, render->height, &wx, &wy, &unused)) continue;
-            } else if (!KdcCameraUnproject(&render->camera, x + 0.5, y + 0.5, depth,
-                           render->width, render->height, &wx, &wy, &wz) ||
-                       fabs(wz - sprite->z) > tolerance) continue;
             double sx, sy;
-            KdcCourseGeometryProject(&render->geometry, wx, wy, wz, &sx, &sy);
+            if (render->scale > 1) {
+                double px = x + 0.5, py = y + 0.5;
+                if (depth == -FLT_MAX) {
+                    sx = plane[0][0] + plane[1][0] * px + plane[2][0] * py;
+                    sy = plane[0][1] + plane[1][1] * px + plane[2][1] * py;
+                } else {
+                    double z = inverse[0][2] + inverse[1][2] * px + inverse[2][2] * py + inverse[3][2] * depth;
+                    if (fabs(z - sprite->z) > tolerance) continue;
+                    sx = inverse[0][0] + inverse[1][0] * px + inverse[2][0] * py + inverse[3][0] * depth;
+                    sy = inverse[0][1] + inverse[1][1] * px + inverse[2][1] * py + inverse[3][1] * depth;
+                }
+            } else {
+                double wx, wy, wz, unused;
+                if (depth == -FLT_MAX) {
+                    /* Over the void (a ball leaving the course) keep the plane. */
+                    wz = sprite->z;
+                    if (!KdcCameraUnprojectPlane(&render->camera, x + 0.5, y + 0.5, wz,
+                            render->width, render->height, &wx, &wy, &unused)) continue;
+                } else if (!KdcCameraUnproject(&render->camera, x + 0.5, y + 0.5, depth,
+                               render->width, render->height, &wx, &wy, &wz) ||
+                           fabs(wz - sprite->z) > tolerance) continue;
+                KdcCourseGeometryProject(&render->geometry, wx, wy, wz, &sx, &sy);
+            }
             Footprint f = {sx - native_x - sprite->offset_x,
                            sy - native_y - sprite->offset_y, step, samples};
             uint32_t color = Filtered(render, sprite, size, f, native);
@@ -653,7 +922,7 @@ static void Sprites(Render *render, bool world, bool ground)
         if (sprite->world != world || (world && sprite->ground != ground)) continue;
         if (world && ground) { Decal(render, sprite); continue; }
         int size = SpriteSize(render, sprite);
-        double scale = world ? render->camera.zoom : 1;
+        double scale = world ? render->camera.zoom : render->scale;
         double z = sprite->z, surface;
         /* Guest heights are fixed point; the mesh is continuous. Treat an
          * anchor within a quarter step below the surface as resting on it. */
@@ -661,9 +930,9 @@ static void Sprites(Render *render, bool world, bool ground)
             surface > z && surface - z <= 0.25) z = surface;
         KdcCameraPoint point = world ? KdcCameraProject(&render->camera,
             sprite->x, sprite->y, z, render->width, render->height) :
-            (KdcCameraPoint){(render->width - 256) / 2.0, -1, 0};
+            (KdcCameraPoint){((int)(render->width / render->scale) - 256) / 2.0 * render->scale, -(double)render->scale, 0};
         double left = point.x + sprite->offset_x * scale;
-        if (!world) left += KdcHudPortraitShift(render->ppu, sprite->offset_x,
+        if (!world) left += (double)render->scale * KdcHudPortraitShift(render->ppu, sprite->offset_x,
                                                 sprite->offset_y, sprite->attributes);
         double top = point.y + sprite->offset_y * scale;
         int samples = world ? Samples(scale) : 1;
@@ -908,7 +1177,9 @@ static void Background(Render *render)
 {
     const KdcCourseCamera *a = &background_camera, *b = &render->camera;
     static bool background_hd;
+    static int background_width, background_height;
     bool same = background_valid && high_refresh && background_hd == render->hd &&
+        background_width == render->width && background_height == render->height &&
         a->yaw == b->yaw && a->zoom == b->zoom &&
         a->target_x == b->target_x && a->target_y == b->target_y &&
         a->target_z == b->target_z && a->lead_x == b->lead_x && a->lead_y == b->lead_y;
@@ -939,22 +1210,24 @@ static void Background(Render *render)
         memcpy(background_depth, render->depth, (size_t)render->width * render->height * sizeof(float));
         background_camera = render->camera;
         background_hd = render->hd;
+        background_width = render->width;
+        background_height = render->height;
         background_valid = true;
     }
 }
 
 static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
-                int width, int height, double alpha)
+                int width, int height, double alpha, unsigned scale)
 {
-    if (!camera.active || !focus_ready || !dst || width < 1 || width > kPpuBufWidth ||
-        height < 1 || height > 240 || pitch < (size_t)width * 4 ||
+    if (!scale || scale > kKdcHdScale || !camera.active || !focus_ready || !dst || width < 1 || width > kPpuBufWidth ||
+        height < 1 || height > 240 || pitch < (size_t)width * scale * 4 ||
         !g_snes || !g_snes->ppu || !g_snes->cart || !KdcIsCourse(g_snes->ppu)) return 0;
     /* Preserve original fades, forced blank and mosaic transitions until
      * the fully visible course returns. Camera state is retained. */
     if (PPU_forcedBlank(g_snes->ppu) || PPU_brightness(g_snes->ppu) != 15 ||
         PPU_mosaicSize(g_snes->ppu) > 1) return 0;
     Render render = {.pixels = dst, .pitch = pitch, .width = width, .height = height,
-                     .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled()};
+                     .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled(), .scale = scale};
     if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
         g_snes->cart->rom, g_snes->cart->romImageSize)) return 0;
     render.camera = ViewCamera(&render);
@@ -980,7 +1253,15 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
                 SpriteSize(&render, sprite), sprite);
         }
     }
+    /* Scale only the presentation transform, after native-space camera
+     * framing and interpolation. Lead offsets are intentionally unzoomed. */
+    render.width *= scale;
+    render.height *= scale;
+    render.camera.zoom *= scale;
+    render.camera.lead_x *= scale;
+    render.camera.lead_y *= scale;
     OrderAttachments();
+    ++art_generation;
     if (++checker_generation == 0) memset(checker_cache, 0, sizeof(checker_cache));
     Background(&render);
     Sprites(&render, true, true);
@@ -994,6 +1275,13 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
 int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
                   int width, int height, double alpha)
 {
-    composed = Draw(dst, pitch, field, width, height, alpha) != 0;
+    composed = Draw(dst, pitch, field, width, height, alpha, 1) != 0;
+    return composed;
+}
+
+int KdcOrbitDrawHd(uint8_t *dst, size_t pitch, const uint8_t *field,
+                  int width, int height, double alpha, unsigned scale)
+{
+    composed = Draw(dst, pitch, field, width, height, alpha, scale) != 0;
     return composed;
 }

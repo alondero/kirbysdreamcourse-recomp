@@ -20,7 +20,7 @@ def load_ppm(path):
 class HdTexturesRuntimeTest(unittest.TestCase):
     root = Path(__file__).resolve().parents[1]
 
-    def capture(self, directory, name, frame, hd, dev_hole=None):
+    def capture(self, directory, name, frame, hd, dev_hole=None, high_refresh=False):
         rom = Path(os.environ.get('KDC_HD_ROM', self.root / "Kirby's Dream Course (USA).sfc"))
         self.assertEqual(hashlib.sha256(rom.read_bytes()).hexdigest(),
                          '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b')
@@ -29,6 +29,8 @@ class HdTexturesRuntimeTest(unittest.TestCase):
                           ('KirbyDreamCourseRecomp.exe' if os.name == 'nt' else 'KirbyDreamCourseRecomp')))
         case = directory / name
         case.mkdir()
+        if high_refresh:
+            (case / 'kdc-presentation.cfg').write_text('1 120\n')
         host = case / executable.name
         shutil.copy2(executable, host)
         (case / 'config.ini').write_text(
@@ -66,6 +68,22 @@ class HdTexturesRuntimeTest(unittest.TestCase):
                 want = ((y // 4) * width + x // 4) * 3
                 differing += pixels[at:at + 3] != base[want:want + 3]
         return differing
+
+    def test_hd_detail_survives_course_composition(self):
+        with tempfile.TemporaryDirectory(prefix='hd-persistence-', dir=self.root / 'local') as directory:
+            for frame in (340, 380, 600):
+                with self.subTest(frame=frame):
+                    width, height, pixels = self.capture(
+                        Path(directory), str(frame), frame, True, 'normal:1:1', high_refresh=True)
+                    self.assertEqual((width, height), (1024, 896))
+                    # A native composition enlarged 4x has no detail inside any
+                    # 4x4 block. Check course art above the HUD after loading.
+                    detail = sum(pixels[(y * width + x) * 3:(y * width + x) * 3 + 3] !=
+                                 pixels[((y // 4 * 4) * width + x // 4 * 4) * 3:
+                                        ((y // 4 * 4) * width + x // 4 * 4) * 3 + 3]
+                                 for y in range(4 * 40, 4 * 160)
+                                 for x in range(4 * 32, 4 * 224))
+                    self.assertGreater(detail, 1000, 'HD course detail was replaced by a native composition')
 
     def test_course_art_scales_while_hud_and_menus_stay_native(self):
         with tempfile.TemporaryDirectory(prefix='hd-textures-', dir=self.root / 'local') as directory:
