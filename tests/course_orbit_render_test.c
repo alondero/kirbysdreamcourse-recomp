@@ -1,5 +1,6 @@
 /* Synthetic geometry and planar graphics: no ROM assets or captured pixels. */
 #include "course_orbit.h"
+#include "course_hud.h"
 #include "course_sprites.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
@@ -545,6 +546,47 @@ static int Scenarios(void)
     return failures != 0;
 }
 
+static void HdEdgeHud(void)
+{
+    static Ppu before;
+    before = ppu;
+    ppu.renderFlags = kPpuRenderFlags_NewRenderer;
+    ppu.windowsel = 0x220000; ppu.cgwsel = 0x10; ppu.cgadsub = 0x33;
+    ppu.fixedColor = 0x7fff; ppu.screenWindowed[0] = 0x13;
+    ppu.window1left = 56; ppu.window1right = 235;
+    ppu.vram[0x3c00 + 22 * 32 + 2] = 0x3519;
+    memset(ppu.oam, 0, sizeof(ppu.oam));
+    memset(ppu.highOam, 0, sizeof(ppu.highOam));
+    for (unsigned i = 0; i < 4; ++i) {
+        ppu.oam[i * 2] = 20 + (i & 1) * 16 + ((179 + (i >> 1) * 16) << 8);
+        ppu.oam[i * 2 + 1] = 0x33a0 + i * 2;
+        ppu.highOam[0] |= 2 << (i * 2);
+    }
+    KdcPrepareHud(&ppu, g_ram, 43, true);
+    ppu.presentationPrepare(&ppu, 185, NULL);
+    assert(KdcHudActive(&ppu));
+    assert(KdcHudPortraitShift(&ppu, 20, 179, 0x33a0) == -51);
+    use_custom = true; custom_count = 1;
+    custom[0] = (KdcOrbitSprite){.offset_x = 20, .offset_y = 179, .attributes = 0x33a0, .large = true};
+    for (unsigned ty = 0; ty < 2; ++ty)
+        for (unsigned tx = 0; tx < 2; ++tx)
+            for (unsigned y = 0; y < 8; ++y) {
+                unsigned at = (PPU_objTileAdr2((&ppu)) + (0xa0 + ty * 16 + tx) * 16) & 0x7fff;
+                ppu.vram[at + y] = 0x00ff;
+                ppu.vram[at + y + 8] = 0;
+            }
+    enum { w = 342 * 4, h = height * 4 };
+    static uint32_t output[w * h];
+    hd_enabled = true;
+    assert(KdcOrbitDrawHd((uint8_t *)output, w * 4, NULL, 342, height, 1, 4));
+    /* 43px margin + 20px source X - 51px shift = 12px from left. */
+    assert(output[(178 * 4) * w + 12 * 4] == 0xffffff00);
+    assert(output[(193 * 4 + 3) * w + 27 * 4 + 3] == 0xffffff00);
+    hd_enabled = false; use_custom = false;
+    KdcPrepareHud(&ppu, g_ram, 0, false);
+    ppu = before;
+}
+
 int main(void)
 {
     cart.rom = rom;
@@ -618,6 +660,33 @@ int main(void)
     assert(pixels[191 * stride + 40] != native_field[191 * width + 40]);
     CheckPadding(pixels, width);
 
+    /* The host switches from PPU tiles to composition after course loading.
+     * Its HD hook must retain subpixel detail, HUD placement and guest state. */
+    enum { hd_width = width * 4, hd_height = height * 4, hd_stride = hd_width + padding };
+    static uint32_t hd_pixels[hd_stride * hd_height + 8];
+    hd_enabled = true;
+    Fill(hd_pixels, sizeof(hd_pixels) / sizeof(*hd_pixels));
+    assert(KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, (uint8_t *)native_field,
+                         width, height, 1, 4));
+    unsigned detail = 0;
+    for (unsigned y = 0; y < hd_height; ++y) {
+        for (unsigned x = 0; x < hd_width; ++x)
+            detail += hd_pixels[y * hd_stride + x] != hd_pixels[(y / 4 * 4) * hd_stride + x / 4 * 4];
+        for (unsigned x = hd_width; x < hd_stride; ++x) assert(hd_pixels[y * hd_stride + x] == 0xdeadbeef);
+    }
+    assert(detail > 0); /* Terrain boundaries are rasterized at HD resolution. */
+    for (unsigned y = 191 * 4; y < 192 * 4; ++y)
+        for (unsigned x = 16 * 4; x < 40 * 4; ++x)
+            assert(hd_pixels[y * hd_stride + x] == native_field[(y / 4) * width + x / 4]);
+    for (unsigned i = hd_stride * hd_height; i < sizeof(hd_pixels) / sizeof(*hd_pixels); ++i)
+        assert(hd_pixels[i] == 0xdeadbeef);
+    assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
+    assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
+    assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, NULL, width, height, 1, 0));
+    assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, NULL, width, height, 1, 5));
+    assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, width * 4, NULL, width, height, 1, 4));
+    hd_enabled = false;
+
     for (int i = 0; i < 30; ++i) KdcOrbitInput(32767, 0, false);
     Draw();
     assert(CountColor(pixels, 0xffff0000, &other_x, &other_y) > 40);
@@ -657,6 +726,7 @@ int main(void)
     for (unsigned x = 16 + 43; x <= 39 + 43; ++x)
         assert(wide_pixels[191 * (342 + padding) + x] == native_field[191 * 342 + x]);
     CheckPadding(wide_pixels, 342);
+    HdEdgeHud();
 
     Fill(pixels, sizeof(pixels) / sizeof(*pixels));
     memcpy(first, pixels, sizeof(first));

@@ -14,6 +14,9 @@ void KdcOrbitConfigure(bool high_refresh, bool orbit_controls);
 void KdcOrbitCapture(unsigned frame, int width, int height);
 int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
                   int width, int height, double alpha);
+/* Native dimensions/field, HD destination. */
+int KdcOrbitDrawHd(uint8_t *dst, size_t pitch, const uint8_t *field,
+                  int width, int height, double alpha, unsigned scale);
 /* True when the latest KdcOrbitDraw composed the presented frame and the
  * view is still ready, so the PPU's own HD tile composition would not be
  * shown. A declined draw clears it, so the next frame keeps its HD tiles. */

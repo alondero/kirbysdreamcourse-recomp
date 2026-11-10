@@ -150,6 +150,7 @@ $patches += 'snesrecomp-hd-tiles.patch'
 $patches += 'snesrecomp-hd-tile-context.patch'
 $patches += 'snesrecomp-hd-present.patch'
 $patches += 'snesrecomp-hd-tile-perf.patch'
+$patches += 'snesrecomp-hd-composition.patch'
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
     git -C $framework apply --check $patch

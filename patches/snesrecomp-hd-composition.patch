@@ -1,0 +1,37 @@
+--- a/runner/src/desktop/host_main.h
++++ b/runner/src/desktop/host_main.h
+@@ -229,4 +229,9 @@
+    * A draw_frame composition is nearest-scaled. NULL or 1 keeps the native
+    * presentation, byte for byte. */
+   unsigned (*hd_scale)(void);
++  /* Optional composition directly at HD resolution. Width/height and field
++   * remain native; dst is width*scale by height*scale. Return 0 to use the
++   * ordinary draw_frame/PPU fallback. Guest state must remain unchanged. */
++  int (*draw_hd_frame)(uint8_t *dst, size_t pitch, const uint8_t *field,
++                       int width, int height, double alpha, unsigned scale);
+ } SnesDesktopHostGame;
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -1499,6 +1499,22 @@
+ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+   const int w = g_snes_width, h = g_snes_height;
+   const size_t native_pitch = (size_t)w * 4u;
++  bool hd_composed = g_game->draw_hd_frame &&
++      g_game->draw_hd_frame((uint8_t *)g_hd_surface, (size_t)w * scale * 4u, g_my_pixels, w, h,
++                            g_present_alpha, (unsigned)scale);
++  if (hd_composed) {
++    /* Retain a native-size backdrop for debug captures and the overlay. */
++    for (int y = 0; y < h; ++y)
++      for (int x = 0; x < w; ++x)
++        memcpy(g_hd_native + (size_t)y * native_pitch + x * 4,
++               (uint8_t *)g_hd_surface + ((size_t)y * scale * w * scale + x * scale) * 4, 4);
++    /* Write the texture mapping sequentially; never read it back. */
++    for (int y = 0; y < h * scale; ++y)
++      memcpy(dst + (size_t)y * pitch, g_hd_surface + (size_t)y * w * scale,
++             (size_t)w * scale * 4u);
++    debug_server_note_composed_frame(g_hd_native, (unsigned)native_pitch, w, h);
++    return;
++  }
+   bool composed = g_game->draw_frame &&
+       g_game->draw_frame(g_hd_native, native_pitch, g_my_pixels, w, h,
+                          g_present_alpha);

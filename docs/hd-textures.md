@@ -21,7 +21,7 @@ What changes and what stays pixel sharp:
 | Live course terrain (BG1/BG2) | Title, menus, course select and scorecards |
 | Course scenery (BG3) | The HUD: its BG3 panel and screen-anchored sprites |
 | Course sprites, including widescreen margins | Lines using mosaic, interlace, pseudo-hires or 16x16 characters |
-| Analytic checker edges also work in the orbit camera | Other orbit-view artwork |
+| Orbit/high-refresh terrain, scenery and world sprites | Screen-anchored orbit HUD sprites |
 | | Any pixel the exactness check below cannot reproduce |
 
 ## How it works
@@ -366,8 +366,9 @@ remove the last two but is a larger change.
   shows the background rather than the sprite beneath.
 - HUD sprites are recognised through recovered screen-anchored draw requests.
   A HUD piece whose anchor is unresolved is treated as course art.
-- The orbit camera evaluates checker geometry at its own output pixels, but
-  the composed frame is still nearest-scaled for presentation.
+- The orbit/high-refresh renderer draws directly at 4x resolution. It shares
+  the PPU tile scaler for artwork and samples checker geometry at HD pixel
+  centres. Its existing geometry, occlusion and colour-math limits still apply.
 - The HD path costs about 4 ms of CPU per frame on the development PC (about
   1 ms in the orbit view, plus its own checker sampling). It has not been
   measured on slower machines or Linux.
@@ -376,3 +377,55 @@ remove the last two but is a larger change.
   widescreen tile provider whose answer changes mid-frame without such a
   write could give one frame of stale neighbour context; the exactness check
   still keeps every native pixel centre.
+
+### HD persistence through course loading, 2026-11-10
+
+With high refresh enabled, loading initially showed the PPU's HD surface, but
+once the course composition became ready the host enlarged its native image.
+The regression capture had zero within-texel detail at frames 340, 380 and 600.
+`hd-composition` adds an optional host callback with an HD destination and native
+field dimensions. The course renderer scales its presentation transform after
+native camera framing/interpolation, samples terrain and original artwork at
+4x, and retains native HUD coordinates. The host keeps the ordinary composition
+fallback for games without the hook. PPU work can still pause while composition
+owns the presented frame.
+
+Both renderers share `hd_tile_source.c`. Orbit artwork is cached by source and
+palette, revalidated once per draw against live words and colours. Bounded
+associative admission prevents colliding sources from repeatedly regenerating
+artwork per pixel; an exhausted bucket samples new sources natively for that
+draw. Resolved terrain tiles are retained at 4x source resolution across camera
+movement, revalidating both layers and their neighbour evidence once per draw.
+Background reuse also checks output dimensions when switching between native
+and HD presentation.
+
+Validation: Windows Release build; deterministic real-ROM no-input `normal:1:1`
+captures at frames 340, 380 and 600 retain HD detail with high refresh enabled.
+The existing native HUD/title checks pass. Synthetic fixtures exercise HD
+buffer bounds, HUD positioning (including negative edge shifts), interpolation,
+rotation, changing output dimensions, live texture/palette updates and cache
+pressure, while checking unchanged guest RAM and PPU state. Reproduce with:
+
+```powershell
+python -m unittest discover -s tests -p test_course_orbit_render.py
+$env:KDC_TEST_HD='1'
+python -m unittest discover -s tests -p test_hd_textures_runtime.py
+```
+
+A separate 480-frame deterministic rotation/zoom replay at widescreen width,
+with edge HUD and high refresh enabled, produced identical guest-state traces
+with HD off/on. Its frame-440 capture was inspected locally; assets and logs
+remain under ignored `local/`.
+
+This verifies the presentation fix, not new fidelity to a reference emulator:
+the enhanced subpixels have no SNES equivalent. Linux, full-course playthroughs
+and sustained high-refresh performance remain unqualified. Rendering the
+composition at 4x adds CPU work compared with enlarging a native image. In the
+bounded Windows SDL-dummy widescreen rotation/zoom replay (frames 450-480,
+screenshot I/O excluded), composition averaged about 56 ms versus 7 ms with HD
+off. Source caching, native-texel scenery/mask reuse and affine decal projection
+reduced the initial HD implementation's roughly 152 ms, but this path does not
+yet meet a 60 Hz budget on the test machine. The older PPU-only timing figures
+above do not describe HD orbit/high-refresh composition. Cached analytic
+terrain is sampled at 4x source-texel centres, so extreme zoom/rotation can still
+show sampling steps.

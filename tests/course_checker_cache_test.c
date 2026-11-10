@@ -1,8 +1,10 @@
 /* Exercise the real orbit sampling path, counting expensive fits rather than
  * asserting a machine-dependent timing threshold. No game assets required. */
+#define KdcHdSmoothTile CountedArt
 #define KdcCheckerFit CountedFit
 #include "../src/course_orbit.c"
 #undef KdcCheckerFit
+#undef KdcHdSmoothTile
 #include "../src/course_checker.c"
 #include <assert.h>
 
@@ -10,6 +12,62 @@ Snes *g_snes;
 uint8_t g_ram[0x20000];
 static uint16_t vram[0x8000];
 static unsigned fits;
+
+static unsigned art_fills;
+extern bool KdcHdSmoothTile(const PpuHdTileQuery *, uint8_t *, void *);
+bool CountedArt(const PpuHdTileQuery *q, uint8_t *pixels, void *context)
+{
+    ++art_fills;
+    return KdcHdSmoothTile(q, pixels, context);
+}
+
+static void Word(unsigned at, unsigned value);
+
+static void ArtCache(void)
+{
+    static Ppu ppu;
+    static Snes snes;
+    snes.ppu = &ppu;
+    g_snes = &snes;
+    Render render = {.ppu = &ppu, .hd = true, .scale = 4};
+    for (unsigned y = 0; y < 8; ++y) {
+        ppu.vram[16 + y] = 0x00ff;
+        ppu.vram[0x1010 + y] = 0xff00;
+    }
+    ++art_generation;
+    for (unsigned i = 0; i < 5000; ++i) {
+        assert(HdArtPixel(&render, 16, false, 0, 4, 1.25, 2.25) == 1);
+        assert(HdArtPixel(&render, 0x1010, false, 0, 4, 1.25, 2.25) == 2);
+    }
+    assert(art_fills == 2);
+    /* Uploads and palette changes are observed on the next presentation. */
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[16 + y] = 0xffff;
+    ++art_generation;
+    assert(HdArtPixel(&render, 16, false, 0, 4, 1.25, 2.25) == 3);
+    ppu.cgram[3] = 0x7fff;
+    ++art_generation;
+    assert(HdArtPixel(&render, 16, false, 0, 4, 1.25, 2.25) == 3);
+    assert(art_fills == 4);
+    assert(TerrainColor(&render, 0.125, 0.125, 0) == Color(0x7fff));
+    ppu.cgram[3] = 0x001f;
+    ++art_generation; ++checker_generation;
+    assert(TerrainColor(&render, 0.125, 0.125, 0) == Color(0x001f));
+    Word(0x13000, 257);
+    ppu.cgram[2] = 0x7c00;
+    ++art_generation; ++checker_generation;
+    assert(TerrainColor(&render, 0.125, 0.125, 0) == Color(0x7c00));
+    for (unsigned y = 0; y < 8; ++y) ppu.vram[0x1010 + y] = 0x00ff;
+    ppu.cgram[1] = 0x03e0;
+    ++art_generation; ++checker_generation;
+    assert(TerrainColor(&render, 0.125, 0.125, 0) == Color(0x03e0));
+    /* Even cache pressure cannot regenerate an admitted source this draw. */
+    for (unsigned i = 0; i < 4096; ++i)
+        HdArtPixel(&render, (i * 16) & 0x7fff, false, (i / 2048) * 16, 4, 1.25, 2.25);
+    unsigned warmed = art_fills;
+    for (unsigned i = 0; i < 4096; ++i)
+        HdArtPixel(&render, (i * 16) & 0x7fff, false, (i / 2048) * 16, 4, 1.25, 2.25);
+    assert(art_fills == warmed);
+}
 
 /* Unused host-facing paths still need symbols on Windows linkers. */
 bool KdcIsCourse(const Ppu *ppu) { (void)ppu; return true; }
@@ -85,5 +143,6 @@ int main(void)
     assert(fits == warmed + 2);
     Sample(49, 1); Sample(1, 17);
     assert(fits == warmed + 2);
+    ArtCache();
     puts("orbit checker cache: collision pressure and streamed updates passed");
 }
