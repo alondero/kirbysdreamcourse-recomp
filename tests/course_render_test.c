@@ -168,6 +168,65 @@ int main(void)
             }
         }
     }
+    /* Finale BG3 is live wallpaper, not the old WRAM scenery. Exercise
+     * the actual 2bpp drawer through star upload and the results map,
+     * preserving the center and reflecting complete native-edge tiles. */
+    p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    p->vScroll[2] = 0;
+    for (unsigned tile = 0x100; tile < 0x180; ++tile)
+        for (unsigned y = 0; y < 8; ++y)
+            p->vram[0x4000 + tile * 8 + y] = (uint16_t)(tile * 1937 + y * 257);
+    for (unsigned i = 0; i < 1024; ++i)
+        p->vram[0x3c00 + i] = (0x100 + (i & 127)) | ((i & 3) << 10) |
+                              ((i & 1) ? 0xc000 : 0);
+    for (int scene = 0; scene < 4; ++scene) {
+        p->bgXsc[0] = scene == 3 ? 0x32 : scene == 2 ? 0x52 : 0x51;
+        p->bgXsc[1] = scene == 3 ? 0x23 : 0x59;
+        p->bgXsc[2] = scene == 3 ? 0x58 : 0x3c;
+        p->bgTileAdr = scene == 3 ? 0x500 : 0x400;
+        p->screenEnabled[0] = scene == 2 ? 0x15 : 0x17;
+        /* Top pair during star upload, bottom pair during results upload. */
+        for (unsigned y = 0; y < 2; ++y)
+            for (unsigned x = 0; x < 32; ++x) {
+                p->vram[0x3c00 + y * 32 + x] = scene == 0 ?
+                    0x1941 + 2 * y + (x & 1) : 0x100;
+                p->vram[0x3c00 + (30 + y) * 32 + x] = scene == 1 ?
+                    0x1941 + 2 * y + (x & 1) : 0x100;
+            }
+        if (scene == 3) {
+            /* Same synthetic art at the dance scene's own map/char base. */
+            for (unsigned i = 0; i < 0x400; ++i) {
+                p->vram[0x5000 + i] = p->vram[0x4800 + i];
+                p->vram[0x5800 + i] = p->vram[0x3c00 + i] - 0x100;
+            }
+        }
+        for (unsigned i = 0; i < sizeof(widths) / sizeof(widths[0]); ++i)
+            for (int scroll = 0; scroll < 8; ++scroll) {
+                PpuPixelPrioBufs original, actual;
+                int extra = widths[i];
+                p->hScroll[2] = scroll;
+                PpuSetExtraSpace(p, extra);
+                WsShadowSetTileProvider(0, NULL, NULL);
+                PpuSetWidescreenBg3Widen(p, 1);
+                ClearBackdrop(p, &original);
+                PpuDrawBackground_2bpp(p, &original, 97, false, 2, 0xb100, 0x7100);
+                KdcPrepareCourseView(p, ram, extra);
+                ClearBackdrop(p, &actual);
+                PpuDrawBackground_2bpp(p, &actual, 97, false, 2, 0xb100, 0x7100);
+                int left = -scroll, span = scroll ? 264 : 256;
+                for (int x = -extra; x < 256 + extra; ++x) {
+                    int phase = (x - left) % (2 * span);
+                    if (phase < 0) phase += 2 * span;
+                    int source = left + (phase < span ? phase : 2 * span - 1 - phase);
+                    int tile_start = x - (((unsigned)x + scroll) & 7);
+                    if (scene == 3 && !(tile_start < 256 && tile_start + 8 > 0))
+                        source = (int)(((unsigned)x + scroll) & 7) - scroll;
+                    assert(actual.data[kPpuExtraLeftRight + x] ==
+                           original.data[kPpuExtraLeftRight + source]);
+                }
+            }
+    }
     free(p);
     return 0;
 }

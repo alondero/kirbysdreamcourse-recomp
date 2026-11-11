@@ -640,3 +640,46 @@ between corrected layouts. No guest-state divergence occurs at this sampled
 checkpoint; earlier frames and other menu routes were not compared. No new
 reference-emulator capture was made for this presentation-only guard change;
 the previously documented baseline/reference divergence remains unresolved.
+
+### Hole-eight finish and score dance (2026-11-11)
+
+The USA course finale replaces BG3's scenery with a star wallpaper while
+retaining maps `$51/$59/$3C` and character bases `$0400`. Reading the clean
+WRAM scenery at that point decodes old tile entries using the new graphics,
+corrupting the margins. Results then change BG1 to map `$52`, which previously
+disabled BG3 widening altogether. Confirming results opens a separate best-score
+comparison/dance layout: maps `$32/$23/$58`, character bases `$0500`.
+
+The margin provider now reflects live BG3 VRAM during the finish/results. The finale
+is identified by a complete repeated 2x2 star motif in either the top or bottom
+pair of map rows (`$1941/$1942`, `$1943/$1944`), or the results layout. The first
+pair survives the initial upload; the last pair survives the subsequent results
+upload. This is an observed USA-game signature, not SNES hardware behavior.
+On the dance page, BG1's stage stays centered, BG2's stars widen, and BG3's
+gradient extends from its clean first column, excluding the score lettering.
+Original-edge tiles and mosaic fallback retain their existing behavior.
+
+Validation used the verified supported ROM, existing guarded pin/profile,
+MinGW Release build (`cmake --build local/fix-build -j 8`), and the local
+49,500-frame course-one recording with SHA-256
+`f89c264bd91562ad4fc3bf288ba4c5f5bcc382d1635b328a5e7799f41fb294f8`.
+A checkpoint before the finish makes the transition repeatable without replaying
+the whole course. At results frame 49400, all 19,264 side-margin pixels were
+black before the fix and none afterward at width 342. Across frames 48790–49430,
+native and wide centers, WRAM, VRAM and CGRAM match. The pre-fix replay also
+matches the corrected guest state across 48880–49240. At 49190–49210, HD retains
+the pre-fix center and guest state; its shared 342-column image matches at width
+800. Confirming results at frame 50100 reaches the dance page: all 501 captures
+50200–50700 preserve the center and WRAM/VRAM/CGRAM; HD checks at 50500–50502
+retain native menu art and match the shared 342-column region at width 800.
+Real-PPU regressions fail with the old source and pass with the correction,
+covering five widths, every fine-scroll phase, partial uploads and scene changes.
+
+A pinned Snes9x 1.63 replay from the matching local reference route confirms
+the finish/results/dance layouts. Sampled center images still differ during
+the moving transition (first examined sample 48900); at 49300, every channel
+is within two levels. These observations do not resolve the earlier baseline
+host/reference divergence documented in compatibility.md. Other courses,
+two-player finales, high-refresh/orbit presentation, ranking/ending variants
+and Linux remain unqualified. The final 74-test suite passes with 11 optional
+tests skipped; both independent review axes found no blocking issues.
