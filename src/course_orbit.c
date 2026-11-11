@@ -4,8 +4,9 @@
 #include "course_view.h"
 #include "course_sprites.h"
 #include "course_hud.h"
-#include "course_checker.h"
+#include "course_terrain.h"
 #include "hd_textures.h"
+#include "host_parallel.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes/cart.h"
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 extern Snes *g_snes;
 extern uint8_t g_ram[0x20000];
@@ -37,10 +39,6 @@ typedef struct Presentation {
 static Presentation previous, current;
 static int previous_piece[4096], previous_anchor[4096];
 static bool continuous;
-static bool background_valid;
-static KdcCourseCamera background_camera;
-static uint32_t background_pixels[kPpuBufWidth * 240 * kKdcHdScale * kKdcHdScale];
-static float background_depth[kPpuBufWidth * 240 * kKdcHdScale * kKdcHdScale];
 
 void KdcOrbitConfigure(bool enabled, bool controls)
 {
@@ -51,10 +49,44 @@ void KdcOrbitConfigure(bool enabled, bool controls)
     }
 }
 
-typedef struct Vertex {
-    double x, y, z;
-    double texture_x, texture_y;
-} Vertex;
+/* One frame is prepared on the host thread, then drawn as independent
+ * horizontal bands on the worker pool. Everything a band reads is fixed
+ * before the first one starts; a band writes only its own rows. */
+
+/* The terrain texture level chosen for a draw. */
+typedef struct Texture {
+    const uint8_t *texels; /* palette indices, 0 transparent */
+    int stride, width, height;
+    int scale;             /* texels per source pixel */
+    int left, top;         /* source pixel of texel (0,0) */
+    const uint32_t *colors;
+} Texture;
+
+/* A projected terrain triangle. Barycentric weights, depth and texture
+ * coordinates are all a*x + b*y + c at the centre of output pixel (x,y). */
+typedef struct Face {
+    int left, right, top, bottom; /* inclusive pixel bounds */
+    double weight[3][3];
+    double depth[3], u[3], v[3];
+    uint32_t color;               /* flat, or shown where the texture is clear */
+    bool textured;
+} Face;
+
+/* A sprite piece with everything derived from the camera resolved. */
+typedef struct Piece {
+    const KdcOrbitSprite *sprite;
+    int size, samples;
+    int x0, x1, y0, y1;       /* output bounds, exclusive ends */
+    double left, top, scale;  /* billboard placement */
+    KdcCameraPoint point;
+    double native[2];         /* original projected anchor, for OBJ masks */
+    bool masked;
+    /* Ground decals: output pixel and depth to original projected position. */
+    double inverse[4][3], plane[3][2], step;
+    const uint8_t *const *art; /* enlarged image per 8x8 cell, or NULL */
+    unsigned base;             /* OBJ character base in VRAM words */
+    const uint32_t *colors;    /* the piece's 16 palette colours */
+} Piece;
 
 typedef struct Render {
     uint8_t *pixels;
@@ -63,9 +95,22 @@ typedef struct Render {
     int scale;
     float *depth;
     Ppu *ppu;
+    const uint16_t *vram;
     KdcCourseGeometry geometry;
     KdcCourseCamera camera;
     bool hd;
+    const KdcTerrain *terrain;
+    Texture texture;
+    bool smooth;   /* antialiased texture sampling */
+    int samples;   /* per axis, when one pixel spans several texels */
+    const Face *faces;
+    unsigned face_count;
+    const KdcScenery *scenery; /* NULL without the course scenery signature */
+    uint32_t backdrop;
+    const uint8_t *field;
+    const Piece *decals, *bodies, *screen;
+    unsigned decal_count, body_count, screen_count;
+    uint32_t obj_colors[128];
 } Render;
 
 static float depth_buffer[kPpuBufWidth * 240 * kKdcHdScale * kKdcHdScale];
@@ -108,75 +153,6 @@ static void OrderAttachments(void)
     }
 }
 
-/* Bounded associative lookup. Entries used in this draw cannot be evicted:
- * collisions must never turn raster samples into repeated model fitting.
- * On bucket exhaustion, new locations keep their native pixels for the draw.
- * Fits survive unchanged live words and neighbour indices between draws. */
-static struct CheckerCache {
-    uint16_t words[16];
-    uint8_t border[kKdcCheckerBorderSize];
-    KdcChecker checker;
-    unsigned generation, layer;
-    int column, row;
-    bool valid, matched;
-} checker_cache[4096];
-static unsigned checker_generation;
-
-static struct CheckerCache *CheckerLocation(int column, int row, unsigned layer)
-{
-    unsigned first = ((unsigned)row * 131u + (unsigned)column) * 2u + layer;
-    struct CheckerCache *available = NULL;
-    for (unsigned i = 0; i < 32; ++i) {
-        struct CheckerCache *entry = &checker_cache[(first + i) & 4095];
-        if (entry->valid && entry->column == column && entry->row == row && entry->layer == layer)
-            return entry;
-        if (!available && (!entry->valid || entry->generation != checker_generation))
-            available = entry;
-    }
-    return available;
-}
-
-static unsigned TilePixel(const uint16_t *vram, unsigned tile,
-                           unsigned base, int x, int y, unsigned bpp);
-
-static unsigned TerrainPixel(const Render *render, const uint16_t *vram,
-                              unsigned layer, unsigned tile, double u, double v)
-{
-    if (!render->hd) return 0;
-    int column = (int)floor(u / 8), row = (int)floor(v / 8);
-    struct CheckerCache *cached = CheckerLocation(column, row, layer);
-    if (!cached) return 0;
-    bool same = cached->valid && cached->column == column && cached->row == row && cached->layer == layer;
-    if (!same || cached->generation != checker_generation) {
-        const uint16_t *words = vram + (tile & 1023) * 16;
-        uint8_t border[kKdcCheckerBorderSize] = {0};
-        bool eligible = KdcCheckerNeedsContext(words);
-        for (int k = 0; eligible && k < kKdcCheckerBorderSize; ++k) {
-            int x, y;
-            KdcCheckerBorderPosition(k, &x, &y);
-            if (tile & 0x4000) x = 7 - x;
-            if (tile & 0x8000) y = 7 - y;
-            x += column * 8; y += row * 8;
-            unsigned neighbour = KdcCourseTile(g_ram, layer, KdcTileCoordinate(x), KdcTileCoordinate(y));
-            border[k] = (neighbour & 0x1c00) == (tile & 0x1c00) ?
-                (uint8_t)TilePixel(vram, neighbour, 0, x & 7, y & 7, 4) : 0;
-        }
-        if (!same || memcmp(cached->words, words, sizeof(cached->words)) ||
-            memcmp(cached->border, border, sizeof(border))) {
-            memcpy(cached->words, words, sizeof(cached->words));
-            memcpy(cached->border, border, sizeof(border));
-            cached->matched = eligible && KdcCheckerFit(words, border, &cached->checker);
-        }
-        cached->column = column; cached->row = row; cached->layer = layer;
-        cached->generation = checker_generation; cached->valid = true;
-    }
-    if (!cached->matched) return 0;
-    double x = u - column * 8, y = v - row * 8;
-    if (tile & 0x4000) x = 8 - x;
-    if (tile & 0x8000) y = 8 - y;
-    return KdcCheckerSample(&cached->checker, x, y);
-}
-
 void KdcOrbitReset(void)
 {
     KdcCameraReset(&camera);
@@ -185,7 +161,6 @@ void KdcOrbitReset(void)
     focus_ready = false;
     focus_player = ~0u;
     current.valid = previous.valid = continuous = false;
-    background_valid = false;
 }
 
 /* Player ball U/V: signed integer cells with 16-bit fractions. */
@@ -322,169 +297,11 @@ static const uint8_t *HdArtTileLookup(const Render *render, unsigned address, bo
     return entry->pixels;
 }
 
-/* Adjacent output samples normally visit the same character. Admitted
- * images cannot move until the next draw, so keep that pointer directly. */
-static const uint8_t *HdArtTile(const Render *render, unsigned address, bool rom,
-                              unsigned palette, unsigned bpp)
-{
-    static uint64_t generation;
-    static unsigned last_address, last_palette, last_bpp;
-    static bool valid, last_rom;
-    static const uint8_t *pixels;
-    if (!valid || generation != art_generation || last_address != address ||
-        last_palette != palette || last_bpp != bpp || last_rom != rom) {
-        pixels = HdArtTileLookup(render, address, rom, palette, bpp);
-        generation = art_generation; last_address = address;
-        last_palette = palette; last_bpp = bpp; last_rom = rom; valid = true;
-    }
-    return pixels;
-}
 
-static unsigned HdArtPixel(const Render *render, unsigned address, bool rom,
-                           unsigned palette, unsigned bpp, double x, double y)
+/* floor() for coordinates far inside this bias, without a library call. */
+static inline int Floor(double value)
 {
-    enum { side = 8 * kKdcHdScale };
-    const uint8_t *pixels = HdArtTile(render, address, rom, palette, bpp);
-    if (!pixels) {
-        unsigned sx = (unsigned)floor(x) & 7, sy = (unsigned)floor(y) & 7, pixel = 0;
-        for (unsigned plane = 0; plane < bpp / 2; ++plane) {
-            unsigned at = address + plane * 8 + sy;
-            unsigned word = rom ? g_snes->cart->rom[address + plane * 16 + sy * 2] |
-                (unsigned)g_snes->cart->rom[address + plane * 16 + sy * 2 + 1] << 8 :
-                PpuRenderVram(render->ppu)[at & 0x7fff];
-            pixel |= (((word >> (7 - sx)) & 1) | ((word >> (14 - sx)) & 2)) << (plane * 2);
-        }
-        return pixel;
-    }
-    unsigned sx = (unsigned)floor(x * kKdcHdScale) & (side - 1);
-    unsigned sy = (unsigned)floor(y * kKdcHdScale) & (side - 1);
-    return pixels[sy * side + sx];
-}
-
-static unsigned HdBgPixel(const Render *render, unsigned tile, unsigned base,
-                          unsigned bpp, double x, double y)
-{
-    x -= floor(x / 8) * 8; y -= floor(y / 8) * 8;
-    if (tile & 0x4000) x = nextafter(8 - x, 0);
-    if (tile & 0x8000) y = nextafter(8 - y, 0);
-    return HdArtPixel(render, (base + (tile & 1023) * bpp * 4) & 0x7fff,
-                       false, ((tile >> 10) & 7) * (1u << bpp), bpp, x, y);
-}
-
-static uint32_t TerrainColorUncached(const Render *render, double u, double v,
-                              uint32_t fallback)
-{
-    int x = (int)floor(u), y = (int)floor(v);
-    if (x < 0 || y < 0) return fallback;
-    const uint16_t *vram = PpuRenderVram(render->ppu);
-    unsigned words[2], pixels[2];
-    for (unsigned layer = 0; layer < 2; ++layer) {
-        words[layer] = KdcCourseTile(g_ram, layer, x / 8, y / 8);
-        pixels[layer] = render->hd && render->scale > 1 ?
-            HdBgPixel(render, words[layer], 0, 4, u, v) :
-            TilePixel(vram, words[layer], 0, x & 7, y & 7, 4);
-        unsigned analytic = TerrainPixel(render, vram, layer, words[layer], u, v);
-        if (analytic) pixels[layer] = analytic;
-    }
-    int layer = pixels[0] ? 0 : 1;
-    if (pixels[1] && (words[1] & 0x2000) && !(words[0] & 0x2000)) layer = 1;
-    if (!pixels[layer]) return fallback;
-    return Color(render->ppu->cgram[((words[layer] >> 10) & 7) * 16 + pixels[layer]]);
-}
-
-/* Cache resolved terrain at source HD texel centres. Camera motion changes
- * only sampling coordinates. Revalidate each visible location once per draw
- * against both layers, palettes and the checker's complete neighbour evidence,
- * so animation elsewhere does not force every tile to be regenerated. */
-static uint32_t TerrainColor(const Render *render, double u, double v, uint32_t fallback)
-{
-    if (!render->hd || render->scale <= 1 || u < 0 || v < 0)
-        return TerrainColorUncached(render, u, v, fallback);
-    enum { side = 8 * kKdcHdScale, count = 4096, ways = 8 };
-    static struct TerrainArt {
-        int x, y;
-        uint64_t generation;
-        bool valid;
-        struct TerrainSource {
-            struct TerrainLayer {
-                uint16_t words[16], colors[16];
-                uint8_t border[kKdcCheckerBorderSize];
-                bool matched;
-            } layers[2];
-            uint16_t tiles[2];
-        } source;
-        uint32_t pixels[side * side];
-    } cache[count];
-    unsigned texel_x = (unsigned)(u * kKdcHdScale), texel_y = (unsigned)(v * kKdcHdScale);
-    int x = texel_x / side, y = texel_y / side;
-    unsigned hash = (unsigned)x * 0x9e3779b9u ^ (unsigned)y * 0x85ebca6bu;
-    hash ^= hash >> 16;
-    unsigned bucket = (hash & (count / ways - 1)) * ways;
-    struct TerrainArt *entry = NULL, *available = NULL;
-    for (unsigned i = 0; i < ways; ++i) {
-        struct TerrainArt *candidate = &cache[bucket + i];
-        if (candidate->valid && candidate->x == x && candidate->y == y) {
-            entry = candidate; break;
-        }
-        if (!available && (!candidate->valid || candidate->generation != art_generation)) available = candidate;
-    }
-    if (!entry) {
-        if (!available) return TerrainColorUncached(render, u, v, fallback);
-        entry = available;
-        entry->valid = false;
-    }
-    if (!entry->valid || entry->generation != art_generation) {
-        struct TerrainSource source = {0};
-        const uint16_t *vram = PpuRenderVram(render->ppu);
-        for (unsigned layer = 0; layer < 2; ++layer) {
-            unsigned tile = source.tiles[layer] = KdcCourseTile(g_ram, layer, x, y);
-            struct TerrainLayer *q = &source.layers[layer];
-            memcpy(q->words, vram + (tile & 1023) * 16, sizeof(q->words));
-            memcpy(q->colors, render->ppu->cgram + ((tile >> 10) & 7) * 16, sizeof(q->colors));
-            (void)TerrainPixel(render, vram, layer, tile, x * 8 + 0.125, y * 8 + 0.125);
-            struct CheckerCache *checker = CheckerLocation(x, y, layer);
-            if (checker && checker->valid && checker->column == x && checker->row == y && checker->layer == layer) {
-                memcpy(q->border, checker->border, sizeof(q->border));
-                q->matched = checker->matched;
-            }
-        }
-        if (!entry->valid || memcmp(&entry->source, &source, sizeof(source))) {
-            /* Build both layer images locally. Cache pressure in the sprite
-             * artwork cache must never bake its temporary native fallback
-             * into a persistent terrain raster. */
-            uint8_t layers[2][side * side];
-            for (unsigned layer = 0; layer < 2; ++layer) {
-                PpuHdTileQuery q = {.bpp = 4, .layer = source.layers[layer].matched ? layer : 4,
-                                   .scale = kKdcHdScale};
-                memcpy(q.words, source.layers[layer].words, sizeof(q.words));
-                memcpy(q.colors, source.layers[layer].colors, sizeof(q.colors));
-                memcpy(q.border, source.layers[layer].border, sizeof(q.border));
-                if (!KdcHdSmoothTile(&q, layers[layer], NULL))
-                    KdcHdNearestTile(&q, layers[layer], NULL);
-            }
-            for (unsigned sy = 0; sy < side; ++sy) {
-                for (unsigned sx = 0; sx < side; ++sx) {
-                    unsigned pixels[2];
-                    for (unsigned layer = 0; layer < 2; ++layer) {
-                        unsigned tile = source.tiles[layer];
-                        unsigned tx = tile & 0x4000 ? side - 1 - sx : sx;
-                        unsigned ty = tile & 0x8000 ? side - 1 - sy : sy;
-                        pixels[layer] = layers[layer][ty * side + tx];
-                    }
-                    unsigned layer = pixels[0] ? 0 : 1;
-                    if (pixels[1] && (source.tiles[1] & 0x2000) && !(source.tiles[0] & 0x2000)) layer = 1;
-                    entry->pixels[sy * side + sx] = pixels[layer] ?
-                        Color(source.layers[layer].colors[pixels[layer]]) : 0;
-                }
-            }
-            entry->source = source;
-        }
-        entry->x = x; entry->y = y; entry->valid = true; entry->generation = art_generation;
-    }
-    unsigned sx = texel_x & (side - 1);
-    unsigned sy = texel_y & (side - 1);
-    uint32_t color = entry->pixels[sy * side + sx];
-    return color ? color : fallback;
+    return (int)(value + 1048576.0) - 1048576;
 }
 
 /* Texel footprint per output pixel, rounded: near 1x (above about 0.67x)
@@ -499,62 +316,76 @@ static double Edge(KdcCameraPoint a, KdcCameraPoint b, double x, double y)
     return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
 }
 
-static void Triangle(Render *render, Vertex a, Vertex b, Vertex c,
-                       bool textured, uint32_t color)
+/* The composed terrain colour at an original projected position, or 0. */
+static uint32_t SourceColor(const KdcTerrain *terrain, double u, double v)
 {
-    KdcCameraPoint p[3] = {
-        KdcCameraProject(&render->camera, a.x, a.y, a.z, render->width, render->height),
-        KdcCameraProject(&render->camera, b.x, b.y, b.z, render->width, render->height),
-        KdcCameraProject(&render->camera, c.x, c.y, c.z, render->width, render->height),
-    };
-    double area = Edge(p[0], p[1], p[2].x, p[2].y);
-    if (fabs(area) < 0.000001) return;
-    int left = (int)fmax(0, floor(fmin(p[0].x, fmin(p[1].x, p[2].x))));
-    int right = (int)fmin(render->width - 1, ceil(fmax(p[0].x, fmax(p[1].x, p[2].x))));
-    int top = (int)fmax(0, floor(fmin(p[0].y, fmin(p[1].y, p[2].y))));
-    int bottom = (int)fmin(render->height - 1, ceil(fmax(p[0].y, fmax(p[1].y, p[2].y))));
-    /* Zoomed out, one output pixel spans several source texels. Average a
-     * grid across its footprint instead of point-sampling one, which makes
-     * fine checkerboards shimmer. The texture is affine in screen space. */
-    int samples = textured ? Samples(render->camera.zoom) : 1;
-    for (int y = top; y <= bottom; ++y) {
-        uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
-        for (int x = left; x <= right; ++x) {
-            double w0 = Edge(p[1], p[2], x + 0.5, y + 0.5) / area;
-            double w1 = Edge(p[2], p[0], x + 0.5, y + 0.5) / area;
-            double w2 = 1 - w0 - w1;
-            if (w0 < -0.000001 || w1 < -0.000001 || w2 < -0.000001) continue;
-            double depth = w0 * p[0].depth + w1 * p[1].depth + w2 * p[2].depth;
-            unsigned index = y * render->width + x;
-            if (depth < render->depth[index]) continue;
-            render->depth[index] = (float)depth;
-            if (!textured) { row[x] = color; continue; }
-            if (samples == 1) {
-                row[x] = TerrainColor(render,
-                    w0 * a.texture_x + w1 * b.texture_x + w2 * c.texture_x,
-                    w0 * a.texture_y + w1 * b.texture_y + w2 * c.texture_y, color);
-                continue;
-            }
-            unsigned r = 0, g = 0, blue = 0;
-            for (int j = 0; j < samples; ++j) {
-                for (int i = 0; i < samples; ++i) {
-                    double sx = x + (i + 0.5) / samples, sy = y + (j + 0.5) / samples;
-                    double v0 = Edge(p[1], p[2], sx, sy) / area;
-                    double v1 = Edge(p[2], p[0], sx, sy) / area, v2 = 1 - v0 - v1;
-                    uint32_t sample = TerrainColor(render,
-                        v0 * a.texture_x + v1 * b.texture_x + v2 * c.texture_x,
-                        v0 * a.texture_y + v1 * b.texture_y + v2 * c.texture_y, color);
-                    r += (sample >> 16) & 255; g += (sample >> 8) & 255; blue += sample & 255;
-                }
-            }
-            unsigned n = (unsigned)(samples * samples);
-            row[x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | blue / n;
-        }
-    }
+    if (!terrain) return 0;
+    const int x = Floor(u) - terrain->left, y = Floor(v) - terrain->top;
+    if (x < 0 || y < 0 || x >= terrain->width || y >= terrain->height) return 0;
+    return terrain->colors[terrain->native[(size_t)y * terrain->width + x]];
 }
 
-static void Terrain(Render *render)
+/* The course as world-space triangles with original projected texture
+ * coordinates. It depends only on the collision planes, so it is rebuilt
+ * when they change, not for every camera position. */
+typedef struct MeshVertex { double x, y, z, u, v; } MeshVertex;
+enum { kMeshTop, kMeshWallArt, kMeshWallFlat };
+typedef struct MeshTriangle {
+    MeshVertex vertex[3];
+    unsigned cell;
+    int kind;
+} MeshTriangle;
+
+static struct Mesh {
+    bool valid;
+    uint8_t shape[0x800], elevation[0x800];
+    unsigned width, height;
+    int origin_x, origin_y;
+    MeshTriangle *triangles;
+    unsigned count, capacity;
+    /* Texture positions sampled for colours: each cell's centre, and the
+     * original cliff artwork whose palette colours newly exposed backs. */
+    double (*centers)[2], (*walls)[2];
+    unsigned wall_count;
+    Face *faces;
+} mesh;
+
+static bool MeshPush(MeshVertex a, MeshVertex b, MeshVertex c, unsigned cell, int kind)
 {
+    /* Equal-height neighbours give walls of no height. */
+    const double ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z;
+    const double vx = c.x - a.x, vy = c.y - a.y, vz = c.z - a.z;
+    const double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    if (nx * nx + ny * ny + nz * nz < 1e-18) return true;
+    if (mesh.count == mesh.capacity) {
+        const unsigned capacity = mesh.capacity ? mesh.capacity * 2 : 1024;
+        MeshTriangle *triangles = realloc(mesh.triangles, capacity * sizeof(*triangles));
+        if (!triangles) return false;
+        mesh.triangles = triangles;
+        Face *faces = realloc(mesh.faces, capacity * sizeof(*faces));
+        if (!faces) return false;
+        mesh.faces = faces;
+        mesh.capacity = capacity;
+    }
+    mesh.triangles[mesh.count++] = (MeshTriangle){{a, b, c}, cell, kind};
+    return true;
+}
+
+static bool MeshUpdate(const KdcCourseGeometry *geometry)
+{
+    const size_t cells = (size_t)geometry->width * geometry->height;
+    if (mesh.valid && mesh.width == geometry->width && mesh.height == geometry->height &&
+        mesh.origin_x == geometry->origin_x && mesh.origin_y == geometry->origin_y &&
+        !memcmp(mesh.shape, g_ram + 0x6b90, cells) && !memcmp(mesh.elevation, g_ram + 0x7390, cells))
+        return true;
+    mesh.valid = false;
+    mesh.count = mesh.wall_count = 0;
+    double (*centers)[2] = realloc(mesh.centers, cells * sizeof(*centers));
+    if (!centers) return false;
+    mesh.centers = centers;
+    double (*walls)[2] = realloc(mesh.walls, cells * 2 * sizeof(*walls));
+    if (!walls) return false;
+    mesh.walls = walls;
     /* Outer and void-facing cliffs end at elevation zero, where the
      * original projected cliff artwork ends (measured against native 1-1). */
     const double base_height = 0;
@@ -564,150 +395,404 @@ static void Terrain(Render *render)
     /* The original atlas only depicts the two camera-facing cliff sides.
      * Reuse their live palette for newly exposed backs; never bake artwork
      * or invent a per-course material index from the collision flags. */
-    unsigned wall_r = 0, wall_g = 0, wall_b = 0, wall_samples = 0;
-    for (unsigned y = 0; y < render->geometry.height; ++y) {
-        for (unsigned x = 0; x < render->geometry.width; ++x) {
+    for (unsigned y = 0; y < geometry->height; ++y) {
+        for (unsigned x = 0; x < geometry->width; ++x) {
             for (unsigned edge = 0; edge < 2; ++edge) {
                 double u = edge ? 1 : 0.5, v = edge ? 0.5 : 0, z, neighbor;
-                if (!KdcCourseCellHeight(&render->geometry, x, y, u, v, &z)) continue;
+                if (!KdcCourseCellHeight(geometry, x, y, u, v, &z)) continue;
                 int nx = (int)x + neighbor_x[edge], ny = (int)y + neighbor_y[edge];
-                if (nx >= 0 && ny >= 0 && KdcCourseCellHeight(&render->geometry,
+                if (nx >= 0 && ny >= 0 && KdcCourseCellHeight(geometry,
                     nx, ny, x + u - nx, y + v - ny, &neighbor)) continue;
                 if (z <= base_height) continue;
-                double sx, sy;
-                KdcCourseGeometryProject(&render->geometry, x + u, y + v,
-                                         (z + base_height) * 0.5, &sx, &sy);
-                uint32_t color = TerrainColor(render, sx, sy, 0);
-                if (!color) continue;
-                wall_r += (color >> 16) & 255; wall_g += (color >> 8) & 255;
-                wall_b += color & 255; ++wall_samples;
+                KdcCourseGeometryProject(geometry, x + u, y + v, (z + base_height) * 0.5,
+                    &mesh.walls[mesh.wall_count][0], &mesh.walls[mesh.wall_count][1]);
+                ++mesh.wall_count;
             }
         }
     }
-    uint32_t wall_color = wall_samples ? 0xff000000u |
-        (wall_r / wall_samples << 16) | (wall_g / wall_samples << 8) |
-        (wall_b / wall_samples) : 0xff5a5348;
-    for (unsigned y = 0; y < render->geometry.height; ++y) {
-        for (unsigned x = 0; x < render->geometry.width; ++x) {
-            Vertex vertices[5];
+    for (unsigned y = 0; y < geometry->height; ++y) {
+        for (unsigned x = 0; x < geometry->width; ++x) {
+            const unsigned cell = y * geometry->width + x;
+            MeshVertex vertices[5];
             bool valid = true;
             for (unsigned i = 0; i < 5; ++i) {
-                Vertex *v = &vertices[i];
+                MeshVertex *v = &vertices[i];
                 v->x = x + corners[i][0]; v->y = y + corners[i][1];
-                if (!KdcCourseCellHeight(&render->geometry, x, y,
+                if (!KdcCourseCellHeight(geometry, x, y,
                     corners[i][0], corners[i][1], &v->z)) { valid = false; break; }
-                KdcCourseGeometryProject(&render->geometry, v->x, v->y, v->z,
-                                         &v->texture_x, &v->texture_y);
+                KdcCourseGeometryProject(geometry, v->x, v->y, v->z, &v->u, &v->v);
             }
+            mesh.centers[cell][0] = mesh.centers[cell][1] = 0;
             if (!valid) continue;
-            uint32_t top_color = TerrainColor(render, vertices[4].texture_x,
-                vertices[4].texture_y, 0xff739a52);
+            mesh.centers[cell][0] = vertices[4].u;
+            mesh.centers[cell][1] = vertices[4].v;
             for (unsigned i = 0; i < 4; ++i) {
                 unsigned next = (i + 1) & 3;
-                Triangle(render, vertices[i], vertices[next], vertices[4], true, top_color);
+                if (!MeshPush(vertices[i], vertices[next], vertices[4], cell, kMeshTop)) return false;
                 /* Adjacent cells may meet at different heights. Build the
                  * vertical exposed face rather than stretching the top. */
-                Vertex lower_a = vertices[i], lower_b = vertices[next];
+                MeshVertex lower_a = vertices[i], lower_b = vertices[next];
                 int nx = (int)x + neighbor_x[i], ny = (int)y + neighbor_y[i];
                 double za = base_height, zb = base_height;
                 if (nx >= 0 && ny >= 0) {
-                    (void)KdcCourseCellHeight(&render->geometry, nx, ny,
+                    (void)KdcCourseCellHeight(geometry, nx, ny,
                         lower_a.x - nx, lower_a.y - ny, &za);
-                    (void)KdcCourseCellHeight(&render->geometry, nx, ny,
+                    (void)KdcCourseCellHeight(geometry, nx, ny,
                         lower_b.x - nx, lower_b.y - ny, &zb);
                 }
                 lower_a.z = fmin(lower_a.z, za); lower_b.z = fmin(lower_b.z, zb);
-                KdcCourseGeometryProject(&render->geometry, lower_a.x, lower_a.y, lower_a.z,
-                                         &lower_a.texture_x, &lower_a.texture_y);
-                KdcCourseGeometryProject(&render->geometry, lower_b.x, lower_b.y, lower_b.z,
-                                         &lower_b.texture_x, &lower_b.texture_y);
-                Triangle(render, vertices[i], lower_a, lower_b, i < 2, wall_color);
-                Triangle(render, vertices[i], lower_b, vertices[next], i < 2, wall_color);
+                KdcCourseGeometryProject(geometry, lower_a.x, lower_a.y, lower_a.z,
+                                         &lower_a.u, &lower_a.v);
+                KdcCourseGeometryProject(geometry, lower_b.x, lower_b.y, lower_b.z,
+                                         &lower_b.u, &lower_b.v);
+                const int kind = i < 2 ? kMeshWallArt : kMeshWallFlat;
+                if (!MeshPush(vertices[i], lower_a, lower_b, cell, kind) ||
+                    !MeshPush(vertices[i], lower_b, vertices[next], cell, kind)) return false;
             }
         }
     }
+    mesh.width = geometry->width; mesh.height = geometry->height;
+    mesh.origin_x = geometry->origin_x; mesh.origin_y = geometry->origin_y;
+    memcpy(mesh.shape, g_ram + 0x6b90, cells);
+    memcpy(mesh.elevation, g_ram + 0x7390, cells);
+    mesh.valid = true;
+    return true;
 }
 
-static void Scenery(Render *render, bool hud)
+/* Project the mesh for this camera. The projection is affine, so three
+ * multiplications replace trigonometry per vertex. */
+static bool ProjectFaces(Render *render)
 {
-    if (hud && KdcHudActive(render->ppu)) return;
-    /* The same course scenery signature as the native wide margins. */
-    if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000 ||
-        PPU_bigTiles(render->ppu, 2))
-        return;
-    const uint16_t *vram = PpuRenderVram(render->ppu);
-    int native_width = render->width / render->scale;
-    int extra = (native_width - 256) / 2;
-    for (int y = 0; y < render->height; y += render->scale) {
-        for (int x = 0; x < render->width; x += render->scale) {
-            int screen_x = x / render->scale - extra;
-            if (hud && (screen_x < 0 || screen_x >= 256)) continue;
-            uint16_t scroll = render->ppu->hScroll[2];
-            unsigned u = (unsigned)(screen_x + scroll) & 255;
-            unsigned v = (y / render->scale + render->ppu->vScroll[2] + 1) & 255;
-            /* The clean map's opposite edges do not join. As in the native
-             * widescreen margins, reflect whole tiles outside the field. */
-            bool flip;
-            unsigned column = KdcReflectedColumn(screen_x, scroll, &flip) & 31;
-            unsigned index = (v / 8) * 32 + column;
-            unsigned clean = KdcReadWord(g_ram, 0xdadc + 2 * index) ^ (flip ? 0x4000 : 0);
-            unsigned live = vram[0x3c00 + index];
-            if (hud && live == clean) continue;
-            unsigned tile = hud ? live : clean;
-            unsigned pixel = TilePixel(vram, tile, 0x4000, u & 7, v & 7, 2);
-            const uint8_t *art = !hud && render->hd && render->scale > 1 ?
-                HdArtTile(render, (0x4000 + (tile & 1023) * 8) & 0x7fff,
-                          false, ((tile >> 10) & 7) * 4, 2) : NULL;
-            for (int sy = 0; sy < render->scale; ++sy) {
-                uint32_t *row = (uint32_t *)(render->pixels + (y + sy) * render->pitch);
-                for (int sx = 0; sx < render->scale; ++sx) {
-                    unsigned sample = pixel;
-                    if (art) {
-                        unsigned tx = (u & 7) * 4 + (2 * sx + 1) * 4 / (2 * render->scale);
-                        unsigned ty = (v & 7) * 4 + (2 * sy + 1) * 4 / (2 * render->scale);
-                        if (tile & 0x4000) tx = 31 - tx;
-                        if (tile & 0x8000) ty = 31 - ty;
-                        sample = art[ty * 32 + tx];
+    if (!MeshUpdate(&render->geometry)) return false;
+    const int width = render->width, height = render->height;
+    const KdcCameraPoint o = KdcCameraProject(&render->camera, 0, 0, 0, width, height);
+    const KdcCameraPoint px = KdcCameraProject(&render->camera, 1, 0, 0, width, height);
+    const KdcCameraPoint py = KdcCameraProject(&render->camera, 0, 1, 0, width, height);
+    const KdcCameraPoint pz = KdcCameraProject(&render->camera, 0, 0, 1, width, height);
+    const Texture *texture = &render->texture;
+
+    unsigned r = 0, g = 0, b = 0, samples = 0;
+    for (unsigned i = 0; i < mesh.wall_count; ++i) {
+        const uint32_t color = SourceColor(render->terrain, mesh.walls[i][0], mesh.walls[i][1]);
+        if (!color) continue;
+        r += (color >> 16) & 255; g += (color >> 8) & 255; b += color & 255; ++samples;
+    }
+    const uint32_t wall_color = samples ? 0xff000000u | (r / samples << 16) |
+        (g / samples << 8) | (b / samples) : 0xff5a5348;
+
+    unsigned count = 0, last_cell = ~0u;
+    uint32_t top_color = 0;
+    for (unsigned i = 0; i < mesh.count; ++i) {
+        const MeshTriangle *triangle = &mesh.triangles[i];
+        KdcCameraPoint p[3];
+        for (unsigned k = 0; k < 3; ++k) {
+            const MeshVertex *v = &triangle->vertex[k];
+            p[k].x = o.x + (px.x - o.x) * v->x + (py.x - o.x) * v->y + (pz.x - o.x) * v->z;
+            p[k].y = o.y + (px.y - o.y) * v->x + (py.y - o.y) * v->y + (pz.y - o.y) * v->z;
+            p[k].depth = o.depth + (px.depth - o.depth) * v->x + (py.depth - o.depth) * v->y +
+                         (pz.depth - o.depth) * v->z;
+        }
+        const double area = Edge(p[0], p[1], p[2].x, p[2].y);
+        if (fabs(area) < 0.000001) continue;
+        Face *face = &mesh.faces[count];
+        face->left = (int)fmax(0, floor(fmin(p[0].x, fmin(p[1].x, p[2].x))));
+        face->right = (int)fmin(width - 1, ceil(fmax(p[0].x, fmax(p[1].x, p[2].x))));
+        face->top = (int)fmax(0, floor(fmin(p[0].y, fmin(p[1].y, p[2].y))));
+        face->bottom = (int)fmin(height - 1, ceil(fmax(p[0].y, fmax(p[1].y, p[2].y))));
+        if (face->left > face->right || face->top > face->bottom) continue;
+        /* weight[k] is the barycentric weight of vertex k at a pixel centre. */
+        for (unsigned k = 0; k < 2; ++k) {
+            const KdcCameraPoint a = p[(k + 1) % 3], c = p[(k + 2) % 3];
+            const double wx = (c.y - a.y) / area, wy = -(c.x - a.x) / area;
+            face->weight[k][0] = wx;
+            face->weight[k][1] = wy;
+            face->weight[k][2] = (-a.x * (c.y - a.y) + a.y * (c.x - a.x)) / area + 0.5 * (wx + wy);
+        }
+        for (unsigned k = 0; k < 3; ++k)
+            face->weight[2][k] = (k == 2) - face->weight[0][k] - face->weight[1][k];
+        double value[3][3];
+        for (unsigned k = 0; k < 3; ++k) {
+            value[0][k] = p[k].depth;
+            value[1][k] = (triangle->vertex[k].u - texture->left) * texture->scale;
+            value[2][k] = (triangle->vertex[k].v - texture->top) * texture->scale;
+        }
+        double *plane[3] = {face->depth, face->u, face->v};
+        for (unsigned n = 0; n < 3; ++n)
+            for (unsigned k = 0; k < 3; ++k)
+                plane[n][k] = value[n][0] * face->weight[0][k] + value[n][1] * face->weight[1][k] +
+                              value[n][2] * face->weight[2][k];
+        if (triangle->kind == kMeshTop) {
+            if (triangle->cell != last_cell) {
+                last_cell = triangle->cell;
+                top_color = SourceColor(render->terrain, mesh.centers[last_cell][0],
+                                        mesh.centers[last_cell][1]);
+                if (!top_color) top_color = 0xff739a52;
+            }
+            face->color = top_color;
+        } else {
+            face->color = wall_color;
+        }
+        face->textured = triangle->kind != kMeshWallFlat && texture->texels;
+        ++count;
+    }
+    render->faces = mesh.faces;
+    render->face_count = count;
+    return true;
+}
+
+static inline uint32_t Mix(uint32_t a, uint32_t b, unsigned weight)
+{
+    const uint32_t rb = ((a & 0xff00ff) * (256 - weight) + (b & 0xff00ff) * weight) >> 8 & 0xff00ff;
+    const uint32_t g = ((a & 0x00ff00) * (256 - weight) + (b & 0x00ff00) * weight) >> 8 & 0x00ff00;
+    return 0xff000000u | rb | g;
+}
+
+static inline uint32_t Texel(const Texture *t, double u, double v, uint32_t fallback)
+{
+    const int x = Floor(u), y = Floor(v);
+    if ((unsigned)x >= (unsigned)t->width || (unsigned)y >= (unsigned)t->height) return fallback;
+    const uint32_t color = t->colors[t->texels[(size_t)y * t->stride + x]];
+    return color ? color : fallback;
+}
+
+/* Antialiased nearest sampling: flat areas keep their exact colour; a texel
+ * boundary becomes a one-pixel ramp at any angle or magnification, instead
+ * of the uneven steps point sampling leaves on a rotated edge. Aligned 1:1
+ * sampling returns the texels unchanged. */
+static inline uint32_t SmoothTexel(const Texture *t, double u, double v, double sharp_u,
+                                   double sharp_v, uint32_t fallback)
+{
+    const double a = u - 0.5, b = v - 0.5;
+    const int x = Floor(a), y = Floor(b);
+    if ((unsigned)x >= (unsigned)(t->width - 1) || (unsigned)y >= (unsigned)(t->height - 1))
+        return Texel(t, u, v, fallback);
+    const uint8_t *texel = t->texels + (size_t)y * t->stride + x;
+    const unsigned t00 = texel[0], t10 = texel[1], t01 = texel[t->stride], t11 = texel[t->stride + 1];
+    if (t00 == t10 && t00 == t01 && t00 == t11) return t00 ? t->colors[t00] : fallback;
+    double fx = (a - x - 0.5) * sharp_u + 0.5, fy = (b - y - 0.5) * sharp_v + 0.5;
+    fx = fx < 0 ? 0 : fx > 1 ? 1 : fx;
+    fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
+    const unsigned wx = (unsigned)(fx * 256 + 0.5), wy = (unsigned)(fy * 256 + 0.5);
+    const uint32_t c00 = t00 ? t->colors[t00] : fallback, c10 = t10 ? t->colors[t10] : fallback;
+    const uint32_t c01 = t01 ? t->colors[t01] : fallback, c11 = t11 ? t->colors[t11] : fallback;
+    return Mix(Mix(c00, c10, wx), Mix(c01, c11, wx), wy);
+}
+
+/* Rasterize the faces that reach rows [y0,y1). */
+static void TerrainRows(const Render *render, int y0, int y1)
+{
+    const Texture *texture = &render->texture;
+    const int samples = render->samples;
+    for (unsigned i = 0; i < render->face_count; ++i) {
+        const Face *face = &render->faces[i];
+        if (face->bottom < y0 || face->top >= y1) continue;
+        const int top = face->top > y0 ? face->top : y0;
+        const int bottom = face->bottom < y1 - 1 ? face->bottom : y1 - 1;
+        /* Output pixels per texel along each texture axis; above one, the
+         * ramp between texels narrows to stay a single pixel wide. */
+        double sharp_u = 1 / hypot(face->u[0], face->u[1]), sharp_v = 1 / hypot(face->v[0], face->v[1]);
+        if (!(sharp_u > 1)) sharp_u = 1;
+        if (!(sharp_v > 1)) sharp_v = 1;
+        if (!(sharp_u < 64)) sharp_u = 64;
+        if (!(sharp_v < 64)) sharp_v = 64;
+        for (int y = top; y <= bottom; ++y) {
+            /* The span of pixel centres inside all three edges. */
+            double low = face->left, high = face->right;
+            bool empty = false;
+            for (unsigned k = 0; k < 3; ++k) {
+                const double slope = face->weight[k][0];
+                const double base = face->weight[k][1] * y + face->weight[k][2] + 0.000001;
+                if (slope > 0) low = fmax(low, -base / slope);
+                else if (slope < 0) high = fmin(high, -base / slope);
+                else if (base < 0) empty = true;
+            }
+            if (empty || !(low <= high + 1)) continue;
+            int x0 = (int)ceil(low - 1e-9), x1 = (int)floor(high + 1e-9);
+            if (x0 < face->left) x0 = face->left;
+            if (x1 > face->right) x1 = face->right;
+            if (x0 > x1) continue;
+            uint32_t *row = (uint32_t *)(render->pixels + (size_t)y * render->pitch);
+            float *depth_row = render->depth + (size_t)y * render->width;
+            double depth = face->depth[0] * x0 + face->depth[1] * y + face->depth[2];
+            const double depth_step = face->depth[0];
+            if (!face->textured) {
+                for (int x = x0; x <= x1; ++x, depth += depth_step) {
+                    if (depth < depth_row[x]) continue;
+                    depth_row[x] = (float)depth;
+                    row[x] = face->color;
+                }
+                continue;
+            }
+            double u = face->u[0] * x0 + face->u[1] * y + face->u[2];
+            double v = face->v[0] * x0 + face->v[1] * y + face->v[2];
+            const double u_step = face->u[0], v_step = face->v[0];
+            if (samples > 1) {
+                /* Zoomed out, one output pixel spans several source texels.
+                 * Average a grid across its footprint instead of
+                 * point-sampling one, which makes fine checkerboards
+                 * shimmer. The texture is affine in screen space. */
+                for (int x = x0; x <= x1; ++x, depth += depth_step, u += u_step, v += v_step) {
+                    if (depth < depth_row[x]) continue;
+                    depth_row[x] = (float)depth;
+                    unsigned r = 0, g = 0, blue = 0;
+                    for (int j = 0; j < samples; ++j) {
+                        for (int k = 0; k < samples; ++k) {
+                            const double dx = (k + 0.5) / samples - 0.5, dy = (j + 0.5) / samples - 0.5;
+                            const uint32_t sample = Texel(texture, u + dx * face->u[0] + dy * face->u[1],
+                                v + dx * face->v[0] + dy * face->v[1], face->color);
+                            r += (sample >> 16) & 255; g += (sample >> 8) & 255; blue += sample & 255;
+                        }
                     }
-                    if (sample) row[x + sx] = Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + sample]);
+                    const unsigned n = (unsigned)(samples * samples);
+                    row[x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | blue / n;
+                }
+            } else if (render->smooth) {
+                for (int x = x0; x <= x1; ++x, depth += depth_step, u += u_step, v += v_step) {
+                    if (depth < depth_row[x]) continue;
+                    depth_row[x] = (float)depth;
+                    row[x] = SmoothTexel(texture, u, v, sharp_u, sharp_v, face->color);
+                }
+            } else {
+                for (int x = x0; x <= x1; ++x, depth += depth_step, u += u_step, v += v_step) {
+                    if (depth < depth_row[x]) continue;
+                    depth_row[x] = (float)depth;
+                    row[x] = Texel(texture, u, v, face->color);
                 }
             }
         }
     }
 }
 
-static void RestoreHud(Render *render, const uint8_t *field)
+static bool SceneryLayout(const Ppu *ppu)
 {
-    if (!field || render->ppu->bgXsc[2] != 0x3c ||
+    /* The same course scenery signature as the native wide margins. */
+    return ppu->bgXsc[2] == 0x3c && PPU_bgTileAdr(ppu, 2) == 0x4000 && !PPU_bigTiles(ppu, 2);
+}
+
+/* Backdrop, clean scenery and an empty depth buffer for native rows
+ * [row0,row1). The scenery does not depend on the camera. */
+static void BackgroundRows(const Render *render, int row0, int row1)
+{
+    const int scale = render->scale, native_width = render->width / scale;
+    const int extra = (native_width - 256) / 2;
+    const KdcScenery *scenery = render->scenery;
+    const uint16_t scroll = render->ppu->hScroll[2];
+    for (int y = row0 * scale; y < row1 * scale; ++y) {
+        float *depth = render->depth + (size_t)y * render->width;
+        for (int x = 0; x < render->width; ++x) depth[x] = -FLT_MAX;
+    }
+    for (int row = row0; row < row1; ++row) {
+        uint32_t *out = (uint32_t *)(render->pixels + (size_t)row * scale * render->pitch);
+        if (!scenery) {
+            for (int sy = 0; sy < scale; ++sy) {
+                uint32_t *line = (uint32_t *)((uint8_t *)out + (size_t)sy * render->pitch);
+                for (int x = 0; x < render->width; ++x) line[x] = render->backdrop;
+            }
+            continue;
+        }
+        const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+        const bool enlarged = scenery->hd && scale > 1;
+        for (int x = 0; x < native_width;) {
+            const int screen_x = x - extra;
+            const int first = (screen_x + (scroll & 7)) & 7;
+            int run = 8 - first;
+            if (run > native_width - x) run = native_width - x;
+            /* The clean map's opposite edges do not join. As in the native
+             * widescreen margins, reflect whole tiles outside the field. */
+            bool flip;
+            const unsigned column = KdcReflectedColumn(screen_x, scroll, &flip) & 31;
+            for (int sy = 0; sy < scale; ++sy) {
+                uint32_t *line = (uint32_t *)((uint8_t *)out + (size_t)sy * render->pitch) + x * scale;
+                if (enlarged) {
+                    const uint8_t *source = scenery->hd +
+                        (size_t)(v * 4 + (unsigned)((2 * sy + 1) * 4 / (2 * scale))) * 1024 + column * 32;
+                    for (int i = 0; i < run * scale; ++i) {
+                        const int tx = (first + i / scale) * 4 + (2 * (i % scale) + 1) * 4 / (2 * scale);
+                        const unsigned index = source[flip ? 31 - tx : tx];
+                        line[i] = index ? scenery->colors[index] : render->backdrop;
+                    }
+                } else {
+                    const uint8_t *source = scenery->native + (size_t)v * 256 + column * 8;
+                    for (int i = 0; i < run; ++i) {
+                        const unsigned index = source[flip ? 7 - (first + i) : first + i];
+                        const uint32_t color = index ? scenery->colors[index] : render->backdrop;
+                        for (int sx = 0; sx < scale; ++sx) line[i * scale + sx] = color;
+                    }
+                }
+            }
+            x += run;
+        }
+    }
+}
+
+/* The HUD panel the game composites into BG3 over the clean scenery, for
+ * native rows [row0,row1). It stays at native resolution. */
+static void HudRows(const Render *render, int row0, int row1)
+{
+    if (!render->scenery || KdcHudActive(render->ppu)) return;
+    const int scale = render->scale, native_width = render->width / scale;
+    const int extra = (native_width - 256) / 2;
+    const uint16_t scroll = render->ppu->hScroll[2];
+    for (int row = row0; row < row1; ++row) {
+        const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+        for (int screen_x = 0; screen_x < 256; ++screen_x) {
+            const unsigned u = (unsigned)(screen_x + scroll) & 255;
+            const unsigned index = (v / 8) * 32 + u / 8;
+            const unsigned tile = render->vram[0x3c00 + index];
+            if (tile == KdcReadWord(g_ram, 0xdadc + 2 * index)) {
+                screen_x += 7 - (int)(u & 7); /* the rest of this clean tile */
+                continue;
+            }
+            const unsigned pixel = TilePixel(render->vram, tile, 0x4000, u & 7, v & 7, 2);
+            if (!pixel) continue;
+            const uint32_t color = Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + pixel]);
+            for (int sy = 0; sy < scale; ++sy) {
+                uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch) +
+                                 (screen_x + extra) * scale;
+                for (int sx = 0; sx < scale; ++sx) line[sx] = color;
+            }
+        }
+    }
+}
+
+static void CopyField(const Render *render, int row, int x0, int x1)
+{
+    const int scale = render->scale, native_width = render->width / scale;
+    const uint32_t *field = (const uint32_t *)(const void *)render->field + (size_t)row * native_width;
+    for (int sy = 0; sy < scale; ++sy) {
+        uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch);
+        for (int x = x0; x <= x1; ++x)
+            for (int sx = 0; sx < scale; ++sx) line[x * scale + sx] = field[x];
+    }
+}
+
+/* HUD pixels keep the native PPU's result, with its colour math and
+ * portrait composition, for native rows [row0,row1). */
+static void RestoreRows(const Render *render, int row0, int row1)
+{
+    if (!render->field || render->ppu->bgXsc[2] != 0x3c ||
         PPU_bgTileAdr(render->ppu, 2) != 0x4000) return;
+    const int native_width = render->width / render->scale;
+    const int extra = (native_width - 256) / 2;
     if (KdcHudActive(render->ppu)) {
-        int native_width = render->width / render->scale;
-        int extra = (native_width - 256) / 2;
-        for (int y = 0; y < render->height; ++y)
-            for (int x = 0; x < render->width; ++x)
-                if (KdcHudOverlayPixel(render->ppu, x / render->scale - extra, y / render->scale + 1))
-                    memcpy(render->pixels + y * render->pitch + x * 4,
-                           field + ((size_t)(y / render->scale) * native_width + x / render->scale) * 4, 4);
+        for (int row = row0; row < row1; ++row)
+            for (int x = 0; x < native_width; ++x)
+                if (KdcHudOverlayPixel(render->ppu, x - extra, row + 1)) CopyField(render, row, x, x);
         return;
     }
     /* Preserve the complete occupied horizontal span on each HUD row,
      * including transparent interiors that use the native PPU's color
      * math and object portraits. */
-    const uint16_t *vram = PpuRenderVram(render->ppu);
-    int native_width = render->width / render->scale;
-    int extra = (native_width - 256) / 2;
-    for (int y = 0; y < render->height; ++y) {
-        unsigned v = (y / render->scale + render->ppu->vScroll[2] + 1) & 255;
+    for (int row = row0; row < row1; ++row) {
+        const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
         int left, right;
-        if (!KdcHudSpan(vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2],
+        if (!KdcHudSpan(render->vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2],
                         &left, &right)) continue;
-        left = (left + extra) * render->scale;
-        right = (right + extra + 1) * render->scale - 1;
+        left += extra;
+        right += extra;
         if (left < 0) left = 0;
-        if (right >= render->width) right = render->width - 1;
-        for (int x = left; x <= right; ++x)
-            memcpy(render->pixels + y * render->pitch + x * 4,
-                   field + ((size_t)(y / render->scale) * native_width + x / render->scale) * 4, 4);
+        if (right >= native_width) right = native_width - 1;
+        CopyField(render, row, left, right);
     }
 }
 
@@ -718,12 +803,12 @@ static void CollectSprite(const KdcOrbitSprite *sprite, void *context)
         sprite_buffer[sprite_count++] = *sprite;
 }
 
-static int SpriteSize(const Render *render, const KdcOrbitSprite *sprite)
+static int SpriteSize(const Ppu *ppu, const KdcOrbitSprite *sprite)
 {
     static const uint8_t sizes[8][2] = {
         {8,16}, {8,32}, {8,64}, {16,32}, {16,64}, {32,64}, {16,32}, {16,32}
     };
-    return sizes[PPU_objSize(render->ppu)][sprite->large != 0];
+    return sizes[PPU_objSize(ppu)][sprite->large != 0];
 }
 
 /* Mode 1 OBJ priority against the course planes: priority 0/1 objects lie
@@ -732,83 +817,70 @@ static int SpriteSize(const Render *render, const KdcOrbitSprite *sprite)
  * cup's interior showing only through the hole in the floor tiles. */
 static bool NativeMasked(const Render *render, unsigned priority, double x, double y)
 {
-    if (priority >= 3 || x < 0 || y < 0) return false;
-    int px = (int)x, py = (int)y;
-    const uint16_t *vram = PpuRenderVram(render->ppu);
-    for (unsigned layer = 0; layer < 2; ++layer) {
-        unsigned word = KdcCourseTile(g_ram, layer, px / 8, py / 8);
-        if ((priority < 2 || (word & 0x2000)) &&
-            TilePixel(vram, word, 0, px & 7, py & 7, 4)) return true;
-    }
-    return false;
+    const KdcTerrain *terrain = render->terrain;
+    if (priority >= 3 || x < 0 || y < 0 || !terrain) return false;
+    const int px = (int)x - terrain->left, py = (int)y - terrain->top;
+    if (px < 0 || py < 0 || px >= terrain->width || py >= terrain->height) return false;
+    return terrain->mask[(size_t)py * terrain->width + px] &
+           (priority < 2 ? kKdcTerrainOpaque : kKdcTerrainPriority);
 }
 
 /* Original OBJ color at an unflipped piece position; 0 when transparent or
- * masked. native is the anchor's original projected position, or NULL. */
-static uint32_t SpriteColor(const Render *render, const KdcOrbitSprite *sprite,
-                            int size, double source_x, double source_y,
-                            const double *native)
+ * masked. */
+static uint32_t PieceColor(const Render *render, const Piece *piece,
+                           double source_x, double source_y)
 {
+    const KdcOrbitSprite *sprite = piece->sprite;
+    const int size = piece->size;
     if (!(source_x >= 0 && source_x < size && source_y >= 0 && source_y < size)) return 0;
     int sx = (int)source_x, sy = (int)source_y;
     unsigned attr = sprite->attributes;
-    if (native) {
-        static const KdcOrbitSprite *last_sprite;
-        static uint64_t generation;
-        static uint8_t masks[64 * 64];
-        if (last_sprite != sprite || generation != art_generation) {
-            memset(masks, 0, sizeof(masks));
-            last_sprite = sprite; generation = art_generation;
-        }
-        uint8_t *mask = &masks[sy * 64 + sx];
-        if (!*mask) *mask = NativeMasked(render, (attr >> 12) & 3,
-            native[0] + sprite->offset_x + sx, native[1] + sprite->offset_y + sy) ? 2 : 1;
-        if (*mask == 2) return 0;
-    }
+    if (piece->masked && NativeMasked(render, (attr >> 12) & 3,
+            piece->native[0] + sprite->offset_x + sx, piece->native[1] + sprite->offset_y + sy))
+        return 0;
     if (attr & 0x4000) sx = size - 1 - sx;
     if (attr & 0x8000) sy = size - 1 - sy;
-    unsigned base = attr & 0x100 ? PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
-    unsigned tile = ((((attr & 255) >> 4) + (sy >> 3)) << 4) |
-                    (((attr & 15) + (sx >> 3)) & 15);
+    const uint8_t *art = piece->art ? piece->art[(sy >> 3) * (size / 8) + (sx >> 3)] : NULL;
     unsigned pixel;
-    unsigned view_tile = size <= 16 ? sprite->view_tiles[(sy >> 3) * (size / 8) + (sx >> 3)] : 0;
-    if (view_tile && view_tile + 32 <= g_snes->cart->romImageSize) {
-        const uint8_t *data = g_snes->cart->rom + view_tile + (sy & 7) * 2;
-        unsigned shift = 7 - (sx & 7);
-        pixel = ((data[0] >> shift) & 1) | (((data[1] >> shift) & 1) << 1) |
-                (((data[16] >> shift) & 1) << 2) | (((data[17] >> shift) & 1) << 3);
+    if (art) {
+        /* The enlarged character, at the continuous flipped position. */
+        const double tx = attr & 0x4000 ? nextafter(size - source_x, 0) : source_x;
+        const double ty = attr & 0x8000 ? nextafter(size - source_y, 0) : source_y;
+        pixel = art[((unsigned)(ty * kKdcHdScale) & (8 * kKdcHdScale - 1)) * (8 * kKdcHdScale) +
+                    ((unsigned)(tx * kKdcHdScale) & (8 * kKdcHdScale - 1))];
     } else {
-        pixel = TilePixel(PpuRenderVram(render->ppu), tile, base, sx & 7, sy & 7, 4);
+        unsigned view_tile = size <= 16 ? sprite->view_tiles[(sy >> 3) * (size / 8) + (sx >> 3)] : 0;
+        if (view_tile && view_tile + 32 <= g_snes->cart->romImageSize) {
+            const uint8_t *data = g_snes->cart->rom + view_tile + (sy & 7) * 2;
+            unsigned shift = 7 - (sx & 7);
+            pixel = ((data[0] >> shift) & 1) | (((data[1] >> shift) & 1) << 1) |
+                    (((data[16] >> shift) & 1) << 2) | (((data[17] >> shift) & 1) << 3);
+        } else {
+            unsigned tile = ((((attr & 255) >> 4) + (sy >> 3)) << 4) |
+                            (((attr & 15) + (sx >> 3)) & 15);
+            pixel = TilePixel(render->vram, tile, piece->base, sx & 7, sy & 7, 4);
+        }
     }
-    if (sprite->world && render->hd && render->scale > 1) {
-        double tx = attr & 0x4000 ? nextafter(size - source_x, 0) : source_x;
-        double ty = attr & 0x8000 ? nextafter(size - source_y, 0) : source_y;
-        unsigned palette = 0x80 + 16 * ((attr >> 9) & 7);
-        bool from_rom = view_tile && view_tile + 32 <= g_snes->cart->romImageSize;
-        pixel = HdArtPixel(render, from_rom ? view_tile : (base + tile * 16) & 0x7fff,
-                           from_rom, palette, 4, tx, ty);
-    }
-    return pixel ? Color(render->ppu->cgram[0x80 + 16 * ((attr >> 9) & 7) + pixel]) : 0;
+    return pixel ? piece->colors[pixel] : 0;
 }
 
 /* Zoomed out, average the source texels under a pixel; it is drawn when at
  * least half of them are opaque. Otherwise this is a point sample. */
-typedef struct Footprint { double x, y, step; int samples; } Footprint;
-static uint32_t Filtered(const Render *render, const KdcOrbitSprite *sprite,
-                         int size, Footprint f, const double *native)
+static uint32_t Filtered(const Render *render, const Piece *piece,
+                         double x, double y, double step)
 {
-    if (f.samples == 1) return SpriteColor(render, sprite, size, f.x, f.y, native);
+    const int samples = piece->samples;
+    if (samples == 1) return PieceColor(render, piece, x, y);
     unsigned r = 0, g = 0, b = 0, opaque = 0;
-    for (int j = 0; j < f.samples; ++j) {
-        for (int i = 0; i < f.samples; ++i) {
-            uint32_t c = SpriteColor(render, sprite, size,
-                f.x + (i + 0.5 - f.samples * 0.5) * f.step,
-                f.y + (j + 0.5 - f.samples * 0.5) * f.step, native);
+    for (int j = 0; j < samples; ++j) {
+        for (int i = 0; i < samples; ++i) {
+            uint32_t c = PieceColor(render, piece,
+                x + (i + 0.5 - samples * 0.5) * step, y + (j + 0.5 - samples * 0.5) * step);
             if (!c) continue;
             r += (c >> 16) & 255; g += (c >> 8) & 255; b += c & 255; ++opaque;
         }
     }
-    if (opaque * 2 < (unsigned)(f.samples * f.samples)) return 0;
+    if (opaque * 2 < (unsigned)(samples * samples)) return 0;
     return 0xff000000u | (r / opaque) << 16 | (g / opaque) << 8 | b / opaque;
 }
 
@@ -818,148 +890,192 @@ static uint32_t Filtered(const Render *render, const KdcOrbitSprite *sprite,
  * itself: it turns with the course and follows slopes instead of standing
  * as a billboard that terrain can cut through. Terrain depth is retained,
  * so later bodies stand in front, and nearer occluders hide the decal. */
-static void Decal(Render *render, const KdcOrbitSprite *sprite)
+static void DecalRows(const Render *render, const Piece *piece, int band0, int band1)
 {
-    int size = SpriteSize(render, sprite);
-    double native_x, native_y;
-    KdcCourseGeometryProject(&render->geometry, sprite->x, sprite->y, sprite->z,
-                             &native_x, &native_y);
-    /* Screen bounds of the piece on the anchor plane, widened for slopes. */
-    double left = DBL_MAX, right = -DBL_MAX, top = DBL_MAX, bottom = -DBL_MAX;
-    for (unsigned corner = 0; corner < 4; ++corner) {
-        double dx = sprite->offset_x + (corner & 1 ? size : 0);
-        double dy = sprite->offset_y + (corner & 2 ? size : 0);
-        KdcCameraPoint p = KdcCameraProject(&render->camera,
-            sprite->x + (dx / 32 + dy / 16) / 2, sprite->y + (dx / 32 - dy / 16) / 2,
-            sprite->z, render->width, render->height);
-        left = fmin(left, p.x); right = fmax(right, p.x);
-        top = fmin(top, p.y); bottom = fmax(bottom, p.y);
-    }
+    const KdcOrbitSprite *sprite = piece->sprite;
     const double tolerance = 1.5; /* elevation steps from the anchor plane */
-    double margin = 16 * tolerance * render->camera.zoom + 1;
-    int x0 = (int)fmax(0, floor(left - 1)), x1 = (int)fmin(render->width, ceil(right + 1));
-    int y0 = (int)fmax(0, floor(top - margin)), y1 = (int)fmin(render->height, ceil(bottom + margin));
-    /* Source pixels spanned by one output pixel on a horizontal plane. Both
-     * projections are affine, so this is the same at every pixel and height. */
-    int samples = Samples(render->camera.zoom);
-    double step = 1;
-    if (samples > 1) {
-        double p[3][2], unused;
-        for (unsigned i = 0; i < 3; ++i) {
-            double wx, wy;
-            if (!KdcCameraUnprojectPlane(&render->camera, 0.5 + (i == 1), 0.5 + (i == 2),
-                    sprite->z, render->width, render->height, &wx, &wy, &unused))
-                return;
-            KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z,
-                                     &p[i][0], &p[i][1]);
-        }
-        step = fmax(hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]),
-                    hypot(p[2][0] - p[0][0], p[2][1] - p[0][1])) / samples;
-    }
-    /* Inverse orthographic projection is affine in screen X/Y and depth.
-     * Precompute it once instead of repeating trigonometry at every HD pixel. */
-    double inverse[4][3] = {{0}}, plane[3][2] = {{0}};
-    if (render->scale > 1) {
-        for (unsigned i = 0; i < 4; ++i) {
-            double wx, wy, wz;
-            if (!KdcCameraUnproject(&render->camera, i == 1, i == 2, i == 3,
-                    render->width, render->height, &wx, &wy, &wz)) return;
-            KdcCourseGeometryProject(&render->geometry, wx, wy, wz, &inverse[i][0], &inverse[i][1]);
-            inverse[i][2] = wz;
-        }
-        for (unsigned i = 1; i < 4; ++i)
-            for (unsigned j = 0; j < 3; ++j) inverse[i][j] -= inverse[0][j];
-        for (unsigned i = 0; i < 3; ++i) {
-            double wx, wy, unused;
-            if (!KdcCameraUnprojectPlane(&render->camera, i == 1, i == 2, sprite->z,
-                    render->width, render->height, &wx, &wy, &unused)) return;
-            KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z, &plane[i][0], &plane[i][1]);
-        }
-        for (unsigned i = 1; i < 3; ++i)
-            for (unsigned j = 0; j < 2; ++j) plane[i][j] -= plane[0][j];
-    }
-    const double native[2] = {native_x, native_y};
+    const int y0 = piece->y0 > band0 ? piece->y0 : band0;
+    const int y1 = piece->y1 < band1 ? piece->y1 : band1;
     for (int y = y0; y < y1; ++y) {
-        uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
-        for (int x = x0; x < x1; ++x) {
-            float depth = render->depth[y * render->width + x];
+        uint32_t *row = (uint32_t *)(render->pixels + (size_t)y * render->pitch);
+        const float *depth_row = render->depth + (size_t)y * render->width;
+        for (int x = piece->x0; x < piece->x1; ++x) {
+            const float depth = depth_row[x];
+            const double px = x + 0.5, py = y + 0.5;
             double sx, sy;
-            if (render->scale > 1) {
-                double px = x + 0.5, py = y + 0.5;
-                if (depth == -FLT_MAX) {
-                    sx = plane[0][0] + plane[1][0] * px + plane[2][0] * py;
-                    sy = plane[0][1] + plane[1][1] * px + plane[2][1] * py;
-                } else {
-                    double z = inverse[0][2] + inverse[1][2] * px + inverse[2][2] * py + inverse[3][2] * depth;
-                    if (fabs(z - sprite->z) > tolerance) continue;
-                    sx = inverse[0][0] + inverse[1][0] * px + inverse[2][0] * py + inverse[3][0] * depth;
-                    sy = inverse[0][1] + inverse[1][1] * px + inverse[2][1] * py + inverse[3][1] * depth;
-                }
+            if (depth == -FLT_MAX) {
+                /* Over the void (a ball leaving the course) keep the plane. */
+                sx = piece->plane[0][0] + piece->plane[1][0] * px + piece->plane[2][0] * py;
+                sy = piece->plane[0][1] + piece->plane[1][1] * px + piece->plane[2][1] * py;
             } else {
-                double wx, wy, wz, unused;
-                if (depth == -FLT_MAX) {
-                    /* Over the void (a ball leaving the course) keep the plane. */
-                    wz = sprite->z;
-                    if (!KdcCameraUnprojectPlane(&render->camera, x + 0.5, y + 0.5, wz,
-                            render->width, render->height, &wx, &wy, &unused)) continue;
-                } else if (!KdcCameraUnproject(&render->camera, x + 0.5, y + 0.5, depth,
-                               render->width, render->height, &wx, &wy, &wz) ||
-                           fabs(wz - sprite->z) > tolerance) continue;
-                KdcCourseGeometryProject(&render->geometry, wx, wy, wz, &sx, &sy);
+                const double (*m)[3] = piece->inverse;
+                const double z = m[0][2] + m[1][2] * px + m[2][2] * py + m[3][2] * depth;
+                if (fabs(z - sprite->z) > tolerance) continue;
+                sx = m[0][0] + m[1][0] * px + m[2][0] * py + m[3][0] * depth;
+                sy = m[0][1] + m[1][1] * px + m[2][1] * py + m[3][1] * depth;
             }
-            Footprint f = {sx - native_x - sprite->offset_x,
-                           sy - native_y - sprite->offset_y, step, samples};
-            uint32_t color = Filtered(render, sprite, size, f, native);
+            const uint32_t color = Filtered(render, piece, sx - piece->native[0] - sprite->offset_x,
+                                            sy - piece->native[1] - sprite->offset_y, piece->step);
             if (color) row[x] = color;
         }
     }
 }
 
-static void Sprites(Render *render, bool world, bool ground)
+/* An upright billboard (world), or a screen-anchored piece. */
+static void BodyRows(const Render *render, const Piece *piece, bool world, int band0, int band1)
 {
-    for (unsigned i = sprite_count; i > 0; --i) {
-        const KdcOrbitSprite *sprite = &sprite_buffer[i - 1];
-        if (sprite->world != world || (world && sprite->ground != ground)) continue;
-        if (world && ground) { Decal(render, sprite); continue; }
-        int size = SpriteSize(render, sprite);
-        double scale = world ? render->camera.zoom : render->scale;
-        double z = sprite->z, surface;
-        /* Guest heights are fixed point; the mesh is continuous. Treat an
-         * anchor within a quarter step below the surface as resting on it. */
-        if (world && KdcCourseGeometrySample(&render->geometry, sprite->x, sprite->y, &surface) &&
-            surface > z && surface - z <= 0.25) z = surface;
-        KdcCameraPoint point = world ? KdcCameraProject(&render->camera,
-            sprite->x, sprite->y, z, render->width, render->height) :
-            (KdcCameraPoint){((int)(render->width / render->scale) - 256) / 2.0 * render->scale, -(double)render->scale, 0};
-        double left = point.x + sprite->offset_x * scale;
-        if (!world) left += (double)render->scale * KdcHudPortraitShift(render->ppu, sprite->offset_x,
-                                                sprite->offset_y, sprite->attributes);
-        double top = point.y + sprite->offset_y * scale;
-        int samples = world ? Samples(scale) : 1;
-        double native[2];
-        if (world) KdcCourseGeometryProject(&render->geometry, sprite->x, sprite->y,
-                                            sprite->z, &native[0], &native[1]);
-        int x0 = (int)fmax(0, floor(left)), x1 = (int)fmin(render->width, ceil(left + size * scale));
-        int y0 = (int)fmax(0, floor(top)), y1 = (int)fmin(render->height, ceil(top + size * scale));
-        for (int y = y0; y < y1; ++y) {
-            uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
-            /* Upright billboard above its anchor. Rows the original image
-             * draws below the anchor (hole, shadows, feet) lie in front of
-             * it on the ground plane instead of being buried beneath it. */
-            double below = (y + 0.5 - point.y) / scale;
-            double depth = point.depth + (below >= 0 ? 2 * below : -0.5 * below) + 0.25;
-            for (int x = x0; x < x1; ++x) {
-                uint32_t color = Filtered(render, sprite, size, (Footprint){
-                    (x + 0.5 - left) / scale, (y + 0.5 - top) / scale, 1 / scale / samples, samples},
-                    world ? native : NULL);
-                if (!color) continue;
-                unsigned index = y * render->width + x;
-                /* Compare at buffer precision: equal depths keep OBJ order. */
-                if (world && (float)depth < render->depth[index]) continue;
-                row[x] = color;
-                if (world) render->depth[index] = (float)depth;
-            }
+    const double scale = piece->scale;
+    const int y0 = piece->y0 > band0 ? piece->y0 : band0;
+    const int y1 = piece->y1 < band1 ? piece->y1 : band1;
+    for (int y = y0; y < y1; ++y) {
+        uint32_t *row = (uint32_t *)(render->pixels + (size_t)y * render->pitch);
+        float *depth_row = render->depth + (size_t)y * render->width;
+        /* Upright billboard above its anchor. Rows the original image
+         * draws below the anchor (hole, shadows, feet) lie in front of
+         * it on the ground plane instead of being buried beneath it. */
+        const double below = (y + 0.5 - piece->point.y) / scale;
+        const double depth = piece->point.depth + (below >= 0 ? 2 * below : -0.5 * below) + 0.25;
+        for (int x = piece->x0; x < piece->x1; ++x) {
+            const uint32_t color = Filtered(render, piece, (x + 0.5 - piece->left) / scale,
+                (y + 0.5 - piece->top) / scale, 1 / scale / piece->samples);
+            if (!color) continue;
+            /* Compare at buffer precision: equal depths keep OBJ order. */
+            if (world && (float)depth < depth_row[x]) continue;
+            row[x] = color;
+            if (world) depth_row[x] = (float)depth;
         }
+    }
+}
+
+static Piece piece_buffer[sizeof(sprite_buffer) / sizeof(sprite_buffer[0])];
+static const uint8_t *art_cells[16384];
+
+/* Resolve the camera-dependent placement and artwork of every piece once,
+ * in drawing order: decals, upright bodies, then screen pieces. */
+static void PreparePieces(Render *render)
+{
+    unsigned count = 0, cells_used = 0;
+    const bool enlarge = render->hd && render->scale > 1;
+    for (unsigned i = 0; i < 128; ++i) render->obj_colors[i] = Color(render->ppu->cgram[128 + i]);
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        const Piece *first = &piece_buffer[count];
+        for (unsigned i = sprite_count; i > 0; --i) {
+            const KdcOrbitSprite *sprite = &sprite_buffer[i - 1];
+            const unsigned kind = !sprite->world ? 2 : sprite->ground ? 0 : 1;
+            if (kind != pass) continue;
+            Piece *piece = &piece_buffer[count];
+            *piece = (Piece){.sprite = sprite, .size = SpriteSize(render->ppu, sprite), .samples = 1, .step = 1};
+            const int size = piece->size;
+            const unsigned attr = sprite->attributes;
+            piece->base = attr & 0x100 ? PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
+            piece->colors = render->obj_colors + 16 * ((attr >> 9) & 7);
+            if (sprite->world) {
+                KdcCourseGeometryProject(&render->geometry, sprite->x, sprite->y, sprite->z,
+                                         &piece->native[0], &piece->native[1]);
+                piece->masked = true;
+            }
+            if (kind == 0) {
+                /* Screen bounds of the piece on the anchor plane, widened for slopes. */
+                double left = DBL_MAX, right = -DBL_MAX, top = DBL_MAX, bottom = -DBL_MAX;
+                for (unsigned corner = 0; corner < 4; ++corner) {
+                    double dx = sprite->offset_x + (corner & 1 ? size : 0);
+                    double dy = sprite->offset_y + (corner & 2 ? size : 0);
+                    KdcCameraPoint p = KdcCameraProject(&render->camera,
+                        sprite->x + (dx / 32 + dy / 16) / 2, sprite->y + (dx / 32 - dy / 16) / 2,
+                        sprite->z, render->width, render->height);
+                    left = fmin(left, p.x); right = fmax(right, p.x);
+                    top = fmin(top, p.y); bottom = fmax(bottom, p.y);
+                }
+                const double tolerance = 1.5;
+                double margin = 16 * tolerance * render->camera.zoom + 1;
+                piece->x0 = (int)fmax(0, floor(left - 1));
+                piece->x1 = (int)fmin(render->width, ceil(right + 1));
+                piece->y0 = (int)fmax(0, floor(top - margin));
+                piece->y1 = (int)fmin(render->height, ceil(bottom + margin));
+                /* Source pixels spanned by one output pixel on a horizontal plane. Both
+                 * projections are affine, so this is the same at every pixel and height. */
+                piece->samples = Samples(render->camera.zoom);
+                bool valid = true;
+                if (piece->samples > 1) {
+                    double p[3][2], unused;
+                    for (unsigned k = 0; k < 3 && valid; ++k) {
+                        double wx, wy;
+                        valid = KdcCameraUnprojectPlane(&render->camera, 0.5 + (k == 1), 0.5 + (k == 2),
+                                sprite->z, render->width, render->height, &wx, &wy, &unused);
+                        if (valid) KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z,
+                                                            &p[k][0], &p[k][1]);
+                    }
+                    if (valid) piece->step = fmax(hypot(p[1][0] - p[0][0], p[1][1] - p[0][1]),
+                                                  hypot(p[2][0] - p[0][0], p[2][1] - p[0][1])) / piece->samples;
+                }
+                /* Inverse orthographic projection is affine in screen X/Y and depth.
+                 * Precompute it once instead of repeating trigonometry at every pixel. */
+                for (unsigned k = 0; k < 4 && valid; ++k) {
+                    double wx, wy, wz;
+                    valid = KdcCameraUnproject(&render->camera, k == 1, k == 2, k == 3,
+                            render->width, render->height, &wx, &wy, &wz);
+                    if (!valid) break;
+                    KdcCourseGeometryProject(&render->geometry, wx, wy, wz,
+                                             &piece->inverse[k][0], &piece->inverse[k][1]);
+                    piece->inverse[k][2] = wz;
+                }
+                for (unsigned k = 0; k < 3 && valid; ++k) {
+                    double wx, wy, unused;
+                    valid = KdcCameraUnprojectPlane(&render->camera, k == 1, k == 2, sprite->z,
+                            render->width, render->height, &wx, &wy, &unused);
+                    if (valid) KdcCourseGeometryProject(&render->geometry, wx, wy, sprite->z,
+                                                        &piece->plane[k][0], &piece->plane[k][1]);
+                }
+                if (!valid) continue;
+                for (unsigned k = 1; k < 4; ++k)
+                    for (unsigned j = 0; j < 3; ++j) piece->inverse[k][j] -= piece->inverse[0][j];
+                for (unsigned k = 1; k < 3; ++k)
+                    for (unsigned j = 0; j < 2; ++j) piece->plane[k][j] -= piece->plane[0][j];
+            } else {
+                const bool world = sprite->world;
+                double scale = world ? render->camera.zoom : render->scale;
+                double z = sprite->z, surface;
+                /* Guest heights are fixed point; the mesh is continuous. Treat an
+                 * anchor within a quarter step below the surface as resting on it. */
+                if (world && KdcCourseGeometrySample(&render->geometry, sprite->x, sprite->y, &surface) &&
+                    surface > z && surface - z <= 0.25) z = surface;
+                piece->point = world ? KdcCameraProject(&render->camera,
+                    sprite->x, sprite->y, z, render->width, render->height) :
+                    (KdcCameraPoint){((int)(render->width / render->scale) - 256) / 2.0 * render->scale,
+                                     -(double)render->scale, 0};
+                double left = piece->point.x + sprite->offset_x * scale;
+                if (!world) left += (double)render->scale * KdcHudPortraitShift(render->ppu,
+                    sprite->offset_x, sprite->offset_y, sprite->attributes);
+                double top = piece->point.y + sprite->offset_y * scale;
+                piece->samples = world ? Samples(scale) : 1;
+                piece->left = left; piece->top = top; piece->scale = scale;
+                piece->x0 = (int)fmax(0, floor(left));
+                piece->x1 = (int)fmin(render->width, ceil(left + size * scale));
+                piece->y0 = (int)fmax(0, floor(top));
+                piece->y1 = (int)fmin(render->height, ceil(top + size * scale));
+            }
+            if (piece->x0 >= piece->x1 || piece->y0 >= piece->y1) continue;
+            const unsigned cells = (unsigned)((size / 8) * (size / 8));
+            if (enlarge && sprite->world && cells_used + cells <= sizeof(art_cells) / sizeof(art_cells[0])) {
+                /* Cells are indexed in the character's own (flipped) space. */
+                for (unsigned cell = 0; cell < cells; ++cell) {
+                    const unsigned cx = cell % (unsigned)(size / 8), cy = cell / (unsigned)(size / 8);
+                    const unsigned tile = ((((attr & 255) >> 4) + cy) << 4) | (((attr & 15) + cx) & 15);
+                    const unsigned view_tile = size <= 16 ? sprite->view_tiles[cell] : 0;
+                    const bool from_rom = view_tile && view_tile + 32 <= g_snes->cart->romImageSize;
+                    art_cells[cells_used + cell] = HdArtTileLookup(render,
+                        from_rom ? view_tile : (piece->base + tile * 16) & 0x7fff, from_rom,
+                        0x80 + 16 * ((attr >> 9) & 7), 4);
+                }
+                piece->art = &art_cells[cells_used];
+                cells_used += cells;
+            }
+            ++count;
+        }
+        const unsigned added = (unsigned)(&piece_buffer[count] - first);
+        if (pass == 0) { render->decals = first; render->decal_count = added; }
+        else if (pass == 1) { render->bodies = first; render->body_count = added; }
+        else { render->screen = first; render->screen_count = added; }
     }
 }
 
@@ -1051,7 +1167,6 @@ static void ReportPresentation(void)
 void KdcOrbitCapture(unsigned frame, int width, int height)
 {
     if (!high_refresh) return;
-    background_valid = false;
     previous = current;
     current.valid = continuous = false;
     if (!Ready() || width < 1 || width > kPpuBufWidth || height < 1 || height > 240) return;
@@ -1173,47 +1288,69 @@ static void ReportDraw(double alpha)
     fprintf(log, "%u,%.6f,%u\n", current.frame, alpha, moved);
 }
 
-static void Background(Render *render)
+
+enum { kBandRows = 8 }; /* native rows per band: one BG3 character row */
+
+static void DrawBand(void *context, unsigned index)
 {
-    const KdcCourseCamera *a = &background_camera, *b = &render->camera;
-    static bool background_hd;
-    static int background_width, background_height;
-    bool same = background_valid && high_refresh && background_hd == render->hd &&
-        background_width == render->width && background_height == render->height &&
-        a->yaw == b->yaw && a->zoom == b->zoom &&
-        a->target_x == b->target_x && a->target_y == b->target_y &&
-        a->target_z == b->target_z && a->lead_x == b->lead_x && a->lead_y == b->lead_y;
-    /* Capture invalidates this cache on every simulation tick. During one
-     * captured scene only the presentation transform can change: palette,
-     * VRAM, scenery and terrain remain on the single host thread. Retain
-     * depth BEFORE any sprite draw so moving bodies cannot leave occluders. */
-    if (same) {
-        for (int y = 0; y < render->height; ++y)
-            memcpy(render->pixels + y * render->pitch, background_pixels + y * render->width,
-                   (size_t)render->width * 4);
-        memcpy(render->depth, background_depth, (size_t)render->width * render->height * sizeof(float));
-        return;
+    const Render *render = context;
+    const int native_height = render->height / render->scale;
+    const int row0 = (int)index * kBandRows;
+    const int row1 = row0 + kBandRows < native_height ? row0 + kBandRows : native_height;
+    const int y0 = row0 * render->scale, y1 = row1 * render->scale;
+    BackgroundRows(render, row0, row1);
+    TerrainRows(render, y0, y1);
+    for (unsigned i = 0; i < render->decal_count; ++i) DecalRows(render, &render->decals[i], y0, y1);
+    for (unsigned i = 0; i < render->body_count; ++i) BodyRows(render, &render->bodies[i], true, y0, y1);
+    HudRows(render, row0, row1);
+    for (unsigned i = 0; i < render->screen_count; ++i) BodyRows(render, &render->screen[i], false, y0, y1);
+    RestoreRows(render, row0, row1);
+}
+
+static double Milliseconds(void)
+{
+    struct timespec now;
+    timespec_get(&now, TIME_UTC);
+    return now.tv_sec * 1000.0 + now.tv_nsec / 1000000.0;
+}
+
+/* Developer diagnostic: KDC_ORBIT_PROFILE=1 prints mean preparation and
+ * drawing time, and the terrain work done, every 300 composed frames, and
+ * the same for any single present slower than kSlowPresent. */
+enum { kSlowPresent = 8 };
+static void ReportProfile(double prepared, double drawn)
+{
+    static int enabled = -1;
+    static double prepare_total, draw_total;
+    static unsigned frames;
+    static KdcTerrainStats before, previous;
+    if (enabled < 0) {
+        const char *value = getenv("KDC_ORBIT_PROFILE");
+        enabled = value && *value && *value != '0';
     }
-    for (int y = 0; y < render->height; ++y) {
-        uint32_t *row = (uint32_t *)(render->pixels + y * render->pitch);
-        for (int x = 0; x < render->width; ++x) {
-            row[x] = Color(render->ppu->cgram[0]);
-            render->depth[y * render->width + x] = -FLT_MAX;
-        }
-    }
-    Scenery(render, false);
-    Terrain(render);
-    if (high_refresh) {
-        for (int y = 0; y < render->height; ++y)
-            memcpy(background_pixels + y * render->width, render->pixels + y * render->pitch,
-                   (size_t)render->width * 4);
-        memcpy(background_depth, render->depth, (size_t)render->width * render->height * sizeof(float));
-        background_camera = render->camera;
-        background_hd = render->hd;
-        background_width = render->width;
-        background_height = render->height;
-        background_valid = true;
-    }
+    if (!enabled) return;
+    KdcTerrainStats now;
+    KdcTerrainGetStats(&now);
+    if (prepared + drawn > kSlowPresent)
+        fprintf(stderr, "[orbit] slow present: prepare_ms=%.3f draw_ms=%.3f terrain_rebuilds=%llu "
+                "composed_tiles=%llu scaled_tiles=%llu scenery_builds=%llu\n", prepared, drawn,
+                (unsigned long long)(now.rebuilds - previous.rebuilds),
+                (unsigned long long)(now.composed_tiles - previous.composed_tiles),
+                (unsigned long long)(now.scaled_tiles - previous.scaled_tiles),
+                (unsigned long long)(now.scenery_builds - previous.scenery_builds));
+    previous = now;
+    prepare_total += prepared;
+    draw_total += drawn;
+    if (++frames < 300) return;
+    fprintf(stderr, "[orbit] frames=%u prepare_ms=%.3f draw_ms=%.3f threads=%u faces=%u "
+            "terrain_rebuilds=%llu composed_tiles=%llu scaled_tiles=%llu\n", frames,
+            prepare_total / frames, draw_total / frames, KdcParallelThreads(), mesh.count,
+            (unsigned long long)(now.rebuilds - before.rebuilds),
+            (unsigned long long)(now.composed_tiles - before.composed_tiles),
+            (unsigned long long)(now.scaled_tiles - before.scaled_tiles));
+    before = now;
+    prepare_total = draw_total = 0;
+    frames = 0;
 }
 
 static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
@@ -1226,8 +1363,10 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
      * the fully visible course returns. Camera state is retained. */
     if (PPU_forcedBlank(g_snes->ppu) || PPU_brightness(g_snes->ppu) != 15 ||
         PPU_mosaicSize(g_snes->ppu) > 1) return 0;
+    const double started = Milliseconds();
     Render render = {.pixels = dst, .pitch = pitch, .width = width, .height = height,
-                     .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled(), .scale = scale};
+                     .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled(), .scale = scale,
+                     .vram = PpuRenderVram(g_snes->ppu), .field = field};
     if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
         g_snes->cart->rom, g_snes->cart->romImageSize)) return 0;
     render.camera = ViewCamera(&render);
@@ -1249,8 +1388,8 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
             if (base + (sprite->attributes & 255) * 16 !=
                 0x6000u + (sprite->attributes & 0x1ffu) * 16) continue;
             KdcApplySpriteView(g_snes->cart->rom, g_snes->cart->romImageSize,
-                PpuRenderVram(render.ppu), sprite->view, render.camera.yaw,
-                SpriteSize(&render, sprite), sprite);
+                render.vram, sprite->view, render.camera.yaw,
+                SpriteSize(render.ppu, sprite), sprite);
         }
     }
     /* Scale only the presentation transform, after native-space camera
@@ -1262,13 +1401,33 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
     render.camera.lead_y *= scale;
     OrderAttachments();
     ++art_generation;
-    if (++checker_generation == 0) memset(checker_cache, 0, sizeof(checker_cache));
-    Background(&render);
-    Sprites(&render, true, true);
-    Sprites(&render, true, false);
-    Scenery(&render, true);
-    Sprites(&render, false, false);
-    RestoreHud(&render, field);
+
+    /* The terrain texture is rebuilt only where its inputs changed. Above
+     * one output pixel per source pixel the enlarged level adds detail;
+     * at or below it the source image already has more than is shown. */
+    render.terrain = KdcTerrainUpdate(render.ppu, g_ram, render.hd);
+    if (render.terrain) {
+        const KdcTerrain *terrain = render.terrain;
+        const bool enlarged = terrain->hd && render.camera.zoom > 1.000001;
+        render.texture = (Texture){
+            .texels = enlarged ? terrain->hd : terrain->native,
+            .scale = enlarged ? kKdcTerrainScale : 1,
+            .left = terrain->left, .top = terrain->top, .colors = terrain->colors,
+        };
+        render.texture.width = terrain->width * render.texture.scale;
+        render.texture.height = terrain->height * render.texture.scale;
+        render.texture.stride = render.texture.width;
+        render.smooth = enlarged;
+    }
+    render.samples = render.smooth ? 1 : Samples(render.camera.zoom);
+    render.backdrop = Color(render.ppu->cgram[0]);
+    if (SceneryLayout(render.ppu))
+        render.scenery = KdcSceneryUpdate(render.ppu, g_ram, render.hd && scale > 1);
+    if (!ProjectFaces(&render)) return 0;
+    PreparePieces(&render);
+    const double prepared = Milliseconds();
+    KdcParallelFor((unsigned)((height + kBandRows - 1) / kBandRows), DrawBand, &render);
+    ReportProfile(prepared - started, Milliseconds() - prepared);
     return 1;
 }
 

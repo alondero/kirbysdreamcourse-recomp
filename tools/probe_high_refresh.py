@@ -29,7 +29,13 @@ def main():
                         str(root / 'src/course_geometry.c'),
                         str(root / 'src/course_checker.c'),
                         str(root / 'src/course_hud.c'),
-                        str(source / 'desktop/host_clock.c'), '-lm', '-o', str(executable)],
+                        str(root / 'src/course_terrain.c'),
+                        str(root / 'src/hd_image.c'),
+                        str(root / 'src/host_parallel.c'),
+                        str(root / 'src/hd_scaler.c'),
+                        str(root / 'src/hd_tile_source.c'),
+                        str(source / 'desktop/host_clock.c'), '-lm', '-lpthread',
+                        '-o', str(executable)],
                        check=True)
         subprocess.run([str(executable)], check=True)
 

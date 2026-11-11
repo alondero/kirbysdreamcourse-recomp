@@ -17,5 +17,13 @@
 void KdcXbrScale(const uint8_t *src, int width, int height,
                  const float luma[256], unsigned scale, uint8_t *dst);
 
+/* The same result for the native rectangle [x0,x1) x [y0,y1) of an image
+ * whose rows are stride bytes apart. dst is the complete output image, with
+ * rows dst_stride bytes apart; only the rectangle's texels are written. Each
+ * pixel sees its real neighbours, so regions scaled separately join exactly. */
+void KdcXbrScaleRegion(const uint8_t *src, int width, int height, int stride,
+                       int x0, int y0, int x1, int y1, const float luma[256],
+                       unsigned scale, uint8_t *dst, int dst_stride);
+
 /* Rec. 709 luma of a BGR555 colour, as the shader computes it. */
 float KdcXbrLuma555(uint16_t color);

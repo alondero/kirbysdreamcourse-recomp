@@ -24,8 +24,10 @@ presentation. Interpolation adds one simulation tick of visual history, about
 16.6 ms. Animation artwork, palettes and HUD updates retain native cadence.
 
 Rates are targets, not a guarantee of monitor delivery or locked FPS. The
-software renderer and guest share the host thread. A busy machine may miss
-presentation deadlines; choosing 240 Hz does not make physics run at 240 Hz.
+guest runs on the host thread; the course renderer splits each present into
+row bands drawn by a small worker pool (`src/host_parallel.c`). A busy machine
+may miss presentation deadlines; choosing 240 Hz does not make physics run at
+240 Hz.
 The inherited [orbit renderer limitations](orbit-camera.md#limits), including
 reconstructed cliff artwork and native priority-mask limitations, also apply.
 
@@ -46,12 +48,12 @@ records: camera transforms and sprite geometry. Input and focus easing advance
 on simulation ticks. Each draw uses a temporary camera shared by terrain,
 billboards and decals; it cannot advance or overwrite the simulation camera.
 Textures, palette, terrain and the native HUD field use the latest completed
-scene on the single host thread. There is no cross-fade or optical-flow blend.
-When the camera transform is unchanged within that captured frame, extra
-presents reuse terrain/scenery color and depth from before sprite drawing.
-Sprites still interpolate on every present. Each simulation capture and reset
-invalidates this cache; it never carries old terrain or sprite occluders into
-a new scene.
+scene. There is no cross-fade or optical-flow blend. Every present redraws
+terrain, scenery and sprites from scratch: the terrain and scenery images are
+kept as textures that change only where the game's tile maps, characters or
+palette change ([HD textures](hd-textures.md#orbit-terrain-texture-2026-11-11)),
+so a redraw costs a textured triangle pass rather than a reconstruction of the
+artwork, and no occluder from an earlier scene can survive into a new one.
 
 [course_sprites.c](../src/course_sprites.c) carries verified ball/guide identity
 and task allocation generations into the sprite records. Task creation and

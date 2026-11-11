@@ -52,9 +52,21 @@ static int Clamp(int value, int limit)
 void KdcXbrScale(const uint8_t *src, int width, int height,
                  const float luma[256], unsigned scale, uint8_t *dst)
 {
+    KdcXbrScaleRegion(src, width, height, width, 0, 0, width, height, luma, scale,
+                      dst, width * (int)scale);
+}
+
+void KdcXbrScaleRegion(const uint8_t *src, int width, int height, int stride,
+                       int x0, int y0, int x1, int y1, const float luma[256],
+                       unsigned scale, uint8_t *dst, int dst_stride)
+{
     if (!src || !dst || !luma || width < 1 || height < 1 || scale < 1 || scale > 8)
         return;
-    const int out_width = width * (int)scale;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > width) x1 = width;
+    if (y1 > height) y1 = height;
+    const int out_width = dst_stride;
     /* Lane-invariant line coefficients from the shader. */
     static const float Ao[4] = {1.0f, -1.0f, -1.0f, 1.0f};
     static const float Bo[4] = {1.0f, 1.0f, -1.0f, -1.0f};
@@ -66,13 +78,22 @@ void KdcXbrScale(const uint8_t *src, int width, int height,
     static const float By[4] = {2.0f, 0.5f, -2.0f, -0.5f};
     static const float Cy[4] = {2.0f, 0.0f, -1.0f, 0.5f};
 
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x) {
-#define P(dx, dy) src[Clamp(y + (dy), height) * width + Clamp(x + (dx), width)]
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) {
+#define P(dx, dy) src[Clamp(y + (dy), height) * stride + Clamp(x + (dx), width)]
+            const uint8_t B = P(0, -1), D = P(-1, 0), E = P(0, 0), F = P(1, 0), H = P(0, 1);
+            /* Every rule requires the centre to differ from two adjacent edge
+             * neighbours; most pixels of flat artwork differ from none. */
+            if (luma[B] == luma[E] && luma[D] == luma[E] && luma[F] == luma[E] &&
+                luma[H] == luma[E]) {
+                for (unsigned sy = 0; sy < scale; ++sy)
+                    for (unsigned sx = 0; sx < scale; ++sx)
+                        dst[(y * (int)scale + (int)sy) * out_width + x * (int)scale + (int)sx] = E;
+                continue;
+            }
             const uint8_t A1 = P(-1, -2), B1 = P(0, -2), C1 = P(1, -2);
-            const uint8_t A = P(-1, -1), B = P(0, -1), C = P(1, -1);
-            const uint8_t D = P(-1, 0), E = P(0, 0), F = P(1, 0);
-            const uint8_t G = P(-1, 1), H = P(0, 1), I = P(1, 1);
+            const uint8_t A = P(-1, -1), C = P(1, -1);
+            const uint8_t G = P(-1, 1), I = P(1, 1);
             const uint8_t G5 = P(-1, 2), H5 = P(0, 2), I5 = P(1, 2);
             const uint8_t A0 = P(-2, -1), D0 = P(-2, 0), G0 = P(-2, 1);
             const uint8_t C4 = P(2, -1), F4 = P(2, 0), I4 = P(2, 1);

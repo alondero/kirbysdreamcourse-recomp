@@ -92,7 +92,12 @@ zooming or turning never exposes the raw 256-pixel wrap. Changed HUD spans are
 copied from the native frame to retain color math and portrait composition.
 Below 1x, terrain and sprite texels are averaged over each pixel's footprint
 (up to 4x4 samples) instead of point sampled, which removes checkerboard and
-sprite shimmer when zoomed out.
+sprite shimmer when zoomed out. When one output pixel is smaller than a
+source pixel (HD textures, or zoomed in), terrain is drawn from the 4x
+enlarged terrain image and blended between neighbouring texels, so rotated
+checker edges stay straight instead of showing the texture grid's teeth.
+The terrain and scenery images are maintained incrementally by
+`src/course_terrain.c`; see [HD textures](hd-textures.md#orbit-terrain-texture-2026-11-11).
 
 Sprite anchors use observed projector output at `$81:A5CC`, verified entity
 registry/task identity and dedicated producer hooks. Original OBJ graphics,
