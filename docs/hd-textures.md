@@ -114,20 +114,11 @@ The game requests this context only for eligible opaque, two-colour characters.
 Eligibility is cached by character words; the PPU caches decoded borders by
 all eight neighbours' live words and palette/flip attributes. Neither cache
 assumes that a VRAM address or course tile identity remains unchanged.
-The orbit renderer uses the same model at continuous texture coordinates, with
-its existing footprint sampling when zoomed out. It checks each terrain location
-at most once per draw, reuses fits while VRAM words and neighbour samples are unchanged,
-and resolves palette colours at draw time. Its 4096-entry cache probes at most
-32 slots per lookup and never evicts an entry used in the current draw. When
-those slots are occupied, new locations retain native pixels for that draw,
-bounding solver calls even under adversarial collisions. HD off retains the old path.
-
-The mathematical edges have no texture-resolution limit, but the output still
-has one: the standard HD surface is 4x, and the orbit compositor currently draws
-at native output resolution before presentation scaling. This change removes
-source-texel stair steps under orbit zoom; it does not make the whole renderer
-draw at arbitrary window resolution. Subpixel reconstruction is an enhancement,
-not evidence of subpixel geometry in the original SNES game.
+The orbit renderer no longer uses this per-character model; it enlarges the
+whole terrain image at once (see
+[Orbit terrain texture](#orbit-terrain-texture-2026-11-11)). Subpixel
+reconstruction is an enhancement, not evidence of subpixel geometry in the
+original SNES game.
 
 ## Validation
 
@@ -147,11 +138,18 @@ ROM-free tests:
   turns off after a declined orbit draw, so HD tile work resumes.
 - `tests/test_course_orbit_render.py` also checks magnified checker rendering,
   repeatability, palette changes, streamed tile invalidation and guest-state
-  preservation with HD on.
-
-- The orbit cache regression alternates colliding locations for 5,000 samples,
-  exhausts their probe window, and changes VRAM between draws. It checks that
-  resident locations are not refitted per pixel and changed content is refitted.
+  preservation with HD on. Its art-cache fixture samples two sprite characters
+  5,000 times in one draw, changes VRAM and palette between draws and fills the
+  cache past capacity; it checks one enlargement per source per draw, refresh
+  on the next draw after a change, and no regeneration under pressure.
+- `tests/test_hd_image.py` checks the whole-image enlargement: an isometric
+  square becomes a rhombus whose edges move exactly two texels per row, a
+  boundary line drawn across a square does not round its corners, the line
+  keeps its own smoothing, and 8x8 partial updates equal one whole update.
+- `tests/test_course_terrain.py` checks the incremental terrain texture: an
+  unchanged update regenerates nothing, a palette cycling every frame shows
+  its live colours without regenerating the enlargement, and once it settles
+  the enlargement catches up exactly once.
 - `tests/test_hd_tiles.py` builds the real PPU against synthetic scenes. A
   nearest-neighbour source must reproduce the nearest-scaled native frame
   exactly, with every line on the HD path and no fallback pixels. It checks
@@ -355,6 +353,95 @@ seeded, copied and uploaded by the CPU. Moving composition to the GPU, from an
 uploaded native frame, per-pixel tile records and an HD tile atlas, would
 remove the last two but is a larger change.
 
+### Orbit terrain texture, 2026-11-11
+
+With HD textures and the orbit view (and therefore high refresh), the course
+composition took about 41 ms per present (worst frames over 150 ms), against
+about 7 ms with HD off, so the view could not reach even 60 Hz. Timing inside
+the composition showed why: every output pixel re-derived its terrain colour
+by inverse-projecting the triangle it lay in, then looking up and sampling a
+per-character 4x image through a hash cache (13 to 34 ms per frame); the
+scenery behind the course was enlarged per pixel the same way (about 10 ms);
+and all of it ran on one thread. The same per-character enlargement caused
+the uneven checker edges: a tile holding a square's tip failed the straight
+edge fit, fell back to the pixel-art scaler, and showed a flattened tip or a
+kink beside correctly fitted neighbours, and rotating the view then point
+sampled the 4x texels, adding ragged teeth.
+
+The terrain is now a texture, built once and then kept up to date:
+
+- `src/course_terrain.c` composes both terrain planes, with their priority, into
+  one image of the whole streamed map, and the clean scenery map into another.
+  Each update compares the live tile maps, characters and palette with the last
+  ones and redraws only the changed 8x8 cells. An unchanged update costs about
+  0.02 ms.
+- `src/hd_image.c` enlarges a whole image at 4x, so every pixel sees its real
+  neighbours across character boundaries. A flat region no larger than 40
+  pixels that is exactly the set of pixel centres inside straight edges (1:2,
+  1:1, 2:1, horizontal or vertical) becomes that polygon. Edges a region does
+  not need are dropped, so the two sides of a checker square meet in a sharp
+  point instead of pixel art's blunt tip. Everything else uses the
+  palette-locked xBR scaler, now run over the whole image
+  (`KdcXbrScaleRegion`). A change re-enlarges only the area it can reach, and
+  the result for any texel is the same as a full rebuild. That reach is 47
+  source pixels (`kKdcHdImageReach`): a shape's pieces span less than 40, and
+  the relaxed fit below looks up to seven pixels past them. Each worker thread
+  keeps its working memory between updates; allocating it per call queued the
+  workers on the heap.
+- When a line drawn on the course (the boundary line and its shadow) cuts a
+  square, the pieces are no longer exact polygons on their own. A relaxed fit,
+  tried only for regions of at least 12 pixels that the strict fit rejects,
+  ignores colours other than the piece's own and its background, and borrows
+  evidence from the same square's pieces across the line (up to six pixels
+  away). Each piece then reproduces the whole square's outline, and leaves the
+  line's own smoothed texels alone.
+- Edge decisions use palette luma, but only once a palette has held still for
+  30 updates. Colour cycling therefore costs nothing (it previously
+  re-enlarged about 900 characters per frame on hole 1-1), while a fade or a
+  newly loaded palette is caught up once. Colours always come from the live
+  palette, because the images hold palette indices.
+- `src/course_orbit.c` caches the course mesh by its shape bytes, projects it
+  once per present, and draws the frame as 8-row bands on a small worker pool
+  (`src/host_parallel.c`, half the logical processors, at most twelve;
+  `KDC_THREADS=n` overrides). Each band clears its depth, draws scenery,
+  terrain, ground decals, sprites and the HUD for its own rows. Magnified
+  terrain is blended between neighbouring 4x texels, so rotated edges are
+  smooth. Below 1x the existing footprint averaging over the source image
+  is kept.
+
+- The scenery redraws only the cells whose map word or character changed. Some
+  backdrops still animate: the starry sky behind hole 1-1 flips two star
+  characters, used in 93 cells across the whole backdrop, every other frame.
+  Those cells span the image, so each twinkle re-enlarges nearly all of it
+  (about 2.5 ms on 12 threads, 14 ms on one). Half-width tiles spread that
+  work evenly across the workers. A tighter, still exact, area was estimated
+  at a third of the image at best, and was not worth a second copy of the fit
+  rules.
+
+`KDC_ORBIT_PROFILE=1` prints, every 300 presents, the mean preparation and
+banded drawing time, the thread count and how many characters were recomposed
+and re-enlarged. It also prints every present slower than 8 ms, with the work
+that frame did.
+
+Offline, from memory dumps of five courses, a full build of the enlarged
+terrain took 6 to 45 ms (hole 8-8's map is 2160x1216), done once per hole. A
+changed character used across the map took 2 to 9 ms.
+
+`tools/benchmark_hd.py --scenario orbit` (deterministic course with the orbit
+camera, SDL dummy display, 2026-11-11, Ryzen 9 3900X), before and after:
+
+| | Compose mean | Compose max | Frames per second |
+|---|---|---|---|
+| HD on, before | 29.5 ms | 72 ms | 34 |
+| HD on, after | 3.6 ms | 15 ms | 85 |
+| HD off, before | 5.8 ms | 13 ms | 82 |
+| HD off, after | 0.4 ms | 1.5 ms | 127 |
+
+The frame rate there includes emulation and the dummy display; the course
+view itself now takes about 3.6 ms (1.5 ms preparation, 2.1 ms drawing) per
+present on average. The `still` and `shot` scenarios, which do not use this
+renderer, produce byte-identical images at unchanged speed.
+
 ## Known limits
 
 - Each character is scaled on its own, so the scaler cannot see across
@@ -366,12 +453,17 @@ remove the last two but is a larger change.
   shows the background rather than the sprite beneath.
 - HUD sprites are recognised through recovered screen-anchored draw requests.
   A HUD piece whose anchor is unresolved is treated as course art.
-- The orbit/high-refresh renderer draws directly at 4x resolution. It shares
-  the PPU tile scaler for artwork and samples checker geometry at HD pixel
-  centres. Its existing geometry, occlusion and colour-math limits still apply.
-- The HD path costs about 4 ms of CPU per frame on the development PC (about
-  1 ms in the orbit view, plus its own checker sampling). It has not been
-  measured on slower machines or Linux.
+- The orbit/high-refresh renderer draws directly at 4x resolution from the
+  enlarged terrain and scenery images; sprites still use the PPU tile scaler.
+  Its existing geometry, occlusion and colour-math limits still apply.
+- The enlarged terrain image is 4x the source, so a 1:2 edge is a staircase of
+  one-texel steps. Rotated, blending turns those into a faint ripple along the
+  edge rather than a perfectly straight one.
+- A terrain character that animates regenerates the enlargement around every
+  place it is used: about 2 to 9 ms on the measured courses, on the frame it
+  changes. Palette animation does not.
+- The HD path costs about 4 ms of CPU per frame on the development PC. It has
+  not been measured on slower machines or Linux.
 - The per-cell memo trusts a cell for the rest of the frame unless VRAM is
   written through counted paths, CGRAM changes, or the frame advances. A
   widescreen tile provider whose answer changes mid-frame without such a
@@ -424,8 +516,9 @@ composition at 4x adds CPU work compared with enlarging a native image. In the
 bounded Windows SDL-dummy widescreen rotation/zoom replay (frames 450-480,
 screenshot I/O excluded), composition averaged about 56 ms versus 7 ms with HD
 off. Source caching, native-texel scenery/mask reuse and affine decal projection
-reduced the initial HD implementation's roughly 152 ms, but this path does not
-yet meet a 60 Hz budget on the test machine. The older PPU-only timing figures
+reduced the initial HD implementation's roughly 152 ms, but this path did not
+yet meet a 60 Hz budget on the test machine (since replaced; see
+[Orbit terrain texture](#orbit-terrain-texture-2026-11-11)). The older PPU-only timing figures
 above do not describe HD orbit/high-refresh composition. Cached analytic
 terrain is sampled at 4x source-texel centres, so extreme zoom/rotation can still
 show sampling steps.

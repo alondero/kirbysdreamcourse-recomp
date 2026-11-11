@@ -84,7 +84,8 @@ add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c
     src/course_sprite_view.c
-    src/hd_scaler.c src/hd_tile_source.c src/hd_textures.c src/course_checker.c)
+    src/hd_scaler.c src/hd_tile_source.c src/hd_textures.c src/course_checker.c
+    src/course_terrain.c src/hd_image.c src/host_parallel.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")
 set(KDC_FUNCTIONS_DIR "${CMAKE_SOURCE_DIR}/recomp" CACHE PATH "Local generated function declarations")
@@ -93,6 +94,11 @@ snesrecomp_target_mod_catalog(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/mods/pr
 target_include_directories(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_INCLUDE_DIRS}
     ${SNESRECOMP_ROOT}/runner/src/desktop ${CMAKE_SOURCE_DIR}/src ${KDC_FUNCTIONS_DIR})
 target_link_libraries(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_LIBRARIES})
+if(NOT WIN32)
+    # src/host_parallel.c uses POSIX threads; Windows uses the Win32 API.
+    find_package(Threads REQUIRED)
+    target_link_libraries(KirbyDreamCourseRecomp PRIVATE Threads::Threads)
+endif()
 target_compile_definitions(KirbyDreamCourseRecomp PRIVATE
     SNES_GAME_VERSION="${KDC_BUILD_VERSION}" SNES_GAME_TITLE="Kirby Dream Course")
 if(KDC_RELEASE_DEFAULTS)
