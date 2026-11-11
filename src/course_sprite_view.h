@@ -15,8 +15,11 @@ enum KdcSpriteViewFamily {
 
 /* Capture with the draw request, not from RAM during presentation. Direction
  * selects graphics; facing selects the attachment's projected displacement.
- * player is the guest byte offset (0 or 2). aim is the active shot's $D9DE
- * direction, valid when aimed; it only breaks ties between resident views. */
+ * player is the guest byte offset (0 or 2). direction/facing are $D75E/$D75A
+ * at the request; the shot code clears them to 0 while aiming, so for the
+ * ball they are not authoritative. aim is the active player's $D9DE, valid
+ * when aimed: among the views VRAM and the OBJ show, the aim is preferred,
+ * then direction. */
 typedef struct KdcSpriteView {
     uint8_t family, direction, facing, player;
     bool attachment;

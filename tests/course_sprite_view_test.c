@@ -121,7 +121,28 @@ int main(void)
         EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, stale, pi / 2, 8, &s));
         EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8920));
         EXPECT(s.attributes == original.attributes);
+        /* Every aim, with the cleared 0/0 capture: both members of each
+         * shared pair (including 1, whose partner is the stale 0) must turn
+         * from the aim, not from the capture. */
+        for (unsigned aim = 0; aim < 16; ++aim) {
+            Load(0x8000 + 0x400 * image[aim] + 0x120, 0x7c00, 0x120);
+            KdcOrbitSprite shown = original;
+            if (mirror[aim]) shown.attributes ^= 0x4000;
+            KdcSpriteView cleared = stale;
+            cleared.aimed = true; cleared.aim = (uint8_t)aim;
+            for (unsigned turn = 1; turn <= 4; turn += 3) {
+                unsigned target = (aim - turn) & 15;
+                s = shown;
+                EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, cleared, turn * pi / 8, 8, &s));
+                if (s.view_tiles[0] != Offset(0x8d, 0x8000 + 0x400 * image[target] + 0x120) ||
+                    ((s.attributes >> 14) & 1) != mirror[target])
+                    fprintf(stderr, "player %u aim %u turn %u\n", player, aim, turn);
+                EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8000 + 0x400 * image[target] + 0x120));
+                EXPECT(((s.attributes >> 14) & 1) == mirror[target]);
+            }
+        }
         /* Graphics that match no direction keep the original artwork. */
+        Load(0x8120, 0x7c00, 0x120);
         vram[0x7c00] ^= 1;
         s = original;
         EXPECT(!KdcApplySpriteView(rom, sizeof(rom), vram, stale, pi / 2, 8, &s));
