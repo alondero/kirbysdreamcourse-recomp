@@ -232,7 +232,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
 {
     if (!ppu || !ram) return NULL;
     const uint16_t *vram = PpuRenderVram(ppu);
-    static uint8_t tables[sizeof(state.tables)];
+    uint8_t tables[sizeof(state.tables)];
     ReadTables(ram, tables);
     bool all = !state.valid || memcmp(tables, state.tables, sizeof(tables));
     if (all) {
@@ -277,7 +277,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     if (!hd) luma_dirty = 0;
     if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all) return &state.view;
 
-    static uint8_t char_dirty[1024];
+    uint8_t char_dirty[1024];
     if (chars_changed && !all)
         for (unsigned i = 0; i < 1024; ++i)
             char_dirty[i] = memcmp(vram + i * 16, state.chars + i * 16, 16 * sizeof(*vram)) != 0;

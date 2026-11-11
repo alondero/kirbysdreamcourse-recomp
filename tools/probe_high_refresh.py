@@ -34,7 +34,8 @@ def main():
                         str(root / 'src/host_parallel.c'),
                         str(root / 'src/hd_scaler.c'),
                         str(root / 'src/hd_tile_source.c'),
-                        str(source / 'desktop/host_clock.c'), '-lm', '-o', str(executable)],
+                        str(source / 'desktop/host_clock.c'), '-lm', '-lpthread',
+                        '-o', str(executable)],
                        check=True)
         subprocess.run([str(executable)], check=True)
 

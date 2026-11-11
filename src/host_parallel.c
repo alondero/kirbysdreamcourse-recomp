@@ -36,8 +36,14 @@ static void WakeAll(Condition *c) { pthread_cond_broadcast(c); }
 static void Relax(void) { sched_yield(); }
 static unsigned Processors(void)
 {
+    /* glibc declares the count under _POSIX_C_SOURCE; some C libraries (for
+     * example Apple's) hide it, and then everything runs on one thread. */
+#ifdef _SC_NPROCESSORS_ONLN
     long count = sysconf(_SC_NPROCESSORS_ONLN);
     return count > 0 ? (unsigned)count : 1;
+#else
+    return 1;
+#endif
 }
 #endif
 

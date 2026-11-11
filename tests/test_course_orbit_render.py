@@ -36,7 +36,7 @@ class OrbitRendererTest(unittest.TestCase):
                                      '-I', str(root / 'src'), '-I', str(source),
                                      str(root / 'tests' / fixture),
                                      *map(str, sources),
-                                     '-lm', '-o', str(executable)], capture_output=True)
+                                     '-lm', '-lpthread', '-o', str(executable)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
             result = subprocess.run([str(executable)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))

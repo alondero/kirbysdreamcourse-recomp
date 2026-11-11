@@ -21,7 +21,8 @@ class CourseTerrainTest(unittest.TestCase):
                                      str(root / 'tests/course_terrain_test.c'),
                                      str(root / 'src/course_terrain.c'), str(root / 'src/hd_image.c'),
                                      str(root / 'src/hd_scaler.c'), str(root / 'src/host_parallel.c'),
-                                     '-lm', '-o', str(executable)], capture_output=True, text=True)
+                                     '-lm', '-lpthread', '-o', str(executable)],
+                                    capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
