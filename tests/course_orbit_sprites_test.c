@@ -22,6 +22,77 @@ static void Queue(CpuState *cpu)
     KdcObserveSprites(cpu, 0x808c12);
     KdcObserveSprites(cpu, 0x8082ca);
 }
+static void SpecialEnemies(Ppu *ppu)
+{
+    /* Kracko's specialized drawer uses the cell center, one pixel above
+     * the registry origin. Its body and shadow bypass the generic animator. */
+    KdcResetSprites(ppu);
+    memset(ram, 0, sizeof(ram));
+    CpuState cpu = {.ram = ram, .DB = 0x7e, .X = 384, .Y = 295, .A = 4};
+    Word(0x8b9e, 232); Word(0x9e, 0x89); Word(0xc0, 0x1000);
+    Word(0xb4b8, 0xae); Word(0xb4ba, 0xffff); Word(0xb4f8, 0);
+    Word(0xb538, 8); Word(0xb578, 3); Word(0xb5b8, 23170);
+    Word(0xb638, 352); Word(0xb678, 296);
+    Word(0x4e1c, 0x53); Word(0x519c, 0xe217); Word(0x521c, 0x84);
+    Word(0x5f1c, 384); Word(0x5f9c, 295); Word(0x5e1c, 0xccd3);
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(pending_anchor.world && !pending_anchor.unresolved);
+    assert(pending_anchor.x == 8.5 && pending_anchor.y == 3.5 && pending_anchor.z == 1);
+    assert(pending_anchor.origin_x == 384 && pending_anchor.origin_y == 296);
+    assert(!pending_anchor.ground);
+    cpu.A = 8;
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(pending_anchor.world && pending_anchor.ground);
+
+    /* Lightning and its moving sparks retain the verified cloud parent,
+     * including recovery without spawn history. They remain billboards. */
+    Word(0x4e1e, 0x54); Word(0x519e, 0xe743); Word(0x521e, 0x84);
+    Word(0x579e, 0); Word(0xd2, 2); Word(0x5f1e, 384); Word(0x5f9e, 295);
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(pending_anchor.world && !pending_anchor.ground);
+    assert(pending_anchor.x == 8.5 && pending_anchor.z == 1);
+    KdcResetSprites(ppu);
+    Word(0x4e1e, 0x55); Word(0x509e, 0xe875); Word(0x511e, 0x84);
+    Word(0x519e, 0xe55a); Word(0x521e, 0x80);
+    Word(0x5f1e, 391); Word(0x5f9e, 281);
+    assert(RecoverEffectAnchor(&cpu, 2).world);
+    Word(0x4e1c, 0); KdcResetSprites(ppu);
+    assert(!RecoverEffectAnchor(&cpu, 2).world); /* parent slot reused */
+
+    /* Gordo's current fractional coordinates remain authoritative after
+     * metadata reset and while moving away from its original map cell. */
+    KdcResetSprites(ppu);
+    Word(0xd2, 0);
+    Word(0xb4b8, 0x80); Word(0xb638, 392); Word(0xb678, 300);
+    Word(0x4e1c, 0x4c); Word(0x519c, 0xdf2f); Word(0x5e1c, 0xcca7);
+    Word(0x581c, 0xc000); Word(0x589c, 8);
+    Word(0x591c, 0x8000); Word(0x599c, 3); Word(0x5a1c, 23170); Word(0x5a9c, 0);
+    Word(0x5f1c, 392); Word(0x5f9c, 300); Word(0x561c, 392); Word(0x569c, 300);
+    cpu.X = 392; cpu.Y = 300; cpu.A = 4;
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(pending_anchor.world && !pending_anchor.ground);
+    assert(pending_anchor.x == 8.75 && pending_anchor.y == 3.5 && pending_anchor.z == 1);
+    cpu.A = 8;
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(pending_anchor.world && pending_anchor.ground);
+    assert(pending_anchor.x == 8.75 && pending_anchor.y == 3.5);
+    /* Neither a coincident cached projector output nor invalid task data
+     * can replace the verified moving anchor. */
+    projections[0] = (OrbitAnchor){.x = 99, .world = true, .origin_x = 392, .origin_y = 300};
+    task_anchors[0] = (OrbitAnchor){.x = 99, .world = true};
+    projection_count = projection_next = 1; cpu.A = 4;
+    pending_anchor_valid = false;
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(pending_anchor.world && pending_anchor.x == 8.75);
+    Word(0xb4f8, 2);
+    assert(!SpecialEnemyAnchor(&cpu, 0, 392, 300, false).world);
+    Word(0xb4f8, 0); Word(0x589c, 99);
+    assert(!SpecialEnemyAnchor(&cpu, 0, 392, 300, false).world);
+    Word(0x589c, 8);
+    assert(!SpecialEnemyAnchor(&cpu, 0, 393, 300, false).world);
+    assert(!SpecialEnemyAnchor(&cpu, 1, 392, 300, false).world);
+    assert(!SpecialEnemyAnchor(&cpu, 128, 392, 300, false).world);
+}
 int main(void)
 {
     Ppu *ppu = ppu_init();
@@ -300,6 +371,7 @@ int main(void)
     KdcVisitOrbitSprites(ppu, ram, Visit, NULL);
     assert(visits == 1 && visited.view.family == KDC_SPRITE_VIEW_BALL);
     assert(visited.view.direction == 10 && !visited.view.attachment);
+    SpecialEnemies(ppu);
     ppu_free(ppu);
     return 0;
 }

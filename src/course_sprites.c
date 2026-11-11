@@ -299,6 +299,67 @@ static OrbitAnchor EnemyBaseAnchor(const CpuState *cpu, unsigned slot)
     return anchor;
 }
 
+static OrbitAnchor SpecialEnemyAnchor(const CpuState *cpu, unsigned slot, int x, int y, bool ground)
+{
+    OrbitAnchor anchor = {.source_pc = source_pc, .unresolved = true};
+    if (slot >= 128 || (slot & 1) || (AbsoluteWord(cpu, 0x9e) & 0xff) != 0x89 ||
+        (AbsoluteWord(cpu, 0x521c + slot) & 0x7f) != 4) return anchor;
+    unsigned type = AbsoluteWord(cpu, 0x4e1c + slot);
+    unsigned draw = AbsoluteWord(cpu, 0x519c + slot);
+    bool cloud = type >= 0x51 && type <= 0x53 && draw == 0xe217 &&
+                 AbsoluteWord(cpu, 0x5e1c + slot) == 0xccd3;
+    bool gordo = type == 0x4c && draw == 0xdf2f;
+    if (!cloud && !gordo) return anchor;
+    /* $84:E217 draws the cloud family and $84:DE68 draws Gordo. Both
+     * bypass E55E and submit their shadow separately through E60B. Verify
+     * the owning registry task as well as the live draw origin; other
+     * tasks reuse these fields for unrelated purposes. */
+    unsigned ox = gordo && ground ? 0x561c : 0x5f1c;
+    unsigned oy = gordo && ground ? 0x569c : 0x5f9c;
+    if (x != (int16_t)AbsoluteWord(cpu, ox + slot) ||
+        y != (int16_t)AbsoluteWord(cpu, oy + slot)) return anchor;
+    for (unsigned i = 0; i < 64; i += 2) {
+        unsigned kind = AbsoluteWord(cpu, 0xb4b8 + i);
+        if (kind == 0xffff) break;
+        if (AbsoluteWord(cpu, 0xb4f8 + i) != slot) continue;
+        if (cloud) {
+            if (kind != type + 0x5b) continue;
+            double u = AbsoluteWord(cpu, 0xb538 + i), v = AbsoluteWord(cpu, 0xb578 + i);
+            double z = Fixed(cpu->ram, 0xb5b8 + i, 0xb5f8 + i);
+            int rx = (int16_t)AbsoluteWord(cpu, 0xb638 + i);
+            int ry = (int16_t)AbsoluteWord(cpu, 0xb678 + i);
+            double px = 32 * (u + v) + (int16_t)AbsoluteWord(cpu, 0x8b9c);
+            double py = (int16_t)AbsoluteWord(cpu, 0x8b9e) - 16 * (v - u) - z * (11586.0 / 256);
+            if (px - rx < -1 || px - rx > 1 || py - ry < -1 || py - ry > 1 ||
+                x != (int16_t)(rx + 32) || y != (int16_t)(ry - 1)) continue;
+            /* $84:E166 centers the original corner origin and raises it
+             * one pixel. Keep that pixel as local art displacement. */
+            anchor.x = u + 0.5; anchor.y = v + 0.5; anchor.z = Elevation(z);
+            anchor.origin_x = (int16_t)(rx + 32); anchor.origin_y = ry;
+        } else {
+            if (kind < 0x80 || kind > 0x93) continue;
+            /* $84:DF2F projects these fractional coordinates every draw,
+             * but updates only projected XY in the registry. Its original
+             * integer U/V cannot follow a moving Gordo. Avoid depending
+             * on a coincident (or expired) projector-cache entry. */
+            anchor.x = Fixed(cpu->ram, 0x581c + slot, 0x589c + slot);
+            anchor.y = Fixed(cpu->ram, 0x591c + slot, 0x599c + slot);
+            anchor.z = Elevation(Fixed(cpu->ram, 0x5a1c + slot, 0x5a9c + slot));
+            anchor.origin_x = (int16_t)AbsoluteWord(cpu, 0x561c + slot);
+            anchor.origin_y = (int16_t)AbsoluteWord(cpu, 0x569c + slot);
+            double px = 32 * (anchor.x + anchor.y) + (int16_t)AbsoluteWord(cpu, 0x8b9c);
+            double py = (int16_t)AbsoluteWord(cpu, 0x8b9e) -
+                        16 * (anchor.y - anchor.x + anchor.z);
+            if (px - anchor.origin_x < -1 || px - anchor.origin_x > 1 ||
+                py - anchor.origin_y < -1 || py - anchor.origin_y > 1) continue;
+        }
+        anchor.world = true; anchor.unresolved = false; anchor.ground = ground;
+        anchor.motion_id = TaskMotion(slot);
+        break;
+    }
+    return anchor;
+}
+
 static OrbitAnchor BallAnchor(const CpuState *cpu, unsigned player)
 {
     OrbitAnchor anchor = {.source_pc = source_pc, .unresolved = true};
@@ -323,7 +384,19 @@ static OrbitAnchor RecoverEffectAnchor(const CpuState *cpu, unsigned slot)
         return anchor;
     }
     unsigned type = AbsoluteWord(cpu, 0x4e1c + slot);
-    if (type == 0x5d && AbsoluteWord(cpu, 0x519c + slot) == 0xf04b &&
+    if ((type == 0x54 && AbsoluteWord(cpu, 0x519c + slot) == 0xe743 &&
+         (AbsoluteWord(cpu, 0x521c + slot) & 0x7f) == 4) ||
+        (type >= 0x55 && type <= 0x5b && AbsoluteWord(cpu, 0x509c + slot) == 0xe875 &&
+         (AbsoluteWord(cpu, 0x511c + slot) & 0x7f) == 4)) {
+        /* $84:E5CF stores the lightning's cloud parent in $579C;
+         * $84:E6xx copies that parent into each spark. Recover the same
+         * frozen world anchor even after a host metadata reset. */
+        unsigned parent = AbsoluteWord(cpu, 0x579c + slot);
+        if (parent < 128 && !(parent & 1))
+            anchor = SpecialEnemyAnchor(cpu, parent,
+                (int16_t)AbsoluteWord(cpu, 0x5f1c + parent),
+                (int16_t)AbsoluteWord(cpu, 0x5f9c + parent), false);
+    } else if (type == 0x5d && AbsoluteWord(cpu, 0x519c + slot) == 0xf04b &&
         (AbsoluteWord(cpu, 0x521c + slot) & 0x7f) == 4) {
         anchor = EnemyBaseAnchor(cpu, AbsoluteWord(cpu, 0x531c + slot));
     } else if (type == 0xbe && AbsoluteWord(cpu, 0xd798) == 0) {
@@ -631,8 +704,8 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
         y = (int16_t)AbsoluteWord(cpu, 0x5f9c + slot);
         if (address == 0xe55e) {
             OrbitAnchor anchor = EnemyBaseAnchor(cpu, slot);
-            if (!anchor.world && (AbsoluteWord(cpu, 0x4e1c + slot) == 0xbe ||
-                                  AbsoluteWord(cpu, 0x4e1c + slot) == 0x5d))
+            unsigned type = AbsoluteWord(cpu, 0x4e1c + slot);
+            if (!anchor.world && (type == 0xbe || type == 0x5d || (type >= 0x54 && type <= 0x5b)))
                 anchor = RecoverEffectAnchor(cpu, slot);
             if (!anchor.world) anchor = ResolveAnchor(cpu, x, y);
             if (slot == AbsoluteWord(cpu, 0x6b4e) && AbsoluteWord(cpu, 0x4e1c + slot) == 0x1a)
@@ -692,11 +765,17 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
             if (!pending_anchor_valid || pending_x != x || pending_y != y) {
                 OrbitAnchor anchor = ResolveAnchor(cpu, x, y);
                 unsigned slot = DirectWord(cpu, 0xd2);
-                OrbitAnchor effect = RecoverEffectAnchor(cpu, slot);
-                if (slot < 128 && !(slot & 1) && effect.world &&
-                    x == (int16_t)AbsoluteWord(cpu, 0x5f1c + slot) &&
-                    y == (int16_t)AbsoluteWord(cpu, 0x5f9c + slot))
-                    anchor = effect;
+                OrbitAnchor enemy = (cpu->A == 4 || cpu->A == 8) ?
+                    SpecialEnemyAnchor(cpu, slot, x, y, cpu->A == 8) : (OrbitAnchor){0};
+                if (enemy.world) {
+                    anchor = enemy;
+                } else {
+                    OrbitAnchor effect = RecoverEffectAnchor(cpu, slot);
+                    if (slot < 128 && !(slot & 1) && effect.world &&
+                        x == (int16_t)AbsoluteWord(cpu, 0x5f1c + slot) &&
+                        y == (int16_t)AbsoluteWord(cpu, 0x5f9c + slot))
+                        anchor = effect;
+                }
                 SetPendingAnchor(anchor, x, y);
             }
         }
