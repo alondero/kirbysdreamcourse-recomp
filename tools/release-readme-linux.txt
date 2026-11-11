@@ -22,6 +22,10 @@ back them up before upgrading. Save-state compatibility is not qualified.
 Keyboard: arrows, X for A, Z for B, Return for Start, Right Shift for Select.
 Configure controllers/player two in the launcher. Ctrl+L or Select+L3 opens
 settings during play. Alt+Return toggles fullscreen.
+Choose PRACTICE on the game's title menu to select a course and hole.
+During practice, Start opens resume, restart, hole selection and exit.
+Practice uses saves/practice; ordinary progress is kept separate.
+Save states and rewind are unavailable during practice.
 
 The executable uses the guarded timing/native-dispatch defaults. To select
 interpreter fallback: SNESRECOMP_LLE_BOUNCE=0 ./start.sh

@@ -12,6 +12,10 @@ The ROM is not included. No compiler or local code generation is required.
 Player one defaults to keyboard: arrows, X for A, Z for B, Return for Start,
 Right Shift for Select. Configure controllers and player two in the launcher.
 Ctrl+L opens settings during play. Alt+Return toggles fullscreen.
+Choose PRACTICE on the game's title menu to select a course and hole.
+During practice, Start opens resume, restart, hole selection and exit.
+Practice uses saves/practice; ordinary progress is kept separate.
+Save states and rewind are unavailable during practice.
 Settings and saves are stored beside the EXE. Back them up before upgrading;
 save-state compatibility between builds is not qualified.
 

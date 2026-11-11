@@ -1,5 +1,8 @@
 # Developer hole starts
 
+For the controller-operated game menu, see [hole practice](practice.md). Its
+save isolation is automatic; the developer CLI behavior below is unchanged.
+
 Build with `tools/setup.ps1`, then launch with `tools/play_experimental.ps1 -DevHole normal:3:7`. This is an opt-in testing shortcut. The original menu flow remains the default.
 
 | Selection | Courses | Holes | ROM map slots |

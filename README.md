@@ -64,6 +64,14 @@ The included ROM-free input and comparison tests can be run with `python -m unit
 
 For source-built SPC/DSP differential tests and the optional APU queue-boundary experiment, see [APU timing and audio checks](docs/apu-accuracy.md).
 
+## Hole practice
+
+Choose **PRACTICE** on the game's title menu, below **DEMO PLAY**. Select a mode,
+course and hole using the D-pad, then choose **PLAY THIS HOLE**. A selects and B
+goes back. During practice, Start opens restart, hole selection and exit options.
+Practice saves are separate from ordinary progress. See [hole practice](docs/practice.md)
+for controls and limitations.
+
 ## Start directly on a hole
 
 After building, use the developer shortcut to skip the menus:
