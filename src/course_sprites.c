@@ -379,7 +379,15 @@ static KdcSpriteView PlayerView(const CpuState *cpu, unsigned player, bool attac
     unsigned direction = AbsoluteWord(cpu, 0xd75e + player);
     unsigned facing = AbsoluteWord(cpu, 0xd75a + player);
     if (direction >= 16 || facing >= 16) return (KdcSpriteView){0};
-    KdcSpriteView view = {KDC_SPRITE_VIEW_BALL, direction, facing, player, attachment};
+    KdcSpriteView view = {.family = KDC_SPRITE_VIEW_BALL, .direction = (uint8_t)direction,
+        .facing = (uint8_t)facing, .player = (uint8_t)player, .attachment = attachment};
+    /* The $82 shot code stores the aim $D9DE for player $180B. It only
+     * chooses between ball views VRAM cannot tell apart. */
+    unsigned aim = AbsoluteWord(cpu, 0xd9de);
+    if (player == AbsoluteWord(cpu, 0x180b) && aim < 16) {
+        view.aimed = true;
+        view.aim = (uint8_t)aim;
+    }
     /* The active parasol task uses the active player, unlike the detached
      * closing effect. Validate both callback and bank before selecting its
      * graphics family; the renderer additionally verifies the DMA source. */

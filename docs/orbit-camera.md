@@ -123,6 +123,21 @@ normal tables are `$87:AB5E/$C9CB`; parasol tables are
 `$85:B3BC/$B3CC`, `$B54D/$B56D`, and `$B6A1/$B6B1` for the two players.
 Camera yaw is subtracted from the game's 16-direction index. Mirroring and
 the parasol's signed attachment offsets change together with the artwork.
+`$87:AB24` uploads the normal ball's `$D75E` image and stores its `$D75A`
+mirror flag. While aiming, the shot code copies the aim `$D9DE` into both
+(`$82:C98C`) and later clears them (`$82:CAAD`, `$82:CB3E`), so the pair
+captured with the draw request can be stale. Pairs of directions share one
+of five images, and the mirror flags (`$87:AB4E/$C9BB`) separate the eight
+resulting views. A cleared 0/0 capture is therefore not authoritative while
+aiming: when the aim is 1, direction 0 shares its image and mirror flag, so
+VRAM cannot reject it. The renderer considers only the views that VRAM and
+the OBJ horizontal-flip bit show. Among them it prefers the active player's
+aim `$D9DE` (paired with `$180B`, as the shot code does), then the captured
+direction (which keeps its own facing), and otherwise the lower direction.
+Without an aim (the other player), a capture whose image is resident and
+whose facing's flag matches is kept exactly. The game uploads a new aim's
+image a few frames after the aim settles; until then the aim is not among
+the resident views and the previous image is kept, as in the native view.
 
 The held-object queue caller at `$81:A0B6` uses `$6A9C/$6AA0/$6AA4` rather
 than the ball's projected origin. Its verified parasol draws now retain the
@@ -286,6 +301,40 @@ HD-tile assertion failure is absent with this matching framework profile.
 The strict-warning checker, sprite-view and three orbit-renderer tests pass;
 the 60/120/144/240 Hz probe reports zero guest changes and the same simulation
 image hash at every rate. Runtime/platform coverage limits below still apply.
+
+Aim-direction follow-up on 2026-11-11: once the aim was turned, Kirby kept
+the original artwork at every camera angle. On hole 1-1, holding left or
+right from frame 560 moved `$D9DE` through 0-3 and 12-15, and VRAM held the
+matching images (directions 2/3 and 14/15). `$D75E/$D75A` read 0 at the draw
+request and at presentation, so selection was rejected on every sampled
+present after the turn. Synthetic fixtures with the documented shared-image
+layout, for both players, fail with the old selection: a stale capture is
+rejected, and an aim at 12 keeps the stale 0 because both use the same
+image. They pass with the recovery, as does the aim tie-break within a
+pair. With the change, every sampled present after the turn selects
+camera-relative artwork at 90 and 180 degrees, and aim 14 is recovered
+exactly. With the aim to the right in the native view, Kirby faces the
+camera at 90 degrees and shows the mirrored side view at 180 degrees. With
+the aim towards the camera, he faces left at 90 degrees and away at 180.
+During the shot itself, the rolling ball's graphics match no direction; it
+keeps the original artwork, as before. Windows Release build passed. The
+full suite ran 74 tests with the ROM replay, SDL and HD runtime checks
+enabled: all passed, with six unrelated optional checks skipped. The
+camera replay's sampled RAM (frames 790-899) matches native: first RAM
+divergence: none. The 60/120/144/240 Hz probe reports zero guest changes
+and the same simulation image hash at every rate. Untested: the second
+player's aim at runtime (fixture only), and parasol stages while aiming.
+
+Review follow-up (same date): the first version kept the cleared 0 when the
+aim was 1, because both share image 0 and mirror flag 0. Kirby then turned
+from direction 0, one sixteenth off, which is a different view at some
+angles. A sweep of all 16 aims with the 0/0 capture, at a sixteenth and a
+quarter turn for both players, failed only for aim 1 at a sixteenth turn.
+It passes now that the aim is preferred over the capture. In runtime
+traces covering both aim turns, a shot, the roll and the next aim, aim 1
+is now shown as 1. Every capture that the aim could override was the
+cleared 0, never a real non-zero `$D75E`. While a new aim's image is still
+being uploaded, the resident view is kept, as before.
 
 Recordings, captures, private generated source and ROM-derived images stay in
 ignored `local/`. The hole-completion recording SHA-256 is

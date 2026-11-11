@@ -22,6 +22,8 @@ enum {
     kParasolSideScriptsP1 = 0xb6a1,
     kParasolSideScriptsP2 = 0xb6b1,
     kParasolSideOffsets = 0xb6dc,
+    kPhaseStride = 9,  /* one queued script per animation phase */
+    kBallPhases = 3,
 };
 
 typedef struct Transfer { unsigned source, destination, length; } Transfer;
@@ -71,6 +73,55 @@ static bool Matches(const uint8_t *rom, const uint16_t *vram, const Transfers *l
     return true;
 }
 
+/* OAM attribute bit 14: horizontal flip. */
+static unsigned ObjMirror(unsigned attributes) { return (attributes >> 14) & 1; }
+
+/* The animation phase whose graphics are resident in VRAM, or -1. The
+ * matching transfer list is returned in resident when requested. */
+static int ResidentPhase(const uint8_t *rom, const uint16_t *vram, unsigned bank,
+                         unsigned script, unsigned phase_count, Transfers *resident)
+{
+    for (unsigned phase = 0; phase < phase_count; ++phase) {
+        Transfers list;
+        if (ReadTransfers(rom, bank, script + phase * kPhaseStride, &list) &&
+            Matches(rom, vram, &list)) {
+            if (resident) *resident = list;
+            return (int)phase;
+        }
+    }
+    return -1;
+}
+
+/* A directional stage: count script entries at scripts, entry i showing
+ * direction i * step, with per-direction mirror flags at mirrors. */
+typedef struct ViewTable {
+    unsigned bank, scripts, mirrors, count, step, phases;
+} ViewTable;
+
+/* For a stage whose RAM direction can be stale: a direction whose graphics
+ * are resident and whose mirror flag matches the OBJ. Directions sharing
+ * both are indistinguishable to VRAM; the first of the ranked directions
+ * (-1 for none) among them wins, otherwise the lowest. False when none
+ * matches. */
+static bool RecoverDirection(const uint8_t *rom, const uint16_t *vram, const ViewTable *t,
+                             unsigned mirror, const int ranked[2], uint8_t *direction)
+{
+    int lowest = -1, best_rank = 2;
+    for (unsigned i = 0; i < t->count; ++i) {
+        int d = (int)(i * t->step);
+        if (rom[Offset(t->bank, t->mirrors + (unsigned)d)] != mirror ||
+            ResidentPhase(rom, vram, t->bank, Word(rom, t->bank, t->scripts + 2 * i),
+                          t->phases, NULL) < 0)
+            continue;
+        if (lowest < 0) lowest = d;
+        for (int rank = 0; rank < best_rank; ++rank)
+            if (ranked[rank] == d) { *direction = (uint8_t)d; best_rank = rank; }
+    }
+    if (lowest < 0) return false;
+    if (best_rank == 2) *direction = (uint8_t)lowest;
+    return true;
+}
+
 static unsigned TileSource(const Transfers *list, unsigned address)
 {
     /* Later transfers win, matching DMA. Require the complete tile. */
@@ -97,18 +148,34 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
         /* $85:B62B uploads this stage once. Later motion can change D75E;
          * recover the frozen view from the latched tiles and uniform OBJ
          * mirror in body layouts 9603/9624 and attachment A144/A165. */
-        unsigned table = view.player ? kParasolSideScriptsP2 : kParasolSideScriptsP1;
-        bool found = false;
-        for (unsigned d = 0; d < 16; d += 2) {
-            Transfers candidate;
-            if (rom[Offset(kParasolBank, kParasolMirrors + d)] != ((sprite->attributes >> 14) & 1)) continue;
-            if (!ReadTransfers(rom, kParasolBank, Word(rom, kParasolBank, table + d), &candidate) ||
-                !Matches(rom, vram, &candidate)) continue;
-            view.direction = (uint8_t)d;
-            found = true;
-            break;
+        const ViewTable side = {kParasolBank,
+            view.player ? kParasolSideScriptsP2 : kParasolSideScriptsP1, kParasolMirrors, 8, 2, 1};
+        const int none[2] = {-1, -1};
+        if (!RecoverDirection(rom, vram, &side, ObjMirror(sprite->attributes), none, &view.direction))
+            return false;
+    }
+    if (view.family == KDC_SPRITE_VIEW_BALL) {
+        /* $87:AB24 uploads the $D75E image and stores the $D75A mirror flag.
+         * While aiming, the shot code copies $D9DE into both ($82:C98C) and
+         * later clears them ($82:CAAD, $82:CB3E), so the capture can be a
+         * stale 0/0. Five images are shared by direction pairs and the mirror
+         * flag separates the eight views, so VRAM cannot reject a stale 0
+         * when the aim is its partner 1. Choose among the views VRAM and the
+         * OBJ show: the aim first, then the capture, otherwise the lowest. */
+        const ViewTable ball = {kBallBank, view.player ? kBallScriptsP2 : kBallScriptsP1,
+            view.player ? kBallMirrorsP2 : kBallMirrorsP1, 16, 1, kBallPhases};
+        unsigned mirror = ObjMirror(sprite->attributes);
+        bool captured = rom[Offset(ball.bank, ball.mirrors + view.facing)] == mirror &&
+            ResidentPhase(rom, vram, ball.bank, Word(rom, ball.bank, ball.scripts + view.direction * 2),
+                          ball.phases, NULL) >= 0;
+        if (!captured || (view.aimed && view.aim != view.direction)) {
+            const int ranked[2] = {view.aimed ? view.aim : -1, view.direction};
+            uint8_t shown;
+            if (!RecoverDirection(rom, vram, &ball, mirror, ranked, &shown)) return false;
+            /* A kept capture retains its own facing. */
+            if (!captured || shown != view.direction) view.facing = shown;
+            view.direction = shown;
         }
-        if (!found) return false;
     }
     unsigned direction = (view.direction - turn) & 15;
     unsigned facing = (view.facing - turn) & 15;
@@ -119,7 +186,7 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
     case KDC_SPRITE_VIEW_BALL:
         bank = kBallBank; table = view.player ? kBallScriptsP2 : kBallScriptsP1;
         mirror_table = view.player ? kBallMirrorsP2 : kBallMirrorsP1;
-        phase_count = 3;
+        phase_count = kBallPhases;
         break;
     case KDC_SPRITE_VIEW_PARASOL_UP:
         bank = kParasolBank; table = view.player ? kParasolUpScriptsP2 : kParasolUpScriptsP1;
@@ -142,11 +209,8 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
     unsigned source_script = Word(rom, bank, table + source_index * 2);
     unsigned target_script = Word(rom, bank, table + target_index * 2);
     Transfers source, target;
-    unsigned phase;
-    for (phase = 0; phase < phase_count; ++phase)
-        if (ReadTransfers(rom, bank, source_script + phase * 9, &source) &&
-            Matches(rom, vram, &source)) break;
-    if (phase == phase_count || !ReadTransfers(rom, bank, target_script + phase * 9, &target))
+    int phase = ResidentPhase(rom, vram, bank, source_script, phase_count, &source);
+    if (phase < 0 || !ReadTransfers(rom, bank, target_script + phase * kPhaseStride, &target))
         return false;
 
     KdcOrbitSprite result = *sprite;
