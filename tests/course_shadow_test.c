@@ -215,6 +215,66 @@ int main(void)
     KdcPrepareCourseView(p, ram, 0);
     assert(p->wsLayerClamp == 0 && p->wsBg3WidenY == 0);
     assert(!WsShadowHasTileProvider(1));
+    /* Hole-eight finish: BG3 is replaced while course registers survive.
+     * The rolling star wallpaper occupies a repeated 2x2 tile motif; the
+     * results foreground then moves from map $51 to $52. Neither scene
+     * may recover the obsolete clean course scenery from WRAM. */
+    p->bgmode = 9;
+    p->bgXsc[0] = 0x51; p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    p->screenEnabled[0] = 0x17;
+    for (unsigned y = 0; y < 2; ++y)
+        for (unsigned x = 0; x < 32; ++x)
+            p->vram[0x3c00 + y * 32 + x] = 0x1941 + 2 * y + (x & 1);
+    p->vram[0x3c00 + 12 * 32 + 31] = 0xa567;
+    word(0xdadc + 2 * (12 * 32 + 31), 0x1234);
+    KdcPrepareCourseView(p, ram, 272);
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
+    /* Partial replacement: the first star rows arrive before the last.
+     * Later the results art overwrites the top but leaves the bottom motif. */
+    for (unsigned y = 0; y < 2; ++y)
+        for (unsigned x = 0; x < 32; ++x) {
+            p->vram[0x3c00 + (30 + y) * 32 + x] = 0x1941 + 2 * y + (x & 1);
+            p->vram[0x3c00 + y * 32 + x] = 0;
+        }
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
+    /* A near match cannot authorize the replacement; changes are live. */
+    p->vram[0x3c00 + 30 * 32] = 0;
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0x1234 ^ 0x4000));
+    p->vram[0x3c00 + 30 * 32] = 0x1941;
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
+    p->bgXsc[0] = 0x52;
+    p->screenEnabled[0] = 0x15;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1 && p->wsBg3WidenY == 1);
+    assert(PpuWidescreenLayerExtra(p, 2, 1, 272) == 272);
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
+    assert(WsShadowResolveTile8x8(2, 248, 96, 0, 0, 0x6789) == 0x6789);
+    p->mosaic = 0x14;
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0x6789) == 0x6789);
+    p->mosaic = 0;
+    p->bgTileAdr = 0x500;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsBg3WidenY == 0);
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0x6789) == 0x6789);
+    /* Confirming the results opens a separate score/dance layout. */
+    p->bgXsc[0] = 0x32; p->bgXsc[1] = 0x23; p->bgXsc[2] = 0x58;
+    p->bgTileAdr = 0x500;
+    p->vram[0x5800 + 12 * 32 + 31] = 0xb234;
+    p->vram[0x5800 + 12 * 32] = 0x8234;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1 && p->wsBg3WidenY == 1);
+    assert(PpuWidescreenLayerExtra(p, 1, 1, 272) == 272);
+    assert(!KdcIsCourse(p));
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == 0x8234);
+    assert(WsShadowResolveTile8x8(0, 256, 96, 0, 0, 0x6789) == 0x6789);
+    assert(WsShadowResolveTile8x8(1, 256, 96, 0, 0, 0x6789) == 0x6789);
+    p->bgXsc[1] = 0x24;
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 1 && p->wsBg3WidenY == 0);
+    assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0x6789) == 0x6789);
+    KdcPrepareCourseView(p, ram, 0);
+    assert(!WsShadowHasTileProvider(2) && p->wsBg3WidenY == 0);
     free(p);
     return 0;
 }

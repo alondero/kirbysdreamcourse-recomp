@@ -17,6 +17,27 @@ static bool HasCourseLayout(const Ppu *ppu)
            !PPU_bigTiles(ppu, 0) && !PPU_bigTiles(ppu, 1);
 }
 
+static bool IsCourseFinale(const Ppu *ppu)
+{
+    if (PPU_mode(ppu) != 1 || (ppu->bgXsc[0] != 0x51 && ppu->bgXsc[0] != 0x52) ||
+        ppu->bgXsc[1] != 0x59 || ppu->bgXsc[2] != 0x3c ||
+        ppu->bgTileAdr != 0x400 || (ppu->bgmode & 0x70)) return false;
+    if (ppu->bgXsc[0] == 0x52) return true; /* Course results. */
+    /* The USA finale uploads the 2x2 star wallpaper a row at a time before
+     * changing the course registers. The results artwork later replaces it
+     * from the top down. Either complete end pair of rows identifies the
+     * replacement, including both partial uploads. Read raster-time VRAM:
+     * the clean scenery buffer still contains the previous course. */
+    const uint16_t *map = PpuRenderVram(ppu) + 0x3c00;
+    for (unsigned row = 0; row <= 30; row += 30) {
+        unsigned x;
+        for (x = 0; x < 64; ++x)
+            if (map[row * 32 + x] != 0x1941 + 2 * (x / 32) + (x & 1)) break;
+        if (x == 64) return true;
+    }
+    return false;
+}
+
 bool KdcIsCourse(const Ppu *ppu)
 {
     /* The scorecard reuses the course maps and character base, but replaces
@@ -50,6 +71,15 @@ static bool IsMembers(const Ppu *ppu)
            ppu->bgXsc[1] == 0x53 && ppu->bgXsc[2] == 0x2c &&
            (ppu->bgTileAdr == 0x200 || ppu->bgTileAdr == 0x233) &&
            !(ppu->bgmode & 0x70);
+}
+
+static bool IsCourseDance(const Ppu *ppu)
+{
+    /* USA best-score comparison: BG1 dance stage, BG2 star wallpaper,
+     * and BG3 score headings over a gradient background. */
+    return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x32 &&
+           ppu->bgXsc[1] == 0x23 && ppu->bgXsc[2] == 0x58 &&
+           ppu->bgTileAdr == 0x500 && !(ppu->bgmode & 0x70);
 }
 
 static bool IsCourseIntro(const Ppu *ppu)
@@ -116,7 +146,9 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
         return MenuTile(source->ppu, screen_x, scrolled_y, scroll_x);
     }
     bool selection = IsCourseSelect(source->ppu);
-    if (!selection && !HasCourseLayout(source->ppu)) return native_tile;
+    bool finale = IsCourseFinale(source->ppu);
+    bool dance = IsCourseDance(source->ppu);
+    if (!selection && !finale && !dance && !HasCourseLayout(source->ppu)) return native_tile;
     /* Mosaic groups may span several tiles and the native boundary. Keep
      * their hardware source during the effect instead of changing a group. */
     if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
@@ -126,7 +158,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
          * before the HUD is composited into VRAM. Its opposite edges do
          * not join. Reflect the clean visible strip at its tile boundaries
          * instead, preserving the native tiles and live raster phase. */
-        if (!selection && (source->ppu->bgXsc[2] != 0x3c ||
+        if (!selection && !dance && (source->ppu->bgXsc[2] != 0x3c ||
             PPU_bgTileAdr(source->ppu, 2) != 0x4000 ||
             PPU_bigTiles(source->ppu, 2))) return native_tile;
         /* Fine scroll exposes 33 tiles rather than 32. Reflect outside
@@ -136,9 +168,14 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
         unsigned column = KdcReflectedColumn(screen_x, scroll_x, &reflected);
         unsigned row = scrolled_y >> 3;
         unsigned index = (row & 31) * 32 + (column & 31);
+        /* Dance stars are on BG2; BG3 combines a gradient background with
+         * score lettering. Its first column has only the clean gradient.
+         * Extend that live column so headings never repeat in the margins. */
+        if (dance) return PpuRenderVram(source->ppu)[0x5800 + (row & 31) * 32];
         /* Selection keeps clean sky in the first VRAM page; raster scroll
          * switches the native field to its label page near the bottom. */
-        uint16_t tile = selection ? PpuRenderVram(source->ppu)[0x6000 + index] :
+        uint16_t tile = finale ? PpuRenderVram(source->ppu)[0x3c00 + index] :
+                       selection ? PpuRenderVram(source->ppu)[0x6000 + index] :
                                   KdcReadWord(source->ram, 0xdadc + 2 * index);
         /* Toggle, rather than set: source artwork already uses flips. */
         return tile ^ (reflected ? 0x4000 : 0);
@@ -163,7 +200,8 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
      * SNES scanlines start at 1; zero disables the widening policy. */
     bool world_scene = KdcIsCourse(ppu) || IsCourseSelect(ppu);
     /* Scorecards retain course scenery even though terrain is not live. */
-    bool scenery = HasCourseLayout(ppu) || IsCourseSelect(ppu) || IsMembers(ppu);
+    bool scenery = HasCourseLayout(ppu) || IsCourseFinale(ppu) ||
+                   IsCourseSelect(ppu) || IsMembers(ppu) || IsCourseDance(ppu);
     PpuSetWidescreenBg3Widen(ppu, extra && scenery ? 1 : 0);
     /* This ROM still emits ordinary signed 9-bit OAM coordinates. Do not
      * reinterpret left-edge sprites as right-margin objects, or include
