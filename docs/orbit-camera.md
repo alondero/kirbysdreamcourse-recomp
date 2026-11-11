@@ -336,6 +336,49 @@ is now shown as 1. Every capture that the aim could override was the
 cleared 0, never a real non-zero `$D75E`. While a new aim's image is still
 being uploaded, the resident view is kept, as before.
 
+Enemy-anchor follow-up on 2026-11-11: extra multiplayer Kracko hole 1
+(`--dev-hole multi-extra:3:1`, map 208) contains two Krackos and two Gordos.
+At frame 599, the old observer left 42 sprite pieces unresolved, including
+Kracko's body, shadow and lightning. Rotating kept those pieces in native
+screen space. The specialized `$84:E217` drawer bypasses the generic enemy
+animator and uses the registry's projected origin plus `(32,-1)`; its verified
+registry task now supplies the cell-center world anchor. The cloud variants
+use the same contract. Bodies remain billboards, while their separate
+bucket-8 shadows follow the terrain.
+
+Gordo's `$84:DF2F` drawer projects fractional coordinates from
+`$581C/$589C`, `$591C/$599C` and `$5A1C/$5A9C`. It updates registry projected
+XY but retains the original integer map cell. Both body and shadow now use
+those live coordinates after validating task identity and projected origin,
+instead of depending on a matching projector-cache entry. Lightning task 54
+and spark tasks 55-5B recover their cloud parent through `$579C`, as written
+by `$84:E5CF` and the `$84:E6xx` creators. These observers only read guest
+state; no new interpreter or generated-code hooks are needed.
+
+Windows Release build and all 64 enabled tests in the 75-test suite pass
+(11 optional skips). The two ROM-backed camera tests also pass separately.
+The new HD-enabled map-208 shot replay turns through 360 degrees, zooms and
+resets: no unresolved sprites occur at frames 500-799; native/interpreter
+enemy pieces agree; all 30 sampled RAM frames (790-819) match the camera-off
+run, and all 19 post-reset images (801-819) match native output exactly.
+First sampled RAM divergence: none. The existing 900-frame hole-1 shot test
+also passes its 110-frame RAM/image comparison and reset checks. Synthetic
+fixtures cover fractional movement, conflicting projection-cache entries,
+metadata reset, invalid/reused task identities, lightning and spark recovery.
+The changed observer module compiles with `-Wall -Wextra -Werror`.
+
+Before/after HD captures at 90 degrees and 0.25x zoom show both Krackos
+appearing at their course positions; Gordo shadows now lie on the floor.
+Captures at 90/270 degrees and 0.5x were also inspected. No new reference
+emulator comparison was performed because this is a host presentation view.
+Runtime save/load during these effects, every enemy variant/map and Linux
+rendering remain untested. Run the new replay with `KDC_TEST_CAMERA=1` and
+`KDC_CAMERA_EXECUTABLE` pointing to the built executable:
+
+```
+python -m unittest discover -s tests -p test_course_camera_runtime.py -k kracko -v
+```
+
 Recordings, captures, private generated source and ROM-derived images stay in
 ignored `local/`. The hole-completion recording SHA-256 is
 `537d4c7c310d82ca3353d35fe78442698107b56f51d004d94242e962ac6d18fa`;
