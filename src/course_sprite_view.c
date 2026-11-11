@@ -22,6 +22,8 @@ enum {
     kParasolSideScriptsP1 = 0xb6a1,
     kParasolSideScriptsP2 = 0xb6b1,
     kParasolSideOffsets = 0xb6dc,
+    kPhaseStride = 9,  /* one queued script per animation phase */
+    kBallPhases = 3,
 };
 
 typedef struct Transfer { unsigned source, destination, length; } Transfer;
@@ -71,6 +73,48 @@ static bool Matches(const uint8_t *rom, const uint16_t *vram, const Transfers *l
     return true;
 }
 
+/* OAM attribute bit 14: horizontal flip. */
+static unsigned ObjMirror(unsigned attributes) { return (attributes >> 14) & 1; }
+
+/* The animation phase whose graphics are resident in VRAM, or -1. The
+ * matching transfer list is returned in resident when requested. */
+static int ResidentPhase(const uint8_t *rom, const uint16_t *vram, unsigned bank,
+                         unsigned script, unsigned phase_count, Transfers *resident)
+{
+    for (unsigned phase = 0; phase < phase_count; ++phase) {
+        Transfers list;
+        if (ReadTransfers(rom, bank, script + phase * kPhaseStride, &list) &&
+            Matches(rom, vram, &list)) {
+            if (resident) *resident = list;
+            return (int)phase;
+        }
+    }
+    return -1;
+}
+
+/* For a stage whose RAM direction can be stale: the direction (entry i of
+ * count, i * step) whose graphics are resident and whose mirror flag
+ * matches the OBJ. Directions sharing both are indistinguishable; preferred
+ * wins among them, otherwise the lowest. False when none matches. */
+static bool RecoverDirection(const uint8_t *rom, const uint16_t *vram, unsigned bank,
+                             unsigned table, unsigned mirrors, unsigned count,
+                             unsigned step, unsigned phase_count, unsigned mirror,
+                             int preferred, uint8_t *direction)
+{
+    int first = -1;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned d = i * step;
+        if (rom[Offset(bank, mirrors + d)] != mirror ||
+            ResidentPhase(rom, vram, bank, Word(rom, bank, table + 2 * i), phase_count, NULL) < 0)
+            continue;
+        if ((int)d == preferred) { first = (int)d; break; }
+        if (first < 0) first = (int)d;
+    }
+    if (first < 0) return false;
+    *direction = (uint8_t)first;
+    return true;
+}
+
 static unsigned TileSource(const Transfers *list, unsigned address)
 {
     /* Later transfers win, matching DMA. Require the complete tile. */
@@ -97,18 +141,29 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
         /* $85:B62B uploads this stage once. Later motion can change D75E;
          * recover the frozen view from the latched tiles and uniform OBJ
          * mirror in body layouts 9603/9624 and attachment A144/A165. */
-        unsigned table = view.player ? kParasolSideScriptsP2 : kParasolSideScriptsP1;
-        bool found = false;
-        for (unsigned d = 0; d < 16; d += 2) {
-            Transfers candidate;
-            if (rom[Offset(kParasolBank, kParasolMirrors + d)] != ((sprite->attributes >> 14) & 1)) continue;
-            if (!ReadTransfers(rom, kParasolBank, Word(rom, kParasolBank, table + d), &candidate) ||
-                !Matches(rom, vram, &candidate)) continue;
-            view.direction = (uint8_t)d;
-            found = true;
-            break;
+        if (!RecoverDirection(rom, vram, kParasolBank,
+                view.player ? kParasolSideScriptsP2 : kParasolSideScriptsP1, kParasolMirrors,
+                8, 2, 1, ObjMirror(sprite->attributes), -1, &view.direction))
+            return false;
+    }
+    if (view.family == KDC_SPRITE_VIEW_BALL) {
+        /* $87:AB24 uploads the $D75E image and stores the $D75A mirror flag.
+         * While aiming, the shot code copies $D9DE into both ($82:C98C) and
+         * later clears them ($82:CAAD, $82:CB3E), so the captured pair can
+         * be stale. Five images are shared by direction pairs and the mirror
+         * flag separates the eight views: keep the capture only if VRAM and
+         * the OBJ show it, otherwise recover the view they do show. */
+        unsigned table = view.player ? kBallScriptsP2 : kBallScriptsP1;
+        unsigned mirrors = view.player ? kBallMirrorsP2 : kBallMirrorsP1;
+        unsigned mirror = ObjMirror(sprite->attributes);
+        if (rom[Offset(kBallBank, mirrors + view.facing)] != mirror ||
+            ResidentPhase(rom, vram, kBallBank, Word(rom, kBallBank, table + view.direction * 2),
+                          kBallPhases, NULL) < 0) {
+            if (!RecoverDirection(rom, vram, kBallBank, table, mirrors, 16, 1, kBallPhases,
+                                  mirror, view.aimed ? view.aim : -1, &view.direction))
+                return false;
+            view.facing = view.direction;
         }
-        if (!found) return false;
     }
     unsigned direction = (view.direction - turn) & 15;
     unsigned facing = (view.facing - turn) & 15;
@@ -119,7 +174,7 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
     case KDC_SPRITE_VIEW_BALL:
         bank = kBallBank; table = view.player ? kBallScriptsP2 : kBallScriptsP1;
         mirror_table = view.player ? kBallMirrorsP2 : kBallMirrorsP1;
-        phase_count = 3;
+        phase_count = kBallPhases;
         break;
     case KDC_SPRITE_VIEW_PARASOL_UP:
         bank = kParasolBank; table = view.player ? kParasolUpScriptsP2 : kParasolUpScriptsP1;
@@ -142,11 +197,8 @@ bool KdcApplySpriteView(const uint8_t *rom, size_t rom_size,
     unsigned source_script = Word(rom, bank, table + source_index * 2);
     unsigned target_script = Word(rom, bank, table + target_index * 2);
     Transfers source, target;
-    unsigned phase;
-    for (phase = 0; phase < phase_count; ++phase)
-        if (ReadTransfers(rom, bank, source_script + phase * 9, &source) &&
-            Matches(rom, vram, &source)) break;
-    if (phase == phase_count || !ReadTransfers(rom, bank, target_script + phase * 9, &target))
+    int phase = ResidentPhase(rom, vram, bank, source_script, phase_count, &source);
+    if (phase < 0 || !ReadTransfers(rom, bank, target_script + phase * kPhaseStride, &target))
         return false;
 
     KdcOrbitSprite result = *sprite;

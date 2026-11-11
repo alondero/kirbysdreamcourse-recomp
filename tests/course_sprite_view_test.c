@@ -50,7 +50,7 @@ int main(void)
     KdcOrbitSprite original = {.attributes = 0x31c0, .offset_x = -12,
         .offset_y = -19, .world = true};
     KdcOrbitSprite s = original;
-    KdcSpriteView view = {KDC_SPRITE_VIEW_BALL, 0, 0, 0, false};
+    KdcSpriteView view = {.family = KDC_SPRITE_VIEW_BALL};
     EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, view, pi / 2, 8, &s));
     EXPECT(s.view_tiles[0] == Offset(0x8d, 0xb240)); /* direction12, same phase */
     EXPECT(s.attributes == (original.attributes ^ 0x4000));
@@ -62,6 +62,72 @@ int main(void)
     EXPECT(!KdcApplySpriteView(rom, sizeof(rom), vram, view, pi / 2, 8, &s));
     EXPECT(!memcmp(&s, &original, sizeof(s)));
     vram[0x7c00] ^= 1;
+
+    /* Stale directions (see KdcApplySpriteView). This table shape, five
+     * images shared by direction pairs and told apart by the mirror flag,
+     * follows the documented layout; the contents are synthetic. */
+    static const uint8_t image[16] = {0,0,1,1,2,2,3,3,2,2,1,1,0,0,4,4};
+    static const uint8_t mirror[16] = {0,0,0,0,1,1,0,0,0,0,1,1,1,1,0,0};
+    for (unsigned k = 0; k < 5; ++k)
+        for (unsigned phase = 0; phase < 3; ++phase)
+            Script(0x87, 0x8000 + 32 * k + 9 * phase,
+                   0x8000 + 0x400 * k + 0x120 * phase, 0x7c00, 0x120);
+    for (unsigned player = 0; player <= 2; player += 2) {
+        for (unsigned d = 0; d < 16; ++d) {
+            Word(0x87, (player ? 0xc9cb : 0xab5e) + 2 * d, 0x8000 + 32 * image[d]);
+            rom[Offset(0x87, (player ? 0xc9bb : 0xab4e) + d)] = mirror[d];
+        }
+        const KdcSpriteView stale = {.family = KDC_SPRITE_VIEW_BALL,
+            .player = (uint8_t)player};
+        original = (KdcOrbitSprite){.attributes = 0x31c0, .offset_x = -12,
+            .offset_y = -19, .world = true};
+        /* Aimed at 2 (image 1, unmirrored), phase one: a quarter turn shows
+         * 14, the only image-4 view. */
+        Load(0x8520, 0x7c00, 0x120);
+        s = original;
+        EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, stale, pi / 2, 8, &s));
+        EXPECT(s.view_tiles[0] == Offset(0x8d, 0x9120));
+        EXPECT(s.attributes == original.attributes);
+        /* Aimed at 10, the same image mirrored: 6 (image 3) is unmirrored. */
+        KdcOrbitSprite mirrored = original;
+        mirrored.attributes ^= 0x4000;
+        s = mirrored;
+        EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, stale, pi / 2, 8, &s));
+        EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8d20));
+        EXPECT(s.attributes == original.attributes);
+        EXPECT(s.offset_x == 4);
+        /* A captured direction that matches image and mirror is kept: 3
+         * turned by a sixteenth is 2 (image 1); its partner 2 would give 1. */
+        s = original;
+        EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram,
+            (KdcSpriteView){.family = KDC_SPRITE_VIEW_BALL, .direction = 3,
+                            .facing = 3, .player = (uint8_t)player}, pi / 8, 8, &s));
+        EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8520));
+        /* Otherwise the aim direction chooses within the resident pair; an
+         * aim that is not resident is ignored and the lower one is used. */
+        KdcSpriteView aimed = stale;
+        aimed.aimed = true; aimed.aim = 3;
+        s = original;
+        EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, aimed, pi / 8, 8, &s));
+        EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8520));
+        aimed.aim = 5;
+        s = original;
+        EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, aimed, pi / 8, 8, &s));
+        EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8120));
+        /* Aimed at 12: image 0 like the stale 0, but mirrored. A quarter
+         * turn shows 8 (image 2, unmirrored), not 12. */
+        Load(0x8120, 0x7c00, 0x120);
+        s = mirrored;
+        EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, stale, pi / 2, 8, &s));
+        EXPECT(s.view_tiles[0] == Offset(0x8d, 0x8920));
+        EXPECT(s.attributes == original.attributes);
+        /* Graphics that match no direction keep the original artwork. */
+        vram[0x7c00] ^= 1;
+        s = original;
+        EXPECT(!KdcApplySpriteView(rom, sizeof(rom), vram, stale, pi / 2, 8, &s));
+        EXPECT(!memcmp(&s, &original, sizeof(s)));
+        vram[0x7c00] ^= 1;
+    }
 
     /* Tilted parasol uses separate body/umbrella DMA strips and signed
      * direction-dependent attachment offsets. The whole request moves. */
@@ -77,7 +143,7 @@ int main(void)
     original = (KdcOrbitSprite){.attributes = 0x31c9, .offset_x = -16,
         .offset_y = -28, .motion_x = -8, .motion_y = -20, .world = true};
     s = original;
-    view = (KdcSpriteView){KDC_SPRITE_VIEW_PARASOL_TILT, 0, 0, 0, true};
+    view = (KdcSpriteView){.family = KDC_SPRITE_VIEW_PARASOL_TILT, .attachment = true};
     EXPECT(KdcApplySpriteView(rom, sizeof(rom), vram, view, pi / 2, 16, &s));
     EXPECT(s.motion_x == 4 && s.motion_y == -8);
     EXPECT(s.view_order == -1);
@@ -115,7 +181,8 @@ int main(void)
             original = (KdcOrbitSprite){.attributes = player ? 0x31e0 : 0x31c0,
                 .offset_x = -8, .offset_y = -28, .motion_y = -20};
             if (!full) original.attributes += 9; /* resident canopy */
-            view = (KdcSpriteView){family, 0, 0, player, true};
+            view = (KdcSpriteView){.family = (uint8_t)family, .player = (uint8_t)player,
+                                   .attachment = true};
             /* SIDE retains its original tiles after the live direction
              * changes: infer its source view, never use this stale index. */
             if (family == KDC_SPRITE_VIEW_PARASOL_SIDE) view.direction = 4;
