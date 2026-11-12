@@ -155,7 +155,6 @@ static void Observe(CpuState *cpu, uint32_t pc)
 
 void KdcDevInitialize(void)
 {
-    if (!target.enabled) return;
     static const uint32_t sites[] = {0x80f0ff, 0x80f1df, 0x80c168};
     for (unsigned i = 0; i < sizeof(sites) / sizeof(sites[0]); ++i) {
         if (!interp_bridge_add_pre_opcode_hook(sites[i], Observe)) {
@@ -167,3 +166,14 @@ void KdcDevInitialize(void)
 
 void KdcDevReset(void) { pending = target.enabled; }
 void KdcDevStateLoaded(void) { pending = 0; }
+
+int KdcDevSelect(const char *selector)
+{
+    DevStart next = {0};
+    if (selector && !ParseTarget(selector, &next)) return 0;
+    target = next;
+    pending = target.enabled;
+    return 1;
+}
+
+int KdcDevEnabled(void) { return target.enabled; }

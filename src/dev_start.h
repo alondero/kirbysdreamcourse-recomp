@@ -7,5 +7,9 @@ int KdcDevParseArgs(int *argc, char **argv);
 void KdcDevInitialize(void);
 void KdcDevReset(void);
 void KdcDevStateLoaded(void);
+/* Runtime practice uses the same validated start and reset hooks as the CLI.
+ * NULL disables the shortcut. Invalid selections leave it unchanged. */
+int KdcDevSelect(const char *selector);
+int KdcDevEnabled(void);
 
 #endif

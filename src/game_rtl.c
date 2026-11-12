@@ -50,6 +50,7 @@
 #include "course_hud.h"
 #include "launcher_settings.h"
 #include "dev_start.h"
+#include "practice.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,6 +74,7 @@ static void initialize_bounce_log(void)
     initialized = 1;
     KdcInitializeSprites();
     KdcDevInitialize();
+    KdcPracticeInitialize();
     const char *apu_path = getenv("KDC_APU_STATE_LOG");
     if (apu_path && *apu_path) {
         apu_state_log = fopen(apu_path, "w");
@@ -123,6 +125,7 @@ void GameDrawPpuFrame(void)
     KdcPrepareSprites(g_snes->ppu, g_ram, g_ws_extra);
     KdcPrepareHud(g_snes->ppu, g_ram, g_ws_extra, KdcHudEdges());
     snes_beam_frame_driver_draw_ppu_frame();
+    KdcPracticeCaptureFont(g_snes->ppu);
     KdcReportSprites(snes_frame_counter);
 }
 
@@ -136,6 +139,7 @@ void GameSessionReset(void)
     WsShadowReset();
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     KdcDevReset();
+    KdcPracticeReset();
 }
 
 #ifdef KDC_EXPERIMENTAL_STATE
@@ -366,6 +370,7 @@ static void GameStateLoaded(uint32_t version)
 {
     (void)version;
     KdcDevStateLoaded();
+    KdcPracticeStateLoaded();
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     RtlApplyExecutionState();
 #ifdef KDC_EXPERIMENTAL_RASTER_STATE
@@ -409,6 +414,7 @@ static void GameStateLoaded(uint32_t version)
 {
     (void)version;
     KdcDevStateLoaded();
+    KdcPracticeStateLoaded();
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
 }
 #endif
@@ -416,6 +422,8 @@ static void GameStateLoaded(uint32_t version)
 const RtlGameInfo kGameInfo = {
     .title = "kirbydreamcourse",
     .initialize = NULL,
+    .frame_begin = KdcPracticeFrame,
+    .snapshot_allowed = KdcPracticeSnapshotsAllowed,
     .run_frame = &GameRunOneFrame,
     .draw_ppu_frame = &GameDrawPpuFrame,
     .save_name_prefix = "save",

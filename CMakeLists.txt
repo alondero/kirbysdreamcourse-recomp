@@ -81,7 +81,7 @@ if(NOT KDC_HD_COMPOSITION_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-composition.patch after the HD performance patch")
 endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
-    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/gen_stubs.c
+    src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/practice.c src/practice_draw.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c
     src/course_sprite_view.c
     src/hd_scaler.c src/hd_tile_source.c src/hd_textures.c src/course_checker.c

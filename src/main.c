@@ -34,6 +34,8 @@
 #include "host_clock.h"
 #include "host_api.h"
 #include "hd_textures.h"
+#include "practice.h"
+#include "widescreen.h"
 #include <stdlib.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
@@ -102,6 +104,27 @@ static double PresentationHz(double refresh)
     return KdcHighRefreshEnabled() ? snes_host_presentation_hz(KdcPresentationFps(), refresh) : 0;
 }
 
+static int DrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
+                     int width, int height, double alpha)
+{
+    int drawn = KdcOrbitDraw(dst, pitch, field, width, height, alpha);
+    if (!KdcPracticeVisible()) return drawn;
+    if (!drawn) RtlWidescreenPresent(dst, pitch, field, width, height);
+    KdcPracticeDraw(dst, pitch, width, height);
+    return 1;
+}
+
+static int DrawHdFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
+                       int width, int height, double alpha, unsigned scale)
+{
+    int drawn = KdcOrbitDrawHd(dst, pitch, field, width, height, alpha, scale);
+    if (!KdcPracticeVisible()) return drawn;
+    /* The host supplies the already rendered HD PPU field when the orbit
+     * compositor declines. Overlay without discarding its higher resolution. */
+    KdcPracticeDrawHd(dst, pitch, width, height, scale);
+    return 1;
+}
+
 static const SnesDesktopHostGame kGameHost = {
     .display_name        = "Kirby's Dream Course",
     .window_title        = "Kirby's Dream Course",
@@ -127,9 +150,9 @@ static const SnesDesktopHostGame kGameHost = {
     .end_sim_frame       = CapturePresentation,
     .presentation_hz     = PresentationHz,
     .on_reset            = KdcOrbitReset,
-    .draw_frame          = KdcOrbitDraw,
+    .draw_frame          = DrawFrame,
     .hd_scale            = KdcHdScale,
-    .draw_hd_frame       = KdcOrbitDrawHd,
+    .draw_hd_frame       = DrawHdFrame,
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
     .default_config_ini =
