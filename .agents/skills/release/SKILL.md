@@ -108,8 +108,11 @@ is skipped. A request only to edit this skill does not authorize a CI run or
 publication. For a local build using the same path:
 
 ```powershell
-./tools/build_release.ps1 -Version <version> -Rom <private-ROM-path> -CMake <native-Windows-cmake>
+./tools/build_release.ps1 -Version <version> -Rom <private-ROM-path>
 ```
+
+A native Windows CMake is located automatically; add `-CMake <native-Windows-cmake>`
+only to override that choice.
 
 For Linux x86-64, build on Ubuntu 24.04 with the dependencies and commands in
 [Linux support](../../../docs/linux.md). Both platforms use `tools/setup.py`

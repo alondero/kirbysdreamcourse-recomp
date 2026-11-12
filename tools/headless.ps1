@@ -15,6 +15,7 @@ param(
     [switch]$Unpaced
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'invoke_native.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 if ($Frames -le 0) { throw 'Frames must be positive.' }
 if ($ExpectedUniqueFrames -lt 0 -or $ExpectedUniqueFrames -gt $Frames) { throw 'ExpectedUniqueFrames must be between zero and Frames.' }
@@ -86,15 +87,16 @@ if ($InputRecording) {
     $InputRecording = (Resolve-Path -LiteralPath $InputRecording).Path
     $recordingHash = (Get-FileHash -LiteralPath $InputRecording -Algorithm SHA256).Hash.ToLowerInvariant()
     $InputScript = Join-Path $destination 'input.script'
-    python (Join-Path $root 'tools/input_recording.py') $InputRecording --output $InputScript --frames $Frames
-    if ($LASTEXITCODE -ne 0) { throw 'Invalid input recording.' }
+    $recording = Invoke-NativeCommand -FilePath 'python' -ArgumentList @(
+        (Join-Path $root 'tools/input_recording.py'), $InputRecording, '--output', $InputScript, '--frames', $Frames)
+    if ($recording.ExitCode -ne 0) { throw 'Invalid input recording.' }
 }
 if ($InputScript) { $hostArgs += @('--script', (Resolve-Path -LiteralPath $InputScript).Path) }
 $previousWideOverride = $env:SNESRECOMP_WS_EXTRA
 try {
     $env:SNESRECOMP_WS_EXTRA = $wideOverride
-    & $copy @hostArgs
-    if ($LASTEXITCODE -ne 0) { throw "Host failed: $LASTEXITCODE" }
+    $host = Invoke-NativeCommand -FilePath $copy -ArgumentList $hostArgs
+    if ($host.ExitCode -ne 0) { throw "Host failed: $($host.ExitCode)" }
 } finally {
     $env:SNESRECOMP_WS_EXTRA = $previousWideOverride
 }
