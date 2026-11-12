@@ -50,8 +50,9 @@ static void Text(Canvas *c, int x, int y, const char *s, uint32_t color)
             }
     }
 }
-/* The guest font sheet has no '<' or '>' glyph, so the ability carousel
- * draws its arrows as small triangles, like the mode row does. */
+/* A 4x7 triangle centred on y, apex pointing left unless right is set. The
+ * guest font sheet carries chevrons at tiles 10 and 12, but the picker draws
+ * solid triangles so both arrow pairs match the mode row's style. */
 static void Triangle(Canvas *c, int x, int y, bool right, uint32_t color)
 {
     for (int i = 0; i < 4; ++i) {
@@ -123,10 +124,8 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
         Text(&c, 32, 62, "MODE", yellow);
         if (v->row == 0) Box(&c, 88, 59, 136, 14, 0xffa84480);
         Text(&c, 112, 62, names[v->mode], white);
-        for (int i = 0; i < 4; ++i) {
-            Box(&c, 96 + i, 65 - i, 1, i * 2 + 1, pink);
-            Box(&c, 211 - i, 65 - i, 1, i * 2 + 1, pink);
-        }
+        Triangle(&c, 96, 65, false, pink);
+        Triangle(&c, 208, 65, true, pink);
         for (int row = 1; row <= 2; ++row) {
             int y = row == 1 ? 82 : 112;
             Text(&c, 32, y, row == 1 ? "COURSE" : "HOLE", yellow);

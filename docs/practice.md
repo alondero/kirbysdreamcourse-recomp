@@ -56,14 +56,18 @@ from the user's ROM at runtime; no extracted artwork is shipped.
 
 That font sheet is not ASCII-ordered. Reading it out of the live title VRAM
 (BG3, character base 5, VRAM word `0x5000`) gives digits at 16..25, the
-hyphen at 29, the space at 31 and letters at 33..58. ASCII-32 happens to
-agree with the digits and the letters, but it points at the question mark
-for the hyphen and at a solid block for `>`, so the overlay addresses the
-sheet by its own indices (`KdcPracticeGuestGlyph`). The sheet carries no `<`
-or `>` glyph, so the ability carousel draws those two arrows as small
-triangles instead. Before this correction the ability row read `HI?JUMP`,
-with a cross for the left arrow and a white block where the right-hand
-arrow belonged.
+hyphen at 29, the space at 31, `<` at 10, `>` at 12 and letters at 33..58.
+ASCII-32 happens to agree with the digits and the letters, but it points at
+the question mark for the hyphen, at `+` for `<` and at a solid block for `>`,
+so the overlay addresses the sheet by its own indices
+(`KdcPracticeGuestGlyph`). Before this correction the ability row read
+`HI?JUMP`, with a cross for the left carousel arrow and a white block where
+the right-hand arrow belonged.
+
+The sheet does carry chevrons, at tiles 10 and 12. The ability carousel still
+draws its two arrows as solid triangles, because that is what the mode row
+already uses and the two arrow pairs should look alike. Tiles 0, 5, 8, 26, 30,
+32 and 59..63 hold blanks, blocks and icons the glyph table does not name.
 
 Local 65816 disassembly identifies these game-specific sites:
 
@@ -176,17 +180,21 @@ ordinary-boot WRAM/SRAM equality against the PR 53 executable.
 The font-sheet follow-up was checked on Windows on 2026-11-12 with a fresh
 Release build of the same pinned framework:
 
-- The guest's title-menu font sheet was decoded out of the live title VRAM.
-  Its own indices are digits 16..25, hyphen 29, space 31 and letters 33..58,
-  which is why the ability row read `HI?JUMP` and drew a cross and a solid
-  block for the carousel arrows.
+- The guest's title-menu font sheet was decoded out of the live title VRAM,
+  all 64 tiles, and rendered as an image so each glyph could be read rather
+  than guessed. Its own indices are digits 16..25, hyphen 29, space 31,
+  `<` 10, `>` 12 and letters 33..58, which is why the ability row read
+  `HI?JUMP` and drew a cross and a solid block for the carousel arrows.
+  The sheet region is byte-identical at the title screen, where the picker
+  captures it, and at the picker.
 - Headless SDL-software captures of the presented frame (the host's own
   screenshot path, not the bare guest field) show `HI?JUMP` with the cross and
   the block before the change, and `HI-JUMP` with two triangular arrows after
   it. Other labels, the course and hole digits and the `FIREBALL` entry were
   captured too and are unchanged.
 - The ROM-free fixture now pins the sheet's indices for space, hyphen,
-  question mark, digits and letters, and that `<` and `>` have no glyph.
+  question mark, `<`, `>`, `=`, `+`, the digits and the letters, and that
+  characters the sheet does not carry are reported rather than guessed.
 - The standard suite passed (88 tests) and all six real-ROM practice checks
   passed with the new executable: every starting ability, the completion and
   replay transition for all four mode families, restart, hole change, exit,

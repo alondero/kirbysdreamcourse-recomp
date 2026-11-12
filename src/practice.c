@@ -34,17 +34,34 @@ unsigned KdcPracticeGuestGlyph(char c)
 {
     /* The title-menu font sheet the picker decodes at runtime (BG3,
      * character base 5, VRAM word 0x5000) is not ASCII-ordered. Reading
-     * it out of the live title VRAM gives: digits at 16..25, space at 31,
-     * the hyphen at 29, the question mark at 13 and letters at 33..58.
-     * ASCII-32 happens to match the digits and the letters, but it points
-     * at the question mark for the hyphen and at a solid block for '>', so
-     * the sheet is addressed by its own indices. The sheet carries no '<'
-     * or '>' glyph at all; the picker draws those arrows itself. */
-    if (c == ' ') return 31u;
+     * it out of the live title VRAM gives: digits at 16..25, the hyphen
+     * at 29, the space at 31, '<' at 10, '>' at 12 and letters at
+     * 33..58. ASCII-32 happens to match the digits and the letters, but
+     * it points at the question mark for the hyphen, at '+' for '<' and
+     * at a solid block for '>', so the sheet is addressed by its own
+     * indices. Tiles 0, 5, 8, 26, 30, 32 and 59..63 hold blanks, blocks
+     * and icons this table does not name. */
+    switch (c) {
+    case ' ': return 31u;
+    case '!': return 9u;
+    case '#': return 1u;
+    case '%': return 2u;
+    case '(': return 3u;
+    case ')': return 4u;
+    case '/': return 6u;
+    case ':': return 7u;
+    case '<': return 10u;
+    case '=': return 11u;
+    case '>': return 12u;
+    case '?': return 13u;
+    case '[': return 14u;
+    case ']': return 15u;
+    case '+': return 28u;
+    case '-': return 29u;
+    default: break;
+    }
     if (c >= '0' && c <= '9') return (unsigned)(c - '0') + 16u;
     if (c >= 'A' && c <= 'Z') return (unsigned)(c - 'A') + 33u;
-    if (c == '-') return 29u;
-    if (c == '?') return 13u;
     return KDC_PRACTICE_NO_GLYPH;
 }
 
