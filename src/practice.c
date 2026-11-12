@@ -2,6 +2,7 @@
  * guest owned; see docs/practice.md for the observed entry points. */
 #include "practice.h"
 #include "dev_start.h"
+#include "cpu_opponent.h"
 #include "common_rtl.h"
 #include "cpu_state.h"
 #include "snes/interp_bridge.h"
@@ -90,7 +91,7 @@ static void Observe(CpuState *cpu, uint32_t pc)
     case 0x00f48c:
         /* Both modes finish here, before score screens and hole progression.
          * F120 is the ordinary title entry on this same main-loop stack. */
-        if (!view.active || view.title_background) return;
+        if (!view.active || view.title_background || view.cpu) return;
         view.screen = 1;
         view.row = 4;
         view.title_background = true;
@@ -100,7 +101,28 @@ static void Observe(CpuState *cpu, uint32_t pc)
         interp_bridge_pre_opcode_redirect(0x80f120);
         fputs("Practice: hole finished, returned to picker\n", stderr);
         break;
+    case 0x00f558:
+        /* Multiplayer results normally return to the original two-controller
+         * course/roulette setup. CPU matches return to their own picker. */
+        if (!view.active || !view.cpu) return;
+        view.screen = 3;
+        view.row = 3;
+        view.title_background = true;
+        view.error = NULL;
+        swallowed |= previous;
+        KdcDevSelect(NULL);
+        KdcCpuSelect(0);
+        interp_bridge_pre_opcode_redirect(0x80f120);
+        fputs("CPU match: course finished, returned to picker\n", stderr);
+        break;
     case 0x03b64b:
+        if (view.active && view.cpu && !view.title_background) {
+            view.screen = 3;
+            view.row = 3;
+            view.title_background = true;
+            KdcDevSelect(NULL);
+            KdcCpuSelect(0);
+        }
         /* Returning from a hole needs no second press of title-screen Start. */
         if (view.title_background) interp_bridge_pre_opcode_redirect(0x83b675);
         break;
@@ -114,11 +136,11 @@ static void Observe(CpuState *cpu, uint32_t pc)
             unsigned n = Word(ram, count_address);
             if (n < 3 || n > 6) return;
             unsigned x = ram[0xea8e], y = ram[0xea97 + n - 1] + 2;
-            if (x > 23 || y > 23) return;
+            if (x > 23 || y > 21) return;
             ram[0xea8e + n] = (uint8_t)x;
             ram[0xea97 + n] = (uint8_t)y;
             ram[0xeaa0 + n] = 6; /* New return value, intercepted below. */
-            ram[count_address] = (uint8_t)(n + 1);
+            ram[count_address] = (uint8_t)(n + 2);
             /* The guest uploads this tilemap immediately after BBD8.
              * Its font uses uppercase ASCII minus $20, with space at $1F. */
             const char *label = "PRACTICE";
@@ -127,13 +149,24 @@ static void Observe(CpuState *cpu, uint32_t pc)
                 ram[at] = (uint8_t)(label[i] - 0x20);
                 ram[at + 1] = 0x20;
             }
+            ram[0xea8e + n+1]=(uint8_t)x;
+            ram[0xea97+n+1]=(uint8_t)(y+2);
+            ram[0xeaa0+n+1]=7;
+            label="1P VS CPU";
+            for (unsigned i=0;label[i];++i) {
+                unsigned at=0x39da+2*((y+2)*32+x+i);
+                ram[at]=(uint8_t)(label[i]==' '?31:label[i]-0x20);
+                ram[at+1]=0x20;
+            }
             view.title = true;
         }
         break;
     case 0x03b74e:
         view.title = false;
-        if (cpu->A != 6) return;
-        view.screen = 1;
+        if (cpu->A != 6 && cpu->A != 7) return;
+        view.cpu = cpu->A == 7 ? 1 : 0;
+        view.screen = view.cpu ? 3 : 1;
+        if (view.cpu) { view.mode=2; view.hole=0; view.course=0; view.ability=0; }
         view.title_background = true;
         view.row = 0;
         view.error = NULL;
@@ -150,6 +183,7 @@ void KdcPracticeInitialize(void)
         !interp_bridge_add_pre_opcode_hook(0x83b74e, Observe) ||
         !interp_bridge_add_pre_opcode_hook(0x80f266, Observe) ||
         !interp_bridge_add_pre_opcode_hook(0x80f48c, Observe) ||
+        !interp_bridge_add_pre_opcode_hook(0x80f558, Observe) ||
         !interp_bridge_add_pre_opcode_hook(0x83b64b, Observe)) {
         fputs("Unable to register practice menu\n", stderr);
         abort();
@@ -172,6 +206,7 @@ void KdcPracticeReset(void)
         KdcDevReset();
     }
     ability_pending = view.active && KdcDevEnabled();
+    KdcCpuSelect(view.active && KdcDevEnabled() ? (unsigned)view.cpu : 0);
 }
 
 void KdcPracticeStateLoaded(void) { KdcPracticeReset(); }
@@ -199,7 +234,7 @@ static bool StartHole(void)
         ordinary_sram = copy;
         ordinary_size = g_sram_size;
         snprintf(ordinary_root, sizeof(ordinary_root), "%s", RtlSaveRoot());
-        RtlSetSaveRoot("saves/practice");
+        RtlSetSaveRoot(view.cpu ? "saves/cpu" : "saves/practice");
         RtlSetQuickSaveRoot(NULL);
         memset(g_sram, 0, (size_t)g_sram_size);
         RtlReadSram();
@@ -208,14 +243,14 @@ static bool StartHole(void)
     KdcDevSelect(selector);
     RtlReset(1);
     KdcPracticeReset();
-    fprintf(stderr, "Practice: %s\n", selector);
+    fprintf(stderr, "%s: %s\n", view.cpu ? "CPU match" : "Practice", selector);
     return true;
 }
 
 static void ExitPractice(void)
 {
     if (!RtlWriteSram()) {
-        view.error = "COULD NOT SAVE PRACTICE";
+        view.error = "COULD NOT SAVE SESSION";
         return;
     }
     /* SRAM shape cannot change while the supported ROM is running. */
@@ -229,6 +264,8 @@ static void ExitPractice(void)
     RtlSetSaveRoot(ordinary_root);
     KdcDevSelect(NULL);
     view.active = false;
+    view.cpu = 0;
+    KdcCpuSelect(0);
     RtlReset(1);
     KdcPracticeReset();
     fputs("Practice: returned to ordinary title\n", stderr);
@@ -241,7 +278,7 @@ bool KdcPracticeFrame(uint32_t *inputs)
     swallowed &= held;
     *inputs &= ~swallowed;
     if (!view.screen) {
-        if (!view.active || !(pressed & SNES_PAD_START)) return true;
+        if (!view.active || !(pressed & SNES_PAD_START)) { KdcCpuFrame(inputs); return true; }
         view.screen = 2;
         view.row = 0;
         view.error = NULL;
@@ -255,7 +292,7 @@ bool KdcPracticeFrame(uint32_t *inputs)
     if (!directions || (pressed & directions)) repeat = 0;
     else if (++repeat >= 20 && (repeat - 20) % 6 == 0) pressed |= directions;
     if (pressed & SNES_PAD_B) {
-        if (view.screen == 1 && view.active) { ExitPractice(); return false; }
+        if ((view.screen == 1 || view.screen == 3) && view.active) { ExitPractice(); return false; }
         view.screen = 0;
         view.title_background = false;
         view.row = 0;
@@ -265,7 +302,18 @@ bool KdcPracticeFrame(uint32_t *inputs)
     int rows = view.screen == 1 ? 5 : 4;
     if (pressed & SNES_PAD_UP) view.row = (view.row + rows - 1) % rows;
     if (pressed & SNES_PAD_DOWN) view.row = (view.row + 1) % rows;
-    if (view.screen == 1) {
+    if (view.screen == 3) {
+        int direction = !!(pressed & SNES_PAD_RIGHT) - !!(pressed & SNES_PAD_LEFT);
+        if (direction) {
+            if (view.row==0) view.cpu=1+(view.cpu-1+direction+3)%3;
+            if (view.row==1) view.course=(view.course+direction+4)%4;
+            if (view.row==2) view.mode=view.mode==2?3:2;
+        }
+        if (pressed & (SNES_PAD_A | SNES_PAD_START)) {
+            if (view.row==3) { StartHole(); return false; }
+            ++view.row;
+        }
+    } else if (view.screen == 1) {
         int direction = !!(pressed & SNES_PAD_RIGHT) - !!(pressed & SNES_PAD_LEFT);
         if (direction) {
             view.error = NULL;
@@ -292,7 +340,7 @@ bool KdcPracticeFrame(uint32_t *inputs)
             picker_reset = true;
             RtlReset(1);
             picker_reset = false;
-            view.screen = 1;
+            view.screen = view.cpu ? 3 : 1;
             view.title_background = true;
             view.row = 0;
             break;

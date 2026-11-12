@@ -75,6 +75,15 @@ hole selection and exit options.
 Practice saves are separate from ordinary progress. See [hole practice](docs/practice.md)
 for controls and limitations.
 
+## One player versus CPU
+
+Choose **1P VS CPU** on the title menu, then select **Easy**, **Moderate** or
+**Expert**, a course and Normal/Extra mode. The CPU plays the second seat using
+the original shot physics, with progressively broader shot selection and finer
+aim. Start opens the match menu. CPU saves are isolated from ordinary progress.
+See [CPU opponents](docs/cpu-opponent.md) for controls, validation and tactical
+limitations, including copy abilities that the CPU does not yet activate.
+
 ## Start directly on a hole
 
 After building, use the developer shortcut to skip the menus:
