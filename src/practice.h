@@ -11,7 +11,11 @@ typedef struct {
     const char *error;
 } KdcPracticeView;
 enum { KDC_PRACTICE_ABILITIES = 11 };
+/* Returned by KdcPracticeGuestGlyph for characters the guest's title-menu
+ * font sheet does not carry. */
+#define KDC_PRACTICE_NO_GLYPH 0xffffffffu
 const char *KdcPracticeAbilityName(unsigned ability);
+unsigned KdcPracticeGuestGlyph(char c);
 const KdcPracticeView *KdcPracticeCurrentView(void);
 void KdcPracticeInitialize(void);
 bool KdcPracticeFrame(uint32_t *inputs);

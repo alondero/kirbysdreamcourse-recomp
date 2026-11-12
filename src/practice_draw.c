@@ -41,13 +41,22 @@ static void Text(Canvas *c, int x, int y, const char *s, uint32_t color)
         return;
     }
     for (; *s; ++s, x += 8) {
-        unsigned glyph = *s == ' ' ? 31u : (unsigned char)*s - 32u;
+        unsigned glyph = KdcPracticeGuestGlyph(*s);
         if (glyph >= 64) continue;
         for (int py = 0; py < 8; ++py)
             for (int px = 0; px < 8; ++px) {
                 uint8_t ink = font[glyph][py][px];
                 if (ink) Box(c, x + px, y + py, 1, 1, ink == 2 ? color : 0xff161038);
             }
+    }
+}
+/* A 4x7 triangle centred on y, apex pointing left unless right is set. The
+ * guest font sheet carries chevrons at tiles 10 and 12, but the picker draws
+ * solid triangles so both arrow pairs match the mode row's style. */
+static void Triangle(Canvas *c, int x, int y, bool right, uint32_t color)
+{
+    for (int i = 0; i < 4; ++i) {
+        Box(c, right ? x + 3 - i : x + i, y - i, 1, i * 2 + 1, color);
     }
 }
 static void Center(Canvas *c, int y, const char *text, uint32_t color)
@@ -115,10 +124,8 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
         Text(&c, 32, 62, "MODE", yellow);
         if (v->row == 0) Box(&c, 88, 59, 136, 14, 0xffa84480);
         Text(&c, 112, 62, names[v->mode], white);
-        for (int i = 0; i < 4; ++i) {
-            Box(&c, 96 + i, 65 - i, 1, i * 2 + 1, pink);
-            Box(&c, 211 - i, 65 - i, 1, i * 2 + 1, pink);
-        }
+        Triangle(&c, 96, 65, false, pink);
+        Triangle(&c, 208, 65, true, pink);
         for (int row = 1; row <= 2; ++row) {
             int y = row == 1 ? 82 : 112;
             Text(&c, 32, y, row == 1 ? "COURSE" : "HOLE", yellow);
@@ -135,9 +142,9 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
         Text(&c, 32, 152, "ABILITY", yellow);
         if (v->row == 3) Box(&c, 92, 143, 132, 34, 0xffa84480);
         Ability(&c, 96, 144, (unsigned)v->ability);
-        Text(&c, 128, 156, "<", pink);
+        Triangle(&c, 128, 159, false, pink);
         Text(&c, 140, 156, KdcPracticeAbilityName((unsigned)v->ability), white);
-        Text(&c, 216, 156, ">", pink);
+        Triangle(&c, 216, 159, true, pink);
         if (v->row == 4) Box(&c, 60, 178, 136, 14, 0xffa84480);
         Center(&c, 181, "PLAY THIS HOLE", v->row == 4 ? yellow : white);
     } else {
