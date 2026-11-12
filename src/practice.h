@@ -5,9 +5,9 @@
 #include <stdint.h>
 struct Ppu;
 typedef struct {
-    int screen; /* 0: game, 1: hole picker, 2: session pause, 3: CPU match picker */
+    int screen; /* 0: game, 1: hole picker, 2: session pause */
     int row, mode, course, hole, ability;
-    int cpu; /* 0: practice, 1..3: full-course CPU match difficulty */
+    int cpu; /* 0: practice, 1..3: CPU match difficulty (original 2P menus) */
     bool active, title, title_background;
     const char *error;
 } KdcPracticeView;
