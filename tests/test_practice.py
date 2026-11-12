@@ -82,7 +82,7 @@ class PracticeRuntimeTest(unittest.TestCase):
                     # Discover this hole's allocated shot task, then replay
                     # identical input and mark that shot/hole finished. This
                     # exercises the original main-loop completion branch.
-                    shot = (self.entry() + self.select(mode, last=last, ability=9) +
+                    shot = (self.entry() + self.select(mode, last=last, ability=10) +
                             'wait 600\n' + self.tap('a') + 'dump shot\n')
                     before, _ = self.run_case(shot)
                     slot = int.from_bytes(before['shot.wram.bin'][0x6b48:0x6b4a], 'little')
@@ -98,7 +98,7 @@ class PracticeRuntimeTest(unittest.TestCase):
                     self.assertNotEqual(files['completed.wram.bin'], files['picker.wram.bin'])
                     map_id = (223 if last else 192) if mode else (63 if last else 0)
                     self.check_map(files, 'replayed', map_id, mode >= 2)
-                    self.assertEqual(files['replayed.wram.bin'][0xd852], 9)
+                    self.assertEqual(files['replayed.wram.bin'][0xd852], 10)
                     self.assertEqual(files['ordinary.sram.bin'], files['saves/save.srm'])
 
     def run_case(self, script, bounce='1', executable=None, observe=False):

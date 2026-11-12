@@ -12,8 +12,8 @@ second player's controller through Ctrl+L. Raw map slots and attract-mode
 shortcuts remain developer-only options.
 
 The **ABILITY** row cycles through the original conditions portraits and names:
-None, Stone, Parasol, Fireball, Spark, Wheel, Tornado, Freeze, Needle, UFO and
-Hi-Jump. Both players start with that ability in two-player practice. Restart
+None, Stone, Parasol, Fireball, Needle, Tornado, Wheel, Spark, Hi-Jump, Freeze and
+UFO. Both players start with that ability in two-player practice. Restart
 reapplies the selection; abilities earned or spent during play behave normally.
 The picker keeps the title background and music running while consuming both
 players' inputs. The in-hole pause menu still freezes gameplay.
@@ -78,6 +78,27 @@ Local 65816 disassembly identifies these game-specific sites:
 - `$849E07 + ability * 4` selects the conditions portrait's DMA script. Its two
   256-byte strips supply the 32×32 4bpp portrait; `$94A849` supplies its palette.
   These are read-only host presentation sources, independent of title VRAM.
+  Reviewing all eleven portraits against the verified USA ROM established this
+  shared portrait/player ID order:
+
+  | ID | Ability |
+  | --- | --- |
+  | 0 | None |
+  | 1 | Stone |
+  | 2 | Parasol |
+  | 3 | Fireball |
+  | 4 | Needle |
+  | 5 | Tornado |
+  | 6 | Wheel |
+  | 7 | Spark |
+  | 8 | Hi-Jump |
+  | 9 | Freeze |
+  | 10 | UFO |
+
+  PR 53's labels differed from this order at IDs 4 through 10, while its portrait
+  selection and starting-ability fields already used the guest IDs. The label
+  table now follows the guest order, and the ROM-free carousel fixture checks
+  every selection's name before starting and restarting with UFO (ID 10).
 - `$80F48C` is the shared solo/multiplayer end-of-hole entry, before score
   screens and progression (including hole eight). Practice redirects to the
   ordinary title entry `$80F120` on the same main-loop stack. `$83B64B` skips
@@ -121,17 +142,25 @@ The ability/single-hole extension was checked on Windows on 2026-11-12:
   ability after 600 settling frames. Both player slots receive the selection.
 - The new animated-picker regression failed against the PR 52 executable and
   passed after the fix: framebuffer/WRAM changed across 90 idle picker frames
-  and the APU clock advanced. A presented SDL-software capture showed the UFO
-  portrait, carousel arrows and five-row picker without overlapping labels.
+  and the APU clock advanced. A presented SDL-software capture showed the
+  selected portrait, carousel arrows and five-row picker without overlapping labels.
 - Completion fixtures covered normal 1:1 and 8:8, and extra multiplayer 1:1 and
   4:8. Each fixture first discovers the live shot task, repeats identical input
   and verifies matching WRAM, then marks that shot and player completion state
   (`$DA4A/$D956/$D958`). The original main loop returns to the picker, and A
-  replays the same map with UFO restored. These are transition checks; they
-  do not establish natural hole completion or shot physics equivalence.
+  replays the same map with the selected ability restored. These are transition
+  checks; they do not establish natural hole completion or shot physics equivalence.
 - Restart, choosing another hole, pause/resume, save isolation, native/fallback
   starts and the pre-change ordinary-boot comparison passed again. The ROM-free
   fixture also covers both seats' held-confirm suppression and ability wrapping.
+
+The label-order follow-up reviewed all eleven portraits from the verified ROM.
+The carousel regression failed before the fix at ID 4 (Needle labeled Spark),
+and a focused UFO check failed at ID 10 (labeled Hi-Jump). Both passed after
+correcting the table. A fresh Windows Release build and the 82-test standard
+suite passed (18 optional skips). All seven practice checks then passed with
+the real ROM, including every starting ability, UFO completion/replay, and
+ordinary-boot WRAM/SRAM equality against the PR 53 executable.
 
 Run `python -m unittest discover -s tests -p test_practice.py -v` with
 `SNESRECOMP_ROOT`, `KDC_TEST_PRACTICE=1`, `KDC_PRACTICE_ROM` and
