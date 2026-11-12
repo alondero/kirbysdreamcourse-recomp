@@ -19,9 +19,14 @@ static int resets;
 static uint32_t redirect, sites[12];
 static InterpPreOpcodeHook hooks[12];
 static unsigned count;
+static unsigned cpu_selected, cpu_selections, cpu_frames;
+static bool planning, rollback_load;
 void KdcCpuReset(void) {}
-void KdcCpuSelect(unsigned d) { (void)d; }
-void KdcCpuFrame(uint32_t *inputs) { (void)inputs; }
+void KdcCpuSelect(unsigned d) { cpu_selected = d; ++cpu_selections; }
+void KdcCpuFrame(uint32_t *inputs) { (void)inputs; ++cpu_frames; }
+bool KdcCpuPlanning(void) { return planning; }
+const char *KdcCpuName(unsigned d) { return d == 1 ? "EASY" : d == 2 ? "MEDIUM" : d == 3 ? "HARD" : "HUMAN"; }
+bool RtlIsRollbackLoad(void) { return rollback_load; }
 
 
 bool interp_bridge_add_pre_opcode_hook(uint32_t pc, InterpPreOpcodeHook hook)
@@ -183,28 +188,67 @@ int main(void)
     CHECK(battery[0] == 0xa5 && ordinary_file[0] == 0xa5 && practice_file[0] == 0x77);
     CHECK(KdcPracticeSnapshotsAllowed() && !KdcDevEnabled());
     redirect = 0; Observe(&cpu, 0x80f0ff); CHECK(!redirect);
-    /* CPU entry starts a full two-player course and retains normal progression. */
-    cpu.A=7; Observe(&cpu,0x83b74e);
-    CHECK(KdcPracticeCurrentView()->screen==3);
-    Tap(SNES_PAD_LEFT); CHECK(KdcPracticeCurrentView()->cpu==3);
-    Tap(SNES_PAD_RIGHT); CHECK(KdcPracticeCurrentView()->cpu==1);
-    Tap(SNES_PAD_RIGHT); CHECK(KdcPracticeCurrentView()->cpu==2);
-    Tap(SNES_PAD_A); Tap(SNES_PAD_LEFT);
-    CHECK(KdcPracticeCurrentView()->course==3);
-    Tap(SNES_PAD_A); Tap(SNES_PAD_RIGHT);
-    CHECK(KdcPracticeCurrentView()->mode==3);
-    Tap(SNES_PAD_A); Tap(SNES_PAD_A);
-    CHECK(KdcPracticeCurrentView()->active && KdcPracticeCurrentView()->screen==0);
-    CHECK(!strcmp(root,"saves/cpu"));
-    Observe(&cpu,0x80f0ff); CHECK(ram[0x17ff]==1 && ram[0xeab9]==1);
-    redirect=0; Observe(&cpu,0x80f48c);
-    CHECK(!redirect && KdcPracticeCurrentView()->screen==0);
-    Observe(&cpu,0x80f558);
-    CHECK(redirect==0x80f120);
-    Observe(&cpu,0x83b64b);
-    CHECK(KdcPracticeCurrentView()->screen==3);
-    Tap(SNES_PAD_B);
+    /* 1P VS CPU turns the guest's own root menu into a difficulty choice. */
+    for (unsigned i = 0; i < 5; ++i) { ram[0xea8e + i] = 11; ram[0xea97 + i] = (uint8_t)(9 + 2 * i); }
+    redirect = 0; cpu.A = 7; ram[0xea86] = 4; Observe(&cpu, 0x83b74e);
+    CHECK(redirect == 0x83b720 && !ram[0xea86] && KdcPracticeCurrentView()->screen == 0);
+    ram[0x1e4a] = 5; ram[0xea8a] = 0;
+    Observe(&cpu, 0x83bbd8);
+    CHECK(ram[0x1e4a] == 3 && ram[0xeaa0] == 8 && ram[0xeaa1] == 9 && ram[0xeaa2] == 10);
+    CHECK(ram[0xea8a] == 1); /* B can cancel, as in the guest's submenus. */
+    CHECK(ram[0x39da + 2 * (9 * 32 + 11)] == KdcPracticeGuestGlyph('E'));
+    CHECK(ram[0x39da + 2 * (11 * 32 + 11)] == KdcPracticeGuestGlyph('M'));
+    CHECK(ram[0x39da + 2 * (13 * 32 + 11)] == KdcPracticeGuestGlyph('H'));
+    CHECK(ram[0x39da + 2 * (15 * 32 + 11)] == 31 && ram[0x39da + 2 * (17 * 32 + 15)] == 31);
+    /* B returns to the ordinary title menu. */
+    redirect = 0; cpu.A = 0xffff; Observe(&cpu, 0x83b74e);
+    CHECK(redirect == 0x83b720 && !cpu_selected && !KdcPracticeCurrentView()->cpu);
+    ram[0x1e4a] = 3; Observe(&cpu, 0x83bbd8);
+    CHECK(ram[0x1e4a] == 5 && ram[0xeaa3] == 6 && ram[0xeaa4] == 7);
+    /* A difficulty continues into the original two-player menus. */
+    cpu.A = 7; Observe(&cpu, 0x83b74e);
+    ram[0x1e4a] = 5; Observe(&cpu, 0x83bbd8);
+    redirect = 0; cpu.A = 9; Observe(&cpu, 0x83b74e);
+    CHECK(!redirect && cpu.A == 1 && cpu_selected == 2 && KdcPracticeCurrentView()->cpu == 2);
     CHECK(!KdcPracticeCurrentView()->active && KdcPracticeSnapshotsAllowed());
-    CHECK(battery[0]==0xa5);
+    /* The game's own menus keep their use of Start; the CPU owns seat 2. */
+    unsigned frames = cpu_frames;
+    input = 0; KdcPracticeFrame(&input);
+    input = SNES_PAD_START; CHECK(KdcPracticeFrame(&input) && input == SNES_PAD_START);
+    CHECK(cpu_frames == frames + 2 && !KdcPracticeVisible());
+    /* Committing to a match keeps playing, on the CPU's own save. */
+    int resets_before = resets;
+    Observe(&cpu, 0x83b83e);
+    CHECK(KdcPracticeCurrentView()->active && !strcmp(root, "saves/cpu"));
+    CHECK(resets == resets_before && battery[0] == 0xa5 && ordinary_file[0] == 0xa5);
+    CHECK(!KdcPracticeSnapshotsAllowed() && !KdcPracticeVisible());
+    planning = true; CHECK(KdcPracticeSnapshotsAllowed()); planning = false;
+    /* The planner's own rollbacks do not restart the session. */
+    unsigned selections = cpu_selections;
+    rollback_load = true; KdcPracticeStateLoaded(); rollback_load = false;
+    CHECK(cpu_selections == selections && KdcPracticeCurrentView()->active);
+    /* Start pauses only during a hole, with RESUME and EXIT MATCH. */
+    Observe(&cpu, 0x80f266);
+    OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN);
+    CHECK(KdcPracticeCurrentView()->row == 0);
+    Tap(SNES_PAD_A); CHECK(KdcPracticeCurrentView()->screen == 0);
+    redirect = 0; Observe(&cpu, 0x80f48c); CHECK(!redirect);
+    input = 0; KdcPracticeFrame(&input);
+    input = SNES_PAD_START; CHECK(KdcPracticeFrame(&input) && input == SNES_PAD_START);
+    /* Back at the title menu the session ends: ordinary save restored. */
+    memset(battery, 0x55, sizeof(battery));
+    ram[0x1e4a] = 3; Observe(&cpu, 0x83bbd8);
+    CHECK(!KdcPracticeCurrentView()->active && !KdcPracticeCurrentView()->cpu && !cpu_selected);
+    CHECK(!strcmp(root, "saves") && battery[0] == 0xa5 && practice_file[0] == 0x55);
+    CHECK(resets == resets_before && ram[0x1e4a] == 5);
+    /* EXIT MATCH from the pause leaves through a reset. */
+    cpu.A = 7; Observe(&cpu, 0x83b74e);
+    ram[0x1e4a] = 5; Observe(&cpu, 0x83bbd8);
+    cpu.A = 10; Observe(&cpu, 0x83b74e); CHECK(cpu_selected == 3);
+    Observe(&cpu, 0x83b83e); Observe(&cpu, 0x80f266);
+    memset(battery, 0x66, sizeof(battery));
+    OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A);
+    CHECK(!KdcPracticeCurrentView()->active && resets == resets_before + 1 && !cpu_selected);
+    CHECK(battery[0] == 0xa5 && practice_file[0] == 0x66 && KdcPracticeSnapshotsAllowed());
     return 0;
 }

@@ -25,6 +25,21 @@ class CpuOpponentTest(unittest.TestCase):
             run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_player_two_name_box(self):
+        root = Path(__file__).resolve().parents[1]
+        compiler = shutil.which('gcc')
+        if not compiler:
+            self.skipTest('Requires GCC')
+        with tempfile.TemporaryDirectory() as directory:
+            exe = Path(directory) / 'cpu_label_test.exe'
+            build = subprocess.run([
+                compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', str(root / 'src'),
+                str(root / 'tests/cpu_label_test.c'), str(root / 'src/cpu_label.c'),
+                '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
 
 @unittest.skipUnless(os.environ.get('KDC_TEST_CPU') == '1', 'set KDC_TEST_CPU=1 for real-ROM CPU checks')
 class CpuRuntimeTest(unittest.TestCase):
@@ -42,22 +57,28 @@ class CpuRuntimeTest(unittest.TestCase):
         # pinned runtime settings and private temporary captures.
         from test_practice import PracticeRuntimeTest
         tap = PracticeRuntimeTest.tap
-        entry = ('wait 500\n' + tap('start') + 'wait 120\n' + tap('down') * 4 +
-                 tap('a') + 'wait 30\n')
+        # Title menu, 1P VS CPU, then the original two-player screens: PLAY
+        # COURSE, course 1, the order roll, and EXIT on the handicap grid.
+        entry = 'wait 500\n' + tap('start') + 'wait 120\n' + tap('down') * 4 + tap('a') + 'wait 60\n'
+        setup = ('wait 90\n' + tap('a')) * 4 + 'wait 400\n' + (tap('down') + 'wait 20\n') * 3 + tap('a')
         shot = tap('a') + 'wait 30\n' + tap('a') + 'wait 18\n' + tap('a')
         for difficulty in range(1, 4):
             with self.subTest(difficulty=difficulty):
-                script = (entry + tap('right') * (difficulty - 1) + tap('a') * 4 +
-                          'wait 600\ndump before\n' + shot + 'wait 2600\ndump after\n')
-                first, log = PracticeRuntimeTest.run_case(self, script)
-                repeated, _ = PracticeRuntimeTest.run_case(self, script)
+                script = (entry + (tap('down') + 'wait 12\n') * (difficulty - 1) + tap('a') + setup +
+                          'wait 1700\ndump before\n' + shot + 'wait 1500\ndump after\n')
+                first, log = PracticeRuntimeTest.run_case(self, script, frames=6500)
+                repeated, _ = PracticeRuntimeTest.run_case(self, script, frames=6500)
                 self.assertEqual(first['after.wram.bin'], repeated['after.wram.bin'])
-                ram = first['after.wram.bin']
-                word = lambda address: int.from_bytes(ram[address:address + 2], 'little')
-                self.assertIn('CPU ' + ('EASY', 'MODERATE', 'EXPERT')[difficulty - 1] + ': turn 1', log)
-                self.assertEqual(word(0x1803), 0, 'CPU must return control to P1')
-                self.assertGreater(word(0x6a12), 0, 'CPU must naturally collect a star')
-                self.assertNotEqual(first['before.wram.bin'][0xd8ac:0xd8bc], ram[0xd8ac:0xd8bc])
+                before, ram = first['before.wram.bin'], first['after.wram.bin']
+                word = lambda data, address: int.from_bytes(data[address:address + 2], 'little')
+                name = ('EASY', 'MEDIUM', 'HARD')[difficulty - 1]
+                self.assertIn('CPU match: started (' + name + ')', log)
+                self.assertIn('CPU ' + name + ': turn 1', log)
+                level = 3 - difficulty  # Easy takes the DIFFICULT end of the grid.
+                self.assertEqual([word(before, a) for a in (0xecfd, 0xed01, 0xed05)], [level] * 3)
+                self.assertEqual(word(ram, 0x1803), 0, 'CPU must return control to P1')
+                self.assertGreater(word(ram, 0x6a12), 0, 'CPU must naturally collect a star')
+                self.assertNotEqual(before[0xd8ac:0xd8bc], ram[0xd8ac:0xd8bc])
                 if difficulty == 3:
-                    fallback, _ = PracticeRuntimeTest.run_case(self, script, bounce='0')
+                    fallback, _ = PracticeRuntimeTest.run_case(self, script, bounce='0', frames=6500)
                     self.assertEqual(first['after.wram.bin'], fallback['after.wram.bin'])

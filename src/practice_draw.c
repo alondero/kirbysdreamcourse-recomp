@@ -1,7 +1,6 @@
 /* Decode the typeface from the user's live title-menu VRAM. No extracted
  * artwork ships with this panel; its geometry is drawn by the host. */
 #include "practice.h"
-#include "cpu_opponent.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes/cart.h"
@@ -109,10 +108,9 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
     Canvas c = {(uint32_t *)dst, (int)(pitch / 4), height, (width - 256) / 2};
     const uint32_t white = 0xffffffff, yellow = 0xffffe890, pink = 0xffffb8de;
     if (!v->screen) {
-        char label[20];
-        snprintf(label, sizeof(label), "CPU %s", KdcCpuName((unsigned)v->cpu));
-        Box(&c, v->cpu ? 64 : 84, 3, v->cpu ? 128 : 88, 12, 0xff30206a);
-        Center(&c, 5, v->cpu ? label : "PRACTICE", yellow);
+        /* CPU matches are labelled in the game's own player 2 name box. */
+        Box(&c, 84, 3, 88, 12, 0xff30206a);
+        Center(&c, 5, "PRACTICE", yellow);
         return;
     }
     Box(&c, 14, 22, 230, 184, 0xff161038);
@@ -123,22 +121,7 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
             Box(&c, x, y, 8, 8, ((x + y) / 8) % 2 ? 0xff302468 : 0xff382c78);
     Box(&c, 24, 30, 208, 22, 0xffa84480);
     Center(&c, 37, v->cpu ? "1P VS CPU" : "HOLE PRACTICE", white);
-    if (v->screen == 3) {
-        const char *labels[]={"CPU", "COURSE", "MODE", "PLAY COURSE"};
-        char course[]={(char)('1'+v->course),0};
-        const char *values[]={KdcCpuName((unsigned)v->cpu),course,v->mode==2?"NORMAL":"EXTRA"};
-        for (int row=0;row<4;++row) {
-            int y=72+row*28;
-            if (v->row==row) Box(&c,28,y-4,200,18,0xffa84480);
-            if (row==3) Center(&c,y,labels[row],yellow);
-            else {
-                Text(&c,32,y,labels[row],yellow);
-                Text(&c,128,y,values[row],white);
-                Triangle(&c,116,y+3,false,pink);
-                Triangle(&c,216,y+3,true,pink);
-            }
-        }
-    } else if (v->screen == 1) {
+    if (v->screen == 1) {
         static const char *const names[] = {"1P NORMAL", "1P EXTRA", "2P NORMAL", "2P EXTRA"};
         Text(&c, 32, 62, "MODE", yellow);
         if (v->row == 0) Box(&c, 88, 59, 136, 14, 0xffa84480);
@@ -168,14 +151,15 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
         Center(&c, 181, "PLAY THIS HOLE", v->row == 4 ? yellow : white);
     } else {
         static const char *const options[] = {"RESUME", "RESTART HOLE", "CHOOSE A HOLE", "EXIT PRACTICE"};
-        for (int row = 0; row < 4; ++row) {
+        static const char *const match[] = {"RESUME", "EXIT MATCH"};
+        int rows = v->cpu ? 2 : 4;
+        for (int row = 0; row < rows; ++row) {
             int y = 72 + row * 24;
             if (v->row == row) Box(&c, 40, y - 4, 176, 17, 0xffa84480);
-            const char *label=v->cpu && row==1?"RESTART COURSE":v->cpu && row==2?"CHOOSE MATCH":v->cpu && row==3?"EXIT MATCH":options[row];
-            Center(&c, y, label, v->row == row ? yellow : white);
+            Center(&c, y, v->cpu ? match[row] : options[row], v->row == row ? yellow : white);
         }
     }
-    Center(&c, 195, (v->screen == 1 || v->screen == 3) && v->active ? "A SELECT   B EXIT" : "A SELECT   B BACK", pink);
+    Center(&c, 195, v->screen == 1 && v->active ? "A SELECT   B EXIT" : "A SELECT   B BACK", pink);
     if (v->error) {
         Box(&c, 8, 207, 240, 13, 0xff302468);
         Center(&c, 210, v->error, yellow);

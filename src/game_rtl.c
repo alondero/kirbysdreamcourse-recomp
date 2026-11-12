@@ -52,6 +52,7 @@
 #include "dev_start.h"
 #include "practice.h"
 #include "cpu_opponent.h"
+#include "cpu_label.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,10 +98,25 @@ static void initialize_bounce_log(void)
     g_interp_bridge_bounce_hook = observe_bounce;
 }
 
+/* In a CPU match, player 2's HUD name box reads "CPU" and the difficulty.
+ * The game uploads its own box once per hole; replace it when it appears. */
+static void LabelCpuSeat(void)
+{
+    unsigned difficulty = KdcCpuDifficulty();
+    if (!difficulty || !g_snes || !g_snes->ppu || g_ram[0x17ff] != 1) return;
+    KdcCpuLabelPatch(g_snes->ppu->vram, PPU_bgTileAdr(g_snes->ppu, 2), KdcCpuName(difficulty));
+}
+
+/* The CPU planner rewinds the guest within a frame to hide its previews.
+ * Only guest state goes back: the session and host presentation caches
+ * describe what is on screen, which the previews never changed. */
+static bool PlannerRollback(void) { return RtlIsRollbackLoad() && KdcCpuPlanning(); }
+
 void GameRunOneFrame(void)
 {
     initialize_bounce_log();
     snes_beam_frame_driver_run_frame();
+    LabelCpuSeat();
     if (apu_state_log && g_snes && g_snes->apu) {
         RtlApuLock();
         Apu *apu = g_snes->apu;
@@ -371,9 +387,11 @@ static void GameLoadExtra(struct SaveLoadInfo *sli, uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
-    KdcDevStateLoaded();
-    KdcPracticeStateLoaded();
-    KdcResetSprites(g_snes ? g_snes->ppu : NULL);
+    if (!PlannerRollback()) {
+        KdcDevStateLoaded();
+        KdcPracticeStateLoaded();
+        KdcResetSprites(g_snes ? g_snes->ppu : NULL);
+    }
     RtlApplyExecutionState();
 #ifdef KDC_EXPERIMENTAL_RASTER_STATE
     if (saved_beam_valid)
@@ -415,9 +433,11 @@ static void GameStateLoaded(uint32_t version)
 static void GameStateLoaded(uint32_t version)
 {
     (void)version;
-    KdcDevStateLoaded();
-    KdcPracticeStateLoaded();
-    KdcResetSprites(g_snes ? g_snes->ppu : NULL);
+    if (!PlannerRollback()) {
+        KdcDevStateLoaded();
+        KdcPracticeStateLoaded();
+        KdcResetSprites(g_snes ? g_snes->ppu : NULL);
+    }
 }
 #endif
 

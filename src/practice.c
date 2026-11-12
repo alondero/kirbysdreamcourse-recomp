@@ -1,5 +1,6 @@
 /* USA title-menu extension. Hardware and the hole loader remain framework/
- * guest owned; see docs/practice.md for the observed entry points. */
+ * guest owned; see docs/practice.md and docs/cpu-opponent.md for the
+ * observed entry points. */
 #include "practice.h"
 #include "dev_start.h"
 #include "cpu_opponent.h"
@@ -17,8 +18,10 @@ static unsigned repeat;
 static uint8_t *ordinary_sram;
 static int ordinary_size;
 static char ordinary_root[96];
-static bool ability_pending, picker_reset;
+static bool ability_pending, picker_reset, choosing, in_hole;
 static const char *const modes[] = {"normal", "extra", "multi", "multi-extra"};
+/* Root-menu return values this extension adds. 0..5 are the guest's own. */
+enum { RESULT_PRACTICE = 6, RESULT_CPU = 7, RESULT_EASY = 8, RESULT_TWO_PLAYER = 1 };
 
 const char *KdcPracticeAbilityName(unsigned ability)
 {
@@ -67,12 +70,122 @@ unsigned KdcPracticeGuestGlyph(char c)
 }
 
 const KdcPracticeView *KdcPracticeCurrentView(void) { return &view; }
-bool KdcPracticeVisible(void) { return view.screen || view.active; }
-bool KdcPracticeSnapshotsAllowed(void) { return !view.screen && !view.active; }
+bool KdcPracticeVisible(void) { return view.screen || (view.active && !view.cpu); }
+bool KdcPracticeSnapshotsAllowed(void)
+{
+    /* The CPU's private planning snapshot is restored within the same frame. */
+    return KdcCpuPlanning() || (!view.screen && !view.active);
+}
 
 static unsigned Word(const uint8_t *ram, unsigned a)
 {
     return ram[a] | ((unsigned)ram[a + 1] << 8);
+}
+
+/* Write a label into the root menu's tilemap, which the guest uploads right
+ * after BBD8. Missing glyphs become spaces. */
+static void Label(uint8_t *ram, unsigned x, unsigned y, const char *text, unsigned width)
+{
+    size_t length = strlen(text);
+    for (unsigned i = 0; i < width && x + i < 32; ++i) {
+        unsigned glyph = i < length ? KdcPracticeGuestGlyph(text[i]) : 31u;
+        unsigned at = 0x39da + 2 * (y * 32 + x + i);
+        ram[at] = (uint8_t)(glyph == KDC_PRACTICE_NO_GLYPH ? 31u : glyph);
+        ram[at + 1] = 0x20;
+    }
+}
+
+/* Swap the battery image so the session's own writes land in `root`. The
+ * session starts from a copy of the ordinary save, so the game sees the same
+ * unlocks; the ordinary image is restored, byte for byte, when it ends. */
+static bool BeginSession(const char *root, bool fresh)
+{
+    if (!g_sram || g_sram_size <= 0 || strcmp(RtlSaveRoot(), "saves")) {
+        view.error = "SAVE SESSION UNAVAILABLE";
+        return false;
+    }
+    uint8_t *copy = malloc((size_t)g_sram_size);
+    if (!copy) { view.error = "NOT ENOUGH MEMORY"; return false; }
+    memcpy(copy, g_sram, (size_t)g_sram_size);
+    if (!RtlWriteSram()) {
+        free(copy);
+        view.error = "COULD NOT SAVE PROGRESS";
+        return false;
+    }
+    ordinary_sram = copy;
+    ordinary_size = g_sram_size;
+    snprintf(ordinary_root, sizeof(ordinary_root), "%s", RtlSaveRoot());
+    RtlSetSaveRoot(root);
+    RtlSetQuickSaveRoot(NULL);
+    if (fresh) {
+        memset(g_sram, 0, (size_t)g_sram_size);
+        RtlReadSram();
+    }
+    view.active = true;
+    return true;
+}
+
+/* `force` gives up the session's own unsaved writes rather than stay in it. */
+static bool EndSession(bool force)
+{
+    if (!RtlWriteSram()) {
+        view.error = "COULD NOT SAVE SESSION";
+        if (!force) return false;
+    }
+    /* SRAM shape cannot change while the supported ROM is running. */
+    if (g_sram_size != ordinary_size || !ordinary_sram) {
+        view.error = "SAVE SESSION UNAVAILABLE";
+        return false;
+    }
+    memcpy(g_sram, ordinary_sram, (size_t)ordinary_size);
+    free(ordinary_sram);
+    ordinary_sram = NULL;
+    RtlSetSaveRoot(ordinary_root);
+    KdcDevSelect(NULL);
+    view.active = false;
+    view.cpu = 0;
+    in_hole = false;
+    KdcCpuSelect(0);
+    return true;
+}
+
+/* BBD8 runs after the root menu's entries are laid out and before the
+ * tilemap upload. Either append this extension's entries, or (after 1P VS
+ * CPU) turn the same menu into the difficulty choice. */
+static void RootMenu(CpuState *cpu, uint8_t *ram)
+{
+    unsigned count_address = (cpu->D + 0x4a) & 0xffff;
+    unsigned n = Word(ram, count_address);
+    if (n < 3 || n > 6) return;
+    unsigned x = ram[0xea8e], y = ram[0xea97 + n - 1] + 2;
+    if (x > 23 || y > 21) return;
+    if (choosing) {
+        static const char *const names[] = {"EASY", "MEDIUM", "HARD"};
+        for (unsigned i = 0; i < n; ++i)
+            Label(ram, ram[0xea8e + i], ram[0xea97 + i], i < 3 ? names[i] : "", 12);
+        for (unsigned i = 0; i < 3; ++i) ram[0xeaa0 + i] = (uint8_t)(RESULT_EASY + i);
+        ram[count_address] = 3;
+        ram[0xea8a] = 1; /* Let B cancel, as the guest's submenus do. */
+        return;
+    }
+    if (view.cpu) {
+        /* Back at the title menu from a CPU match or its 2P menus. */
+        if (view.active && !EndSession(true)) fprintf(stderr, "CPU match: %s\n", view.error);
+        view.cpu = 0;
+        view.error = NULL;
+        KdcCpuSelect(0);
+        fputs("CPU match: returned to title menu\n", stderr);
+    }
+    ram[0xea8e + n] = (uint8_t)x;
+    ram[0xea97 + n] = (uint8_t)y;
+    ram[0xeaa0 + n] = RESULT_PRACTICE;
+    Label(ram, x, y, "PRACTICE", 8);
+    ram[0xea8e + n + 1] = (uint8_t)x;
+    ram[0xea97 + n + 1] = (uint8_t)(y + 2);
+    ram[0xeaa0 + n + 1] = RESULT_CPU;
+    Label(ram, x, y + 2, "1P VS CPU", 9);
+    ram[count_address] = (uint8_t)(n + 2);
+    view.title = true;
 }
 
 static void Observe(CpuState *cpu, uint32_t pc)
@@ -80,6 +193,7 @@ static void Observe(CpuState *cpu, uint32_t pc)
     uint8_t *ram = cpu->ram;
     switch (pc & 0x7fffff) {
     case 0x00f266:
+        in_hole = true;
         /* The loader has cleared abilities; seed both players before C342
          * creates their objects and the conditions portraits. */
         if (ability_pending) {
@@ -89,8 +203,10 @@ static void Observe(CpuState *cpu, uint32_t pc)
         }
         break;
     case 0x00f48c:
+        in_hole = false;
         /* Both modes finish here, before score screens and hole progression.
-         * F120 is the ordinary title entry on this same main-loop stack. */
+         * F120 is the ordinary title entry on this same main-loop stack. CPU
+         * matches carry on through the game's own results and course menus. */
         if (!view.active || view.title_background || view.cpu) return;
         view.screen = 1;
         view.row = 4;
@@ -101,28 +217,7 @@ static void Observe(CpuState *cpu, uint32_t pc)
         interp_bridge_pre_opcode_redirect(0x80f120);
         fputs("Practice: hole finished, returned to picker\n", stderr);
         break;
-    case 0x00f558:
-        /* Multiplayer results normally return to the original two-controller
-         * course/roulette setup. CPU matches return to their own picker. */
-        if (!view.active || !view.cpu) return;
-        view.screen = 3;
-        view.row = 3;
-        view.title_background = true;
-        view.error = NULL;
-        swallowed |= previous;
-        KdcDevSelect(NULL);
-        KdcCpuSelect(0);
-        interp_bridge_pre_opcode_redirect(0x80f120);
-        fputs("CPU match: course finished, returned to picker\n", stderr);
-        break;
     case 0x03b64b:
-        if (view.active && view.cpu && !view.title_background) {
-            view.screen = 3;
-            view.row = 3;
-            view.title_background = true;
-            KdcDevSelect(NULL);
-            KdcCpuSelect(0);
-        }
         /* Returning from a hole needs no second press of title-screen Start. */
         if (view.title_background) interp_bridge_pre_opcode_redirect(0x83b675);
         break;
@@ -131,42 +226,36 @@ static void Observe(CpuState *cpu, uint32_t pc)
          * Do not extend the shared routine's course/sound/demo submenus. */
         if (cpu->S > 0x1ffb || Word(ram, cpu->S + 1) != 0xbb46 ||
             Word(ram, cpu->S + 3) != 0xb744) return;
-        {
-            unsigned count_address = (cpu->D + 0x4a) & 0xffff;
-            unsigned n = Word(ram, count_address);
-            if (n < 3 || n > 6) return;
-            unsigned x = ram[0xea8e], y = ram[0xea97 + n - 1] + 2;
-            if (x > 23 || y > 21) return;
-            ram[0xea8e + n] = (uint8_t)x;
-            ram[0xea97 + n] = (uint8_t)y;
-            ram[0xeaa0 + n] = 6; /* New return value, intercepted below. */
-            ram[count_address] = (uint8_t)(n + 2);
-            /* The guest uploads this tilemap immediately after BBD8.
-             * Its font uses uppercase ASCII minus $20, with space at $1F. */
-            const char *label = "PRACTICE";
-            for (unsigned i = 0; label[i]; ++i) {
-                unsigned at = 0x39da + 2 * (y * 32 + x + i);
-                ram[at] = (uint8_t)(label[i] - 0x20);
-                ram[at + 1] = 0x20;
-            }
-            ram[0xea8e + n+1]=(uint8_t)x;
-            ram[0xea97+n+1]=(uint8_t)(y+2);
-            ram[0xeaa0+n+1]=7;
-            label="1P VS CPU";
-            for (unsigned i=0;label[i];++i) {
-                unsigned at=0x39da+2*((y+2)*32+x+i);
-                ram[at]=(uint8_t)(label[i]==' '?31:label[i]-0x20);
-                ram[at+1]=0x20;
-            }
-            view.title = true;
-        }
+        RootMenu(cpu, ram);
         break;
     case 0x03b74e:
         view.title = false;
-        if (cpu->A != 6 && cpu->A != 7) return;
-        view.cpu = cpu->A == 7 ? 1 : 0;
-        view.screen = view.cpu ? 3 : 1;
-        if (view.cpu) { view.mode=2; view.hole=0; view.course=0; view.ability=0; }
+        if (choosing) {
+            choosing = false;
+            if (cpu->A >= RESULT_EASY && cpu->A < RESULT_EASY + 3) {
+                /* Continue into the original two-player menus. The CPU owns
+                 * the second controller from here on. */
+                view.cpu = (int)(cpu->A - RESULT_EASY) + 1;
+                KdcCpuSelect((unsigned)view.cpu);
+                cpu->A = RESULT_TWO_PLAYER;
+                fprintf(stderr, "CPU match: %s\n", KdcCpuName((unsigned)view.cpu));
+            } else {
+                /* B: rebuild the ordinary title menu. */
+                interp_bridge_pre_opcode_redirect(0x83b720);
+            }
+            return;
+        }
+        if (cpu->A == RESULT_CPU) {
+            /* Rebuild the root menu on its original stack as the choice of
+             * CPU difficulty, with the cursor on the first entry. */
+            choosing = true;
+            ram[0xea86] = ram[0xea87] = 0;
+            interp_bridge_pre_opcode_redirect(0x83b720);
+            return;
+        }
+        if (cpu->A != RESULT_PRACTICE) return;
+        view.cpu = 0;
+        view.screen = 1;
         view.title_background = true;
         view.row = 0;
         view.error = NULL;
@@ -174,20 +263,26 @@ static void Observe(CpuState *cpu, uint32_t pc)
          * input underneath the picker, preserving animation and music. */
         interp_bridge_pre_opcode_redirect(0x83b720);
         break;
+    case 0x03b83e:
+        /* The 2P menu has committed to a match ($17FF := 1). A CPU match
+         * keeps its records in its own save from here on. */
+        if (!view.cpu || view.active) return;
+        if (BeginSession("saves/cpu", false))
+            fprintf(stderr, "CPU match: started (%s)\n", KdcCpuName((unsigned)view.cpu));
+        else
+            fprintf(stderr, "CPU match: %s; results will use the ordinary save\n", view.error);
+        break;
     }
 }
 
 void KdcPracticeInitialize(void)
 {
-    if (!interp_bridge_add_pre_opcode_hook(0x83bbd8, Observe) ||
-        !interp_bridge_add_pre_opcode_hook(0x83b74e, Observe) ||
-        !interp_bridge_add_pre_opcode_hook(0x80f266, Observe) ||
-        !interp_bridge_add_pre_opcode_hook(0x80f48c, Observe) ||
-        !interp_bridge_add_pre_opcode_hook(0x80f558, Observe) ||
-        !interp_bridge_add_pre_opcode_hook(0x83b64b, Observe)) {
-        fputs("Unable to register practice menu\n", stderr);
-        abort();
-    }
+    static const uint32_t sites[] = {0x83bbd8, 0x83b74e, 0x80f266, 0x80f48c, 0x83b64b, 0x83b83e};
+    for (unsigned i = 0; i < sizeof(sites) / sizeof(sites[0]); ++i)
+        if (!interp_bridge_add_pre_opcode_hook(sites[i], Observe)) {
+            fputs("Unable to register practice menu\n", stderr);
+            abort();
+        }
 }
 
 void KdcPracticeReset(void)
@@ -197,6 +292,12 @@ void KdcPracticeReset(void)
     view.title = false;
     view.title_background = false;
     view.error = NULL;
+    choosing = in_hole = false;
+    if (view.cpu) {
+        /* A CPU match restarts from the title, where the menu ends it. */
+        KdcCpuSelect((unsigned)view.cpu);
+        return;
+    }
     /* Ctrl+R also replays the selected hole while viewing the returned picker. */
     if (view.active && !picker_reset && !KdcDevEnabled()) {
         char selector[40];
@@ -206,69 +307,39 @@ void KdcPracticeReset(void)
         KdcDevReset();
     }
     ability_pending = view.active && KdcDevEnabled();
-    KdcCpuSelect(view.active && KdcDevEnabled() ? (unsigned)view.cpu : 0);
+    KdcCpuSelect(0);
 }
 
-void KdcPracticeStateLoaded(void) { KdcPracticeReset(); }
+void KdcPracticeStateLoaded(void)
+{
+    /* The CPU planner's own rollbacks are not a change of session. */
+    if (RtlIsRollbackLoad()) return;
+    KdcPracticeReset();
+}
 
 static bool StartHole(void)
 {
     char selector[40];
     snprintf(selector, sizeof(selector), "%s:%d:%d", modes[view.mode],
              view.course + 1, view.hole + 1);
-    if (!view.active) {
-        /* Retain the exact ordinary battery image across practice, including
-         * an ordinary session with no save file. Never import practice SRAM. */
-        if (!g_sram || g_sram_size <= 0 || strcmp(RtlSaveRoot(), "saves")) {
-            view.error = "SAVE SESSION UNAVAILABLE";
-            return false;
-        }
-        uint8_t *copy = malloc((size_t)g_sram_size);
-        if (!copy) { view.error = "NOT ENOUGH MEMORY"; return false; }
-        memcpy(copy, g_sram, (size_t)g_sram_size);
-        if (!RtlWriteSram()) {
-            free(copy);
-            view.error = "COULD NOT SAVE PROGRESS";
-            return false;
-        }
-        ordinary_sram = copy;
-        ordinary_size = g_sram_size;
-        snprintf(ordinary_root, sizeof(ordinary_root), "%s", RtlSaveRoot());
-        RtlSetSaveRoot(view.cpu ? "saves/cpu" : "saves/practice");
-        RtlSetQuickSaveRoot(NULL);
-        memset(g_sram, 0, (size_t)g_sram_size);
-        RtlReadSram();
-        view.active = true;
-    }
+    /* Retain the exact ordinary battery image across practice, including an
+     * ordinary session with no save file. Never import practice SRAM. */
+    if (!view.active && !BeginSession("saves/practice", true)) return false;
     KdcDevSelect(selector);
     RtlReset(1);
     KdcPracticeReset();
-    fprintf(stderr, "%s: %s\n", view.cpu ? "CPU match" : "Practice", selector);
+    fprintf(stderr, "Practice: %s\n", selector);
     return true;
 }
 
 static void ExitPractice(void)
 {
-    if (!RtlWriteSram()) {
-        view.error = "COULD NOT SAVE SESSION";
-        return;
-    }
-    /* SRAM shape cannot change while the supported ROM is running. */
-    if (g_sram_size != ordinary_size || !ordinary_sram) {
-        view.error = "SAVE SESSION UNAVAILABLE";
-        return;
-    }
-    memcpy(g_sram, ordinary_sram, (size_t)ordinary_size);
-    free(ordinary_sram);
-    ordinary_sram = NULL;
-    RtlSetSaveRoot(ordinary_root);
-    KdcDevSelect(NULL);
-    view.active = false;
-    view.cpu = 0;
-    KdcCpuSelect(0);
+    bool cpu = view.cpu != 0;
+    if (!EndSession(false)) return;
     RtlReset(1);
     KdcPracticeReset();
-    fputs("Practice: returned to ordinary title\n", stderr);
+    fputs(cpu ? "CPU match: returned to ordinary title\n" :
+                "Practice: returned to ordinary title\n", stderr);
 }
 
 bool KdcPracticeFrame(uint32_t *inputs)
@@ -278,7 +349,9 @@ bool KdcPracticeFrame(uint32_t *inputs)
     swallowed &= held;
     *inputs &= ~swallowed;
     if (!view.screen) {
-        if (!view.active || !(pressed & SNES_PAD_START)) { KdcCpuFrame(inputs); return true; }
+        /* A CPU match's menus and results keep their own use of Start. */
+        bool pause = view.active && (pressed & SNES_PAD_START) && (!view.cpu || in_hole);
+        if (!pause) { KdcCpuFrame(inputs); return true; }
         view.screen = 2;
         view.row = 0;
         view.error = NULL;
@@ -292,28 +365,17 @@ bool KdcPracticeFrame(uint32_t *inputs)
     if (!directions || (pressed & directions)) repeat = 0;
     else if (++repeat >= 20 && (repeat - 20) % 6 == 0) pressed |= directions;
     if (pressed & SNES_PAD_B) {
-        if ((view.screen == 1 || view.screen == 3) && view.active) { ExitPractice(); return false; }
+        if (view.screen == 1 && view.active) { ExitPractice(); return false; }
         view.screen = 0;
         view.title_background = false;
         view.row = 0;
         view.error = NULL;
         return true;
     }
-    int rows = view.screen == 1 ? 5 : 4;
+    int rows = view.screen == 1 ? 5 : view.cpu ? 2 : 4;
     if (pressed & SNES_PAD_UP) view.row = (view.row + rows - 1) % rows;
     if (pressed & SNES_PAD_DOWN) view.row = (view.row + 1) % rows;
-    if (view.screen == 3) {
-        int direction = !!(pressed & SNES_PAD_RIGHT) - !!(pressed & SNES_PAD_LEFT);
-        if (direction) {
-            if (view.row==0) view.cpu=1+(view.cpu-1+direction+3)%3;
-            if (view.row==1) view.course=(view.course+direction+4)%4;
-            if (view.row==2) view.mode=view.mode==2?3:2;
-        }
-        if (pressed & (SNES_PAD_A | SNES_PAD_START)) {
-            if (view.row==3) { StartHole(); return false; }
-            ++view.row;
-        }
-    } else if (view.screen == 1) {
+    if (view.screen == 1) {
         int direction = !!(pressed & SNES_PAD_RIGHT) - !!(pressed & SNES_PAD_LEFT);
         if (direction) {
             view.error = NULL;
@@ -332,7 +394,8 @@ bool KdcPracticeFrame(uint32_t *inputs)
             else ++view.row;
         }
     } else if (pressed & (SNES_PAD_A | SNES_PAD_START)) {
-        switch (view.row) {
+        /* A CPU match's pause offers only RESUME and EXIT MATCH. */
+        switch (view.cpu && view.row == 1 ? 3 : view.row) {
         case 0: view.screen = 0; break;
         case 1: RtlReset(1); KdcPracticeReset(); break;
         case 2:
@@ -340,7 +403,7 @@ bool KdcPracticeFrame(uint32_t *inputs)
             picker_reset = true;
             RtlReset(1);
             picker_reset = false;
-            view.screen = view.cpu ? 3 : 1;
+            view.screen = 1;
             view.title_background = true;
             view.row = 0;
             break;
