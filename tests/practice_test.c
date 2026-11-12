@@ -1,5 +1,6 @@
 #include "practice.h"
 #include "dev_start.h"
+#include "cpu_opponent.h"
 #include "common_rtl.h"
 #include "cpu_state.h"
 #include "snes/interp_bridge.h"
@@ -15,13 +16,17 @@ static uint8_t ram[0x20000], battery[8192], ordinary_file[8192], practice_file[8
 static char root[96] = "saves";
 static bool write_ok = true;
 static int resets;
-static uint32_t redirect, sites[8];
-static InterpPreOpcodeHook hooks[8];
+static uint32_t redirect, sites[12];
+static InterpPreOpcodeHook hooks[12];
 static unsigned count;
+void KdcCpuReset(void) {}
+void KdcCpuSelect(unsigned d) { (void)d; }
+void KdcCpuFrame(uint32_t *inputs) { (void)inputs; }
+
 
 bool interp_bridge_add_pre_opcode_hook(uint32_t pc, InterpPreOpcodeHook hook)
 {
-    CHECK(count < 8); sites[count] = pc; hooks[count++] = hook; return true;
+    CHECK(count < 12); sites[count] = pc; hooks[count++] = hook; return true;
 }
 void interp_bridge_pre_opcode_redirect(uint32_t pc) { redirect = pc; }
 const char *RtlSaveRoot(void) { return root; }
@@ -33,7 +38,7 @@ int RtlWriteSram(void)
     memcpy(!strcmp(root, "saves") ? ordinary_file : practice_file, g_sram, 8192);
     return 1;
 }
-void RtlReadSram(void) { CHECK(!strcmp(root, "saves/practice")); memcpy(g_sram, practice_file, 8192); }
+void RtlReadSram(void) { CHECK(!strcmp(root, "saves/practice") || !strcmp(root,"saves/cpu")); memcpy(g_sram, practice_file, 8192); }
 void RtlReset(int mode) { CHECK(mode == 1); ++resets; KdcDevReset(); KdcPracticeReset(); }
 static void Observe(CpuState *cpu, uint32_t pc)
 {
@@ -54,7 +59,7 @@ int main(void)
     memset(battery, 0xa5, sizeof(battery));
     memset(practice_file, 0x33, sizeof(practice_file));
     KdcDevInitialize(); KdcPracticeInitialize();
-    CHECK(count == 8 && KdcPracticeSnapshotsAllowed());
+    CHECK(count == 9 && KdcPracticeSnapshotsAllowed());
     uint32_t ordinary_input = SNES_PAD_A;
     CHECK(KdcPracticeFrame(&ordinary_input));
     KdcPracticeReset();
@@ -70,11 +75,11 @@ int main(void)
     ram[cpu.S + 1] = 0x46; ram[cpu.S + 2] = 0xbb;
     ram[cpu.S + 3] = 0x44; ram[cpu.S + 4] = 0xb7;
     Observe(&cpu, 0x83bbd8);
-    CHECK(ram[0x1e4a] == 4 && ram[0xea91] == 11 && ram[0xea9a] == 15 && ram[0xeaa3] == 6);
+    CHECK(ram[0x1e4a] == 5 && ram[0xea91] == 11 && ram[0xea9a] == 15 && ram[0xeaa3] == 6);
     CHECK(ram[0x39da + 2 * (15 * 32 + 11)] == 'P' - 32);
     ram[0x1e4a] = 6; ram[0xea9c] = 17;
     Observe(&cpu, 0x83bbd8);
-    CHECK(ram[0x1e4a] == 7 && ram[0xea94] == 11 && ram[0xea9d] == 19 && ram[0xeaa6] == 6);
+    CHECK(ram[0x1e4a] == 8 && ram[0xea94] == 11 && ram[0xea9d] == 19 && ram[0xeaa6] == 6);
     cpu.A = 0; Observe(&cpu, 0x83b74e); CHECK(!redirect);
     cpu.A = 6; Observe(&cpu, 0x83b74e);
     CHECK(redirect == 0x83b720 && !KdcPracticeSnapshotsAllowed());
@@ -178,5 +183,28 @@ int main(void)
     CHECK(battery[0] == 0xa5 && ordinary_file[0] == 0xa5 && practice_file[0] == 0x77);
     CHECK(KdcPracticeSnapshotsAllowed() && !KdcDevEnabled());
     redirect = 0; Observe(&cpu, 0x80f0ff); CHECK(!redirect);
+    /* CPU entry starts a full two-player course and retains normal progression. */
+    cpu.A=7; Observe(&cpu,0x83b74e);
+    CHECK(KdcPracticeCurrentView()->screen==3);
+    Tap(SNES_PAD_LEFT); CHECK(KdcPracticeCurrentView()->cpu==3);
+    Tap(SNES_PAD_RIGHT); CHECK(KdcPracticeCurrentView()->cpu==1);
+    Tap(SNES_PAD_RIGHT); CHECK(KdcPracticeCurrentView()->cpu==2);
+    Tap(SNES_PAD_A); Tap(SNES_PAD_LEFT);
+    CHECK(KdcPracticeCurrentView()->course==3);
+    Tap(SNES_PAD_A); Tap(SNES_PAD_RIGHT);
+    CHECK(KdcPracticeCurrentView()->mode==3);
+    Tap(SNES_PAD_A); Tap(SNES_PAD_A);
+    CHECK(KdcPracticeCurrentView()->active && KdcPracticeCurrentView()->screen==0);
+    CHECK(!strcmp(root,"saves/cpu"));
+    Observe(&cpu,0x80f0ff); CHECK(ram[0x17ff]==1 && ram[0xeab9]==1);
+    redirect=0; Observe(&cpu,0x80f48c);
+    CHECK(!redirect && KdcPracticeCurrentView()->screen==0);
+    Observe(&cpu,0x80f558);
+    CHECK(redirect==0x80f120);
+    Observe(&cpu,0x83b64b);
+    CHECK(KdcPracticeCurrentView()->screen==3);
+    Tap(SNES_PAD_B);
+    CHECK(!KdcPracticeCurrentView()->active && KdcPracticeSnapshotsAllowed());
+    CHECK(battery[0]==0xa5);
     return 0;
 }

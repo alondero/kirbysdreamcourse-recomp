@@ -51,6 +51,7 @@
 #include "launcher_settings.h"
 #include "dev_start.h"
 #include "practice.h"
+#include "cpu_opponent.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +76,7 @@ static void initialize_bounce_log(void)
     KdcInitializeSprites();
     KdcDevInitialize();
     KdcPracticeInitialize();
+    KdcCpuInitialize();
     const char *apu_path = getenv("KDC_APU_STATE_LOG");
     if (apu_path && *apu_path) {
         apu_state_log = fopen(apu_path, "w");

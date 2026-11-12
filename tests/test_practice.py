@@ -101,7 +101,7 @@ class PracticeRuntimeTest(unittest.TestCase):
                     self.assertEqual(files['replayed.wram.bin'][0xd852], 10)
                     self.assertEqual(files['ordinary.sram.bin'], files['saves/save.srm'])
 
-    def run_case(self, script, bounce='1', executable=None, observe=False):
+    def run_case(self, script, bounce='1', executable=None, observe=False, frames=5000):
         with tempfile.TemporaryDirectory(prefix='practice-', dir=self.root / 'local') as directory:
             case = Path(directory)
             host = case / self.executable.name
@@ -118,7 +118,7 @@ class PracticeRuntimeTest(unittest.TestCase):
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith(('SNESRECOMP_', 'KDC_', 'SDL_', 'LNG_'))}
             env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy',
-                       SNESRECOMP_RUN_FRAMES='5000', SNESRECOMP_APU_BEAM_ELAPSED='1',
+                       SNESRECOMP_RUN_FRAMES=str(frames), SNESRECOMP_APU_BEAM_ELAPSED='1',
                        SNESRECOMP_APU_HANDOFF='1', SNESRECOMP_APU_ABSOLUTE_PREANCHOR='1',
                        SNESRECOMP_LLE_BOUNCE=bounce, SNESRECOMP_DUMP_DIR=str(case))
             if observe:
