@@ -68,7 +68,10 @@ For source-built SPC/DSP differential tests and the optional APU queue-boundary 
 
 Choose **PRACTICE** on the game's title menu, below **DEMO PLAY**. Select a mode,
 course and hole using the D-pad, then choose **PLAY THIS HOLE**. A selects and B
-goes back. During practice, Start opens restart, hole selection and exit options.
+goes back. Choose a starting ability using its original portrait and name.
+The picker keeps the music and background running; finishing a hole returns
+there to replay or choose another. During practice, Start opens restart,
+hole selection and exit options.
 Practice saves are separate from ordinary progress. See [hole practice](docs/practice.md)
 for controls and limitations.
 

@@ -11,9 +11,20 @@ defaults are arrows, X for A, Z for B and Return for Start.
 second player's controller through Ctrl+L. Raw map slots and attract-mode
 shortcuts remain developer-only options.
 
+The **ABILITY** row cycles through the original conditions portraits and names:
+None, Stone, Parasol, Fireball, Spark, Wheel, Tornado, Freeze, Needle, UFO and
+Hi-Jump. Both players start with that ability in two-player practice. Restart
+reapplies the selection; abilities earned or spent during play behave normally.
+The picker keeps the title background and music running while consuming both
+players' inputs. The in-hole pause menu still freezes gameplay.
+
 During practice, Start opens **RESUME**, **RESTART HOLE**, **CHOOSE A HOLE** and
 **EXIT PRACTICE**. B resumes from that menu. Ctrl+R also restarts the selected
-hole. Exiting practice resets to the ordinary title screen. The selection is
+hole. **CHOOSE A HOLE** leaves the current hole and opens the picker over the
+title background. Finishing the hole also returns directly to the picker,
+before score screens, course results or another hole. **PLAY THIS HOLE** replays
+the selection; B exits practice from this returned picker.
+Exiting practice resets to the ordinary title screen. The selection is
 not remembered across application launches.
 
 ## Saves and transitions
@@ -27,10 +38,10 @@ shows an error. Quitting during practice writes only practice SRAM; the next
 launch uses ordinary saves again.
 
 Save states and rewind are unavailable in the picker and during practice, to
-prevent guest state from crossing the ordinary/practice save boundary. Hole
-completion and course progression remain the original game's behavior inside
-the practice save directory. Restart always uses the selected hole, even after
-a transition. Choosing another hole replaces that target.
+prevent guest state from crossing the ordinary/practice save boundary. The
+ordinary SRAM image stays retained when a completed hole returns to the picker.
+Restart always uses the selected hole and starting ability. Choosing another
+hole replaces that target.
 
 The CLI `--dev-hole` and PowerShell `-DevHole` retain their documented developer
 semantics. The new menu reuses their selection parser, boot redirects and reset
@@ -40,7 +51,8 @@ lifecycle; it does not introduce another hole loader.
 
 The exact USA SHA-256 in `rom_identity.txt` is required. No ROM, font bitmap,
 generated game source or recording is distributed. The picker decodes the font
-already loaded into title-menu BG3 VRAM at runtime.
+already loaded into title-menu BG3 VRAM at runtime. Ability portraits are decoded
+from the user's ROM at runtime; no extracted artwork is shipped.
 
 Local 65816 disassembly identifies these game-specific sites:
 
@@ -53,11 +65,24 @@ Local 65816 disassembly identifies these game-specific sites:
   offset `$4A`, with observed D=`$1E00`; reading absolute `$004A` incorrectly
   prevented the entry from appearing in the first runtime probe.
 - `$83B74E` receives the root menu result. Result 6 selects practice; redirect
-  to `$83B720` on the original stack, rebuild the menu and freeze at the next
-  simulation boundary. Results 0–5 continue through the original code.
+  to `$83B720` on the original stack and rebuild the menu. Results 0–5 continue
+  through the original code.
 - The framework's `frame_begin` callback handles mapped controller input and
-  pauses simulation while the picker or practice pause menu is open. Input
-  that closes a menu is withheld until released.
+  consumes both seats' input while running the title underneath the picker.
+  The practice pause menu holds simulation. Input that closes a menu is
+  withheld until released.
+- `$80F266` follows hole initialization, before player object creation at
+  `$80C342`. Set `$D852/$D854` once to the selected ability (0–10). The guest
+  copies the active player's ability into `$D9C4`; its activation routines and
+  HUD continue to own subsequent changes.
+- `$849E07 + ability * 4` selects the conditions portrait's DMA script. Its two
+  256-byte strips supply the 32×32 4bpp portrait; `$94A849` supplies its palette.
+  These are read-only host presentation sources, independent of title VRAM.
+- `$80F48C` is the shared solo/multiplayer end-of-hole entry, before score
+  screens and progression (including hole eight). Practice redirects to the
+  ordinary title entry `$80F120` on the same main-loop stack. `$83B64B` skips
+  waiting for title Start when the picker owns that backdrop. Choosing another
+  hole uses a reset with the developer selector temporarily disabled.
 - The existing [developer start hooks](dev-start.md#implementation-evidence)
   perform the start. Hooks are registered at initialization so selection can
   happen later. The pinned native configuration interprets these sites; future
@@ -72,9 +97,8 @@ local 65816 tool, not REA analysis.
 restart, held-confirm suppression, save isolation, exit and failed writes with
 a ROM-free C fixture. Set `SNESRECOMP_ROOT` to the patched pinned framework.
 
-The Windows Release build passed. The full Python suite ran 79 tests, passing
-with 14 optional checks skipped. With `KDC_TEST_PRACTICE=1`, the four practice
-tests also passed against the verified ROM:
+The original PR 52 Windows Release build passed. Its Python suite ran 79 tests,
+passing with 14 optional checks skipped. Its practice checks established:
 
 - Controller-scripted starts: normal 8:8 (map 63), extra 8:8 (127), multiplayer
   4:8 (159), and extra multiplayer 4:8 (223), each after 600 settling frames.
@@ -89,6 +113,26 @@ tests also passed against the verified ROM:
   executable. The original title menu, picker and HD practice pause menu were
   visually checked with local SDL-software captures. Captures remain local.
 
+The ability/single-hole extension was checked on Windows on 2026-11-12:
+
+- Release build passed using the pinned guarded framework and generated inputs.
+  The full Python suite ran 82 tests, passing with 18 optional checks skipped.
+- All eleven starting abilities reached the expected player fields and active
+  ability after 600 settling frames. Both player slots receive the selection.
+- The new animated-picker regression failed against the PR 52 executable and
+  passed after the fix: framebuffer/WRAM changed across 90 idle picker frames
+  and the APU clock advanced. A presented SDL-software capture showed the UFO
+  portrait, carousel arrows and five-row picker without overlapping labels.
+- Completion fixtures covered normal 1:1 and 8:8, and extra multiplayer 1:1 and
+  4:8. Each fixture first discovers the live shot task, repeats identical input
+  and verifies matching WRAM, then marks that shot and player completion state
+  (`$DA4A/$D956/$D958`). The original main loop returns to the picker, and A
+  replays the same map with UFO restored. These are transition checks; they
+  do not establish natural hole completion or shot physics equivalence.
+- Restart, choosing another hole, pause/resume, save isolation, native/fallback
+  starts and the pre-change ordinary-boot comparison passed again. The ROM-free
+  fixture also covers both seats' held-confirm suppression and ability wrapping.
+
 Run `python -m unittest discover -s tests -p test_practice.py -v` with
 `SNESRECOMP_ROOT`, `KDC_TEST_PRACTICE=1`, `KDC_PRACTICE_ROM` and
 `KDC_PRACTICE_EXECUTABLE` set to local inputs. Set `KDC_PRACTICE_BASELINE` to a
@@ -100,7 +144,7 @@ existing ordinary-boot reference divergence remains documented in
 [compatibility](compatibility.md); this feature is not evidence of improved
 emulation accuracy. The first previously observed mismatch is host frame 15
 versus reference frame 16; this work did not rerun reference alignment for the
-intentionally different practice flow. Exhaustive hole completion, every multiplayer turn, every
+intentionally different practice flow. Natural/exhaustive hole completion, every multiplayer turn, every
 unlocked/debug menu combination, physical controller hotplug and non-Windows
 hosts are not qualified by these bounded checks.
 

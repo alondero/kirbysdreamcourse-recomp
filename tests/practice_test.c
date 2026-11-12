@@ -15,13 +15,13 @@ static uint8_t ram[0x20000], battery[8192], ordinary_file[8192], practice_file[8
 static char root[96] = "saves";
 static bool write_ok = true;
 static int resets;
-static uint32_t redirect, sites[5];
-static InterpPreOpcodeHook hooks[5];
+static uint32_t redirect, sites[8];
+static InterpPreOpcodeHook hooks[8];
 static unsigned count;
 
 bool interp_bridge_add_pre_opcode_hook(uint32_t pc, InterpPreOpcodeHook hook)
 {
-    CHECK(count < 5); sites[count] = pc; hooks[count++] = hook; return true;
+    CHECK(count < 8); sites[count] = pc; hooks[count++] = hook; return true;
 }
 void interp_bridge_pre_opcode_redirect(uint32_t pc) { redirect = pc; }
 const char *RtlSaveRoot(void) { return root; }
@@ -45,7 +45,7 @@ static void Tap(uint32_t button)
     uint32_t input = 0; KdcPracticeFrame(&input);
     input = button; KdcPracticeFrame(&input);
 }
-static void ChoosePlay(void) { Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A); }
+static void ChoosePlay(void) { for (int i = 0; i < 4; ++i) Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A); }
 static void OpenPause(void) { Tap(SNES_PAD_START); CHECK(KdcPracticeCurrentView()->screen == 2); }
 
 int main(void)
@@ -54,7 +54,7 @@ int main(void)
     memset(battery, 0xa5, sizeof(battery));
     memset(practice_file, 0x33, sizeof(practice_file));
     KdcDevInitialize(); KdcPracticeInitialize();
-    CHECK(count == 5 && KdcPracticeSnapshotsAllowed());
+    CHECK(count == 8 && KdcPracticeSnapshotsAllowed());
     uint32_t ordinary_input = SNES_PAD_A;
     CHECK(KdcPracticeFrame(&ordinary_input));
     KdcPracticeReset();
@@ -78,6 +78,15 @@ int main(void)
     cpu.A = 0; Observe(&cpu, 0x83b74e); CHECK(!redirect);
     cpu.A = 6; Observe(&cpu, 0x83b74e);
     CHECK(redirect == 0x83b720 && !KdcPracticeSnapshotsAllowed());
+    uint32_t menu_input = (SNES_PAD_A << 12);
+    CHECK(KdcPracticeFrame(&menu_input) && menu_input == 0);
+    /* Ability carousel wraps through all eleven entries. */
+    for (int i = 0; i < 3; ++i) Tap(SNES_PAD_DOWN);
+    Tap(SNES_PAD_LEFT); CHECK(KdcPracticeCurrentView()->ability == 10);
+    Tap(SNES_PAD_RIGHT); CHECK(KdcPracticeCurrentView()->ability == 0);
+    for (int i = 0; i < 9; ++i) Tap(SNES_PAD_RIGHT);
+    CHECK(!strcmp(KdcPracticeAbilityName(KdcPracticeCurrentView()->ability), "UFO"));
+    for (int i = 0; i < 3; ++i) Tap(SNES_PAD_UP);
     Tap(SNES_PAD_B); CHECK(KdcPracticeSnapshotsAllowed());
     Observe(&cpu, 0x83b74e);
     write_ok = false; ChoosePlay();
@@ -87,9 +96,13 @@ int main(void)
     CHECK(KdcPracticeCurrentView()->active && !strcmp(root, "saves/practice"));
     CHECK(battery[0] == 0x33 && ordinary_file[0] == 0xa5 && resets == 1);
     CHECK(!KdcPracticeSnapshotsAllowed());
+    Observe(&cpu, 0x80f266);
+    CHECK(ram[0xd852] == 9 && ram[0xd854] == 9 && ram[0xd853] == 0);
+    ram[0xd852] = 0; Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 0);
     /* A held confirm cannot leak into the first playable frame. */
     uint32_t input = SNES_PAD_A; CHECK(KdcPracticeFrame(&input) && input == 0);
     OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A); CHECK(resets == 2);
+    Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 9);
     /* All four known course families use the same developer hook. */
     for (int mode = 0; mode < 4; ++mode) {
         OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A);
@@ -103,6 +116,24 @@ int main(void)
         CHECK(ram[0x6a5a] == (mode >= 2 ? 16 : 0) + (mode & 1) * 8);
         Observe(&cpu, 0x80c168);
     }
+    /* The shared completion entry returns even for hole eight/multiplayer,
+     * without restoring ordinary SRAM or allowing B to resume a finished hole. */
+    Observe(&cpu, 0x80f48c);
+    CHECK(redirect == 0x80f120 && KdcPracticeCurrentView()->screen == 1);
+    CHECK(KdcPracticeCurrentView()->active && !KdcDevEnabled());
+    menu_input = SNES_PAD_A << 12;
+    CHECK(KdcPracticeFrame(&menu_input) && !menu_input);
+    Observe(&cpu, 0x83b64b); CHECK(redirect == 0x83b675);
+    menu_input = SNES_PAD_A | (SNES_PAD_A << 12);
+    CHECK(!KdcPracticeFrame(&menu_input));
+    CHECK(KdcDevEnabled() && KdcPracticeCurrentView()->screen == 0);
+    menu_input = SNES_PAD_A | (SNES_PAD_A << 12);
+    CHECK(KdcPracticeFrame(&menu_input) && !menu_input);
+    Observe(&cpu, 0x80f48c);
+    CHECK(!KdcDevEnabled());
+    RtlReset(1); /* Ctrl+R from the returned picker restores the target too. */
+    CHECK(KdcDevEnabled() && KdcPracticeCurrentView()->screen == 0);
+    Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 9);
     memset(battery, 0x77, sizeof(battery));
     OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN);
     write_ok = false; Tap(SNES_PAD_A);
