@@ -7,12 +7,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'invoke_native.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $root
 try {
-    $target = git rev-parse HEAD
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the source commit.' }
-    if (git status --porcelain) { throw 'Release builds require a clean source checkout.' }
+    $revision = Invoke-NativeCommand -FilePath 'git' -ArgumentList @('rev-parse', 'HEAD') -Quiet
+    if ($revision.ExitCode -ne 0) { throw 'Cannot determine the source commit.' }
+    $target = $revision.Output | Select-Object -Last 1
+    $status = Invoke-NativeCommand -FilePath 'git' -ArgumentList @('status', '--porcelain') -Quiet
+    if ($status.ExitCode -ne 0) { throw 'Cannot inspect the source checkout.' }
+    if (@($status.Output).Count -gt 0) { throw 'Release builds require a clean source checkout.' }
     # Setup is shared with local development: same ROM checks, pins, patches,
     # generation and guarded configuration. Private inputs never enter staging.
     $options = @{ Rom = $Rom; BuildVersion = $Version; ReleaseDefaults = $true }
@@ -30,12 +34,16 @@ try {
             throw "MinGW notice directory missing: $notices/$name"
         }
     }
-    python .agents/skills/release/scripts/release.py stage-windows --target $target --version $Version `
-        --build local/guarded-build --stage local/release-stage --objdump $objdump `
-        --toolchain-notices $notices
-    if ($LASTEXITCODE -ne 0) { throw 'Windows release staging failed.' }
-    python .agents/skills/release/scripts/release.py windows-package --target $target --version $Version --stage local/release-stage
-    if ($LASTEXITCODE -ne 0) { throw 'Windows release packaging failed.' }
+    $stage = Invoke-NativeCommand -FilePath 'python' -ArgumentList @(
+        '.agents/skills/release/scripts/release.py', 'stage-windows',
+        '--target', $target, '--version', $Version,
+        '--build', 'local/guarded-build', '--stage', 'local/release-stage',
+        '--objdump', $objdump, '--toolchain-notices', $notices)
+    if ($stage.ExitCode -ne 0) { throw 'Windows release staging failed.' }
+    $package = Invoke-NativeCommand -FilePath 'python' -ArgumentList @(
+        '.agents/skills/release/scripts/release.py', 'windows-package',
+        '--target', $target, '--version', $Version, '--stage', 'local/release-stage')
+    if ($package.ExitCode -ne 0) { throw 'Windows release packaging failed.' }
 } finally {
     Pop-Location
 }

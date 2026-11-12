@@ -37,7 +37,7 @@ Place your ROM at the project root as `Kirby's Dream Course (USA).sfc`, or pass 
 ./tools/play_experimental.ps1
 ```
 
-To specify a ROM, CMake executable or existing SDL3 source tree:
+Setup finds a native Windows CMake on its own and ignores an MSYS build that shadows it on PATH. To override that choice, or to specify a ROM or an existing SDL3 source tree:
 
 ```powershell
 ./tools/setup.ps1 -Rom 'C:/path/to/your-game.sfc' -CMake 'C:/path/to/cmake.exe' -SdlSource 'C:/path/to/SDL3'

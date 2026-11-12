@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'invoke_native.ps1')
 if ($DevTwoPlayer -and -not $DevHole.StartsWith('map:')) {
     throw '-DevTwoPlayer requires -DevHole map:ID.'
 }
@@ -19,7 +20,10 @@ function Resolve-ProjectPath([string]$path) {
     return (Resolve-Path -LiteralPath $path).Path
 }
 $exePath = Resolve-ProjectPath $Executable
-if ($DevHoleList) { & $exePath --dev-hole-list; exit $LASTEXITCODE }
+if ($DevHoleList) {
+    $list = Invoke-NativeCommand -FilePath $exePath -ArgumentList @('--dev-hole-list')
+    exit $list.ExitCode
+}
 $romPath = Resolve-ProjectPath $Rom
 $expected = '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b'
 if ((Get-FileHash -LiteralPath $romPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
@@ -72,8 +76,8 @@ try {
         if ($NoLauncher -or $Frames -gt 0 -or $DevHole) { $hostArgs += '--no-launcher' }
         if ($DevHole) { $hostArgs += @('--dev-hole', $DevHole) }
         if ($DevTwoPlayer) { $hostArgs += '--dev-two-player' }
-        & $exePath @hostArgs
-        if ($LASTEXITCODE -ne 0) { throw "Experimental host exited with code $LASTEXITCODE." }
+        $host = Invoke-NativeCommand -FilePath $exePath -ArgumentList $hostArgs
+        if ($host.ExitCode -ne 0) { throw "Experimental host exited with code $($host.ExitCode)." }
     } finally {
         Pop-Location
     }

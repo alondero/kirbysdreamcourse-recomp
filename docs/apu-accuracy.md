@@ -38,9 +38,11 @@ SDL source arguments as setup; choose a fresh `-Name`:
 
 ```powershell
 ./tools/prepare_guarded.ps1 -Rom "Kirby's Dream Course (USA).sfc" `
-  -CMake 'C:/path/to/native/cmake.exe' -Name apu-boundary -ApuBoundarySync
+  -Name apu-boundary -ApuBoundarySync
 python tools/check_apu.py --framework local/apu-boundary-framework
 ```
+
+A native Windows CMake is located automatically; add `-CMake 'C:/path/to/native/cmake.exe'` only to override that choice.
 
 The script builds temporary executables using `gcc -std=c11 -O2 -UNDEBUG`
 and `g++ -std=c++17 -O2 -UNDEBUG -D__LIBRETRO__`. It tests both

@@ -48,10 +48,10 @@ recordings are excluded from public commits, caches, artifacts and releases.
 
 ## Build and test
 
-Use a clean checkout. In PowerShell, with native Windows CMake and MinGW GCC:
+Use a clean checkout. In PowerShell, with MinGW GCC. Setup locates a native Windows CMake automatically; pass `-CMake` only to override that choice.
 
 ```powershell
-./tools/build_release.ps1 -Version v0.1.2-experimental -Rom 'C:/private/Kirby.sfc' -CMake 'C:/path/to/native/cmake.exe'
+./tools/build_release.ps1 -Version v0.1.2-experimental -Rom 'C:/private/Kirby.sfc'
 python .agents/skills/release/scripts/release.py smoke-windows --archive local/releases/v0.1.2-experimental/kirbysdreamcourse-recomp-windows-x64.zip --rom 'C:/private/Kirby.sfc'
 ```
 

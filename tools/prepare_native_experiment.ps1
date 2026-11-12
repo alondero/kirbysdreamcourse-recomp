@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory=$true)][string]$Rom,
-    [Parameter(Mandatory=$true)][string]$CMake,
+    [string]$CMake = '',
     [string]$SdlSource = '',
     [ValidatePattern('^[A-Za-z0-9._+-]+$')][string]$BuildVersion = 'dev',
     [switch]$ReleaseDefaults,
@@ -39,6 +39,8 @@ param(
     [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$Name = 'native-experiment'
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'invoke_native.ps1')
+. (Join-Path $PSScriptRoot 'find_native_cmake.ps1')
 if ($RasterState -and -not $CurrentStack) { throw '-RasterState requires -CurrentStack.' }
 if ($FieldTiming -and -not $RasterState) { throw '-FieldTiming requires -RasterState.' }
 if ($RdnmiBeam -and -not $FieldTiming) { throw '-RdnmiBeam requires -FieldTiming.' }
@@ -80,7 +82,8 @@ $expected = '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b'
 if ((Get-FileHash -LiteralPath $romPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
     throw 'ROM SHA-256 mismatch.'
 }
-$cmakePath = (Resolve-Path -LiteralPath $CMake).Path
+# A native CMake is discovered automatically; -CMake only overrides the choice.
+$cmakePath = Find-NativeCMake -CMake $CMake
 & (Join-Path $PSScriptRoot 'assert_native_cmake.ps1') -CMake $cmakePath
 foreach ($path in @($framework, $project, $build)) {
     if (Test-Path -LiteralPath $path) { throw "$path already exists; choose a fresh -Name." }
@@ -153,10 +156,10 @@ $patches += 'snesrecomp-hd-tile-perf.patch'
 $patches += 'snesrecomp-hd-composition.patch'
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
-    git -C $framework apply --check $patch
-    if ($LASTEXITCODE -ne 0) { throw "Patch does not apply: $patchName" }
-    git -C $framework apply $patch
-    if ($LASTEXITCODE -ne 0) { throw "Patch application failed: $patchName" }
+    $check = Invoke-NativeCommand -FilePath 'git' -ArgumentList @('-C', $framework, 'apply', '--check', $patch) -Quiet
+    if ($check.ExitCode -ne 0) { throw "Patch does not apply: $patchName" }
+    $apply = Invoke-NativeCommand -FilePath 'git' -ArgumentList @('-C', $framework, 'apply', $patch)
+    if ($apply.ExitCode -ne 0) { throw "Patch application failed: $patchName" }
 }
 $config = Join-Path $project 'recomp'
 New-Item -ItemType Directory -Path $config | Out-Null
@@ -172,10 +175,11 @@ $oldGate = [Environment]::GetEnvironmentVariable('SNESRECOMP_EMIT_AOT_DENY_GATE'
 try {
     $env:SNESRECOMP_EMIT_SIMPLE_BUS_TIMING = '1'
     $env:SNESRECOMP_EMIT_AOT_DENY_GATE = '1'
-    python (Join-Path $framework 'snesrecomp_cli.py') generate --rom $romPath `
-        --project-root $project --cfg-dir recomp --out-dir generated --funcs-h recomp/funcs.h `
-        --expected-crc32 df8153d9 --expected-sha256 $expected
-    if ($LASTEXITCODE -ne 0) { throw 'Experimental generation failed.' }
+    $generate = Invoke-NativeCommand -FilePath 'python' -ArgumentList @(
+        (Join-Path $framework 'snesrecomp_cli.py'), 'generate', '--rom', $romPath,
+        '--project-root', $project, '--cfg-dir', 'recomp', '--out-dir', 'generated',
+        '--funcs-h', 'recomp/funcs.h', '--expected-crc32', 'df8153d9', '--expected-sha256', $expected)
+    if ($generate.ExitCode -ne 0) { throw 'Experimental generation failed.' }
 } finally {
     [Environment]::SetEnvironmentVariable('SNESRECOMP_EMIT_SIMPLE_BUS_TIMING', $oldSimple)
     [Environment]::SetEnvironmentVariable('SNESRECOMP_EMIT_AOT_DENY_GATE', $oldGate)
@@ -203,8 +207,8 @@ if ($SpcC4Phase) { $cmakeArgs += "-DKDC_EXPERIMENTAL_SPC_C4_STATE=ON" }
 if ($AutoJoyPhase) { $cmakeArgs += "-DKDC_EXPERIMENTAL_AUTOJOY_STATE=ON" }
 if ($SpcD4Phase) { $cmakeArgs += "-DKDC_EXPERIMENTAL_SPC_D4_STATE=ON" }
 if ($ApuBoundarySync) { $cmakeArgs += "-DKDC_EXPERIMENTAL_APU_BOUNDARY_STATE=ON" }
-& $cmakePath @cmakeArgs
-if ($LASTEXITCODE -ne 0) { throw 'Experimental CMake configuration failed.' }
-& $cmakePath --build $build --parallel 8
-if ($LASTEXITCODE -ne 0) { throw 'Experimental build failed.' }
+$configure = Invoke-NativeCommand -FilePath $cmakePath -ArgumentList $cmakeArgs
+if ($configure.ExitCode -ne 0) { throw 'Experimental CMake configuration failed.' }
+$compile = Invoke-NativeCommand -FilePath $cmakePath -ArgumentList @('--build', $build, '--parallel', '8')
+if ($compile.ExitCode -ne 0) { throw 'Experimental build failed.' }
 Write-Host "Built $build/KirbyDreamCourseRecomp.exe. This experimental build requires the documented runtime switches."
