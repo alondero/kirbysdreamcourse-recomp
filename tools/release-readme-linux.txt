@@ -24,6 +24,8 @@ Configure controllers/player two in the launcher. Ctrl+L or Select+L3 opens
 settings during play. Alt+Return toggles fullscreen.
 Choose PRACTICE on the game's title menu to select a course and hole.
 During practice, Start opens resume, restart, hole selection and exit.
+Choose a starting ability in the picker. Its music/background keep running.
+Finishing the selected hole returns to the picker for replay or another hole.
 Practice uses saves/practice; ordinary progress is kept separate.
 Save states and rewind are unavailable during practice.
 

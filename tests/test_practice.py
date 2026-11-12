@@ -48,13 +48,60 @@ class PracticeRuntimeTest(unittest.TestCase):
         return ('wait 500\n' + self.tap('start') + 'wait 120\ndump ordinary\n' +
                 self.tap('down') * 3 + self.tap('a') + 'wait 30\n')
 
-    def select(self, mode=0, last=False):
-        # Mode -> course -> hole -> play, using the same mapped P1 inputs.
+    def select(self, mode=0, last=False, ability=0):
+        # Mode -> course -> hole -> ability -> play, using mapped P1 inputs.
         return (self.tap('right') * mode + self.tap('a') +
                 (self.tap('left') if last else '') + self.tap('a') +
-                (self.tap('left') if last else '') + self.tap('a') + self.tap('a'))
+                (self.tap('left') if last else '') + self.tap('a') +
+                self.tap('right') * ability + self.tap('a') + self.tap('a'))
 
-    def run_case(self, script, bounce='1', executable=None):
+    def test_picker_keeps_running(self):
+        files, _ = self.run_case(self.entry() +
+            'dump picker\nwait 90\ndump animated\n' + self.tap('b') + 'dump back\n', observe=True)
+        for suffix in ('wram.bin', 'fb.bmp'):
+            self.assertNotEqual(hashlib.sha256(files[f'picker.{suffix}']).hexdigest(),
+                                hashlib.sha256(files[f'animated.{suffix}']).hexdigest())
+        self.assertEqual(files['ordinary.sram.bin'], files['back.sram.bin'])
+        clocks = [int(line.split()[1]) for line in files['apu.log'].decode().splitlines()]
+        # The picker starts near tick 730. Its APU must continue advancing.
+        self.assertGreater(clocks[800], clocks[740])
+
+    def test_starting_abilities(self):
+        for ability in range(11):
+            with self.subTest(ability=ability):
+                files, _ = self.run_case(self.entry() + self.select(ability=ability) +
+                                        'wait 600\ndump loaded\n')
+                ram = files['loaded.wram.bin']
+                self.assertEqual(ram[0xd852:0xd856], bytes((ability, 0, ability, 0)))
+                self.assertEqual(ram[0xd9c4:0xd9c6], bytes((ability, 0)))
+
+    def test_completed_hole_returns_to_picker(self):
+        for mode in (0, 3):
+            for last in (False, True):
+                with self.subTest(mode=mode, last=last):
+                    # Discover this hole's allocated shot task, then replay
+                    # identical input and mark that shot/hole finished. This
+                    # exercises the original main-loop completion branch.
+                    shot = (self.entry() + self.select(mode, last=last, ability=9) +
+                            'wait 600\n' + self.tap('a') + 'dump shot\n')
+                    before, _ = self.run_case(shot)
+                    slot = int.from_bytes(before['shot.wram.bin'][0x6b48:0x6b4a], 'little')
+                    self.assertLess(slot, 128)
+                    self.assertEqual(slot % 2, 0)
+                    script = shot + ('poke da4a 0100\npoke d956 01000100\n'
+                                     f'poke {0x531c + slot:x} 0100\n'
+                                     'wait 300\ndump completed\nwait 90\ndump picker\n')
+                    script += self.tap('a') + 'wait 600\ndump replayed\n'
+                    files, log = self.run_case(script)
+                    self.assertEqual(before['shot.wram.bin'], files['shot.wram.bin'])
+                    self.assertIn('Practice: hole finished, returned to picker', log)
+                    self.assertNotEqual(files['completed.wram.bin'], files['picker.wram.bin'])
+                    map_id = (223 if last else 192) if mode else (63 if last else 0)
+                    self.check_map(files, 'replayed', map_id, mode >= 2)
+                    self.assertEqual(files['replayed.wram.bin'][0xd852], 9)
+                    self.assertEqual(files['ordinary.sram.bin'], files['saves/save.srm'])
+
+    def run_case(self, script, bounce='1', executable=None, observe=False):
         with tempfile.TemporaryDirectory(prefix='practice-', dir=self.root / 'local') as directory:
             case = Path(directory)
             host = case / self.executable.name
@@ -74,13 +121,15 @@ class PracticeRuntimeTest(unittest.TestCase):
                        SNESRECOMP_RUN_FRAMES='5000', SNESRECOMP_APU_BEAM_ELAPSED='1',
                        SNESRECOMP_APU_HANDOFF='1', SNESRECOMP_APU_ABSOLUTE_PREANCHOR='1',
                        SNESRECOMP_LLE_BOUNCE=bounce, SNESRECOMP_DUMP_DIR=str(case))
+            if observe:
+                env['KDC_APU_STATE_LOG'] = str(case / 'apu.log')
             result = subprocess.run([str(host), '--no-launcher', '--rom', str(self.rom),
                                      '--script', str(case / 'input.script')],
                                     env=env, capture_output=True, text=True, errors='replace', timeout=150)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('script quit', result.stderr)
             files = {str(p.relative_to(case)).replace('\\', '/'): p.read_bytes()
-                     for p in case.rglob('*') if p.is_file() and p.suffix in ('.bin', '.srm')}
+                     for p in case.rglob('*') if p.is_file() and p.suffix in ('.bin', '.srm', '.bmp', '.log')}
             return files, result.stderr
 
     def check_map(self, files, tag, map_id, players):

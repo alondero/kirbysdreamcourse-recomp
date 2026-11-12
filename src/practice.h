@@ -6,10 +6,12 @@
 struct Ppu;
 typedef struct {
     int screen; /* 0: game, 1: hole picker, 2: practice pause */
-    int row, mode, course, hole;
-    bool active, title;
+    int row, mode, course, hole, ability;
+    bool active, title, title_background;
     const char *error;
 } KdcPracticeView;
+enum { KDC_PRACTICE_ABILITIES = 11 };
+const char *KdcPracticeAbilityName(unsigned ability);
 const KdcPracticeView *KdcPracticeCurrentView(void);
 void KdcPracticeInitialize(void);
 bool KdcPracticeFrame(uint32_t *inputs);

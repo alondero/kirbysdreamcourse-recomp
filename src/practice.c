@@ -16,7 +16,17 @@ static unsigned repeat;
 static uint8_t *ordinary_sram;
 static int ordinary_size;
 static char ordinary_root[96];
+static bool ability_pending, picker_reset;
 static const char *const modes[] = {"normal", "extra", "multi", "multi-extra"};
+
+const char *KdcPracticeAbilityName(unsigned ability)
+{
+    static const char *const names[KDC_PRACTICE_ABILITIES] = {
+        "NONE", "STONE", "PARASOL", "FIREBALL", "SPARK", "WHEEL",
+        "TORNADO", "FREEZE", "NEEDLE", "UFO", "HI-JUMP"
+    };
+    return ability < KDC_PRACTICE_ABILITIES ? names[ability] : "NONE";
+}
 
 const KdcPracticeView *KdcPracticeCurrentView(void) { return &view; }
 bool KdcPracticeVisible(void) { return view.screen || view.active; }
@@ -31,6 +41,32 @@ static void Observe(CpuState *cpu, uint32_t pc)
 {
     uint8_t *ram = cpu->ram;
     switch (pc & 0x7fffff) {
+    case 0x00f266:
+        /* The loader has cleared abilities; seed both players before C342
+         * creates their objects and the conditions portraits. */
+        if (ability_pending) {
+            ram[0xd852] = ram[0xd854] = (uint8_t)view.ability;
+            ram[0xd853] = ram[0xd855] = 0;
+            ability_pending = false;
+        }
+        break;
+    case 0x00f48c:
+        /* Both modes finish here, before score screens and hole progression.
+         * F120 is the ordinary title entry on this same main-loop stack. */
+        if (!view.active || view.title_background) return;
+        view.screen = 1;
+        view.row = 4;
+        view.title_background = true;
+        view.error = NULL;
+        swallowed |= previous;
+        KdcDevSelect(NULL);
+        interp_bridge_pre_opcode_redirect(0x80f120);
+        fputs("Practice: hole finished, returned to picker\n", stderr);
+        break;
+    case 0x03b64b:
+        /* Returning from a hole needs no second press of title-screen Start. */
+        if (view.title_background) interp_bridge_pre_opcode_redirect(0x83b675);
+        break;
     case 0x03bbd8:
         /* BB4A's caller is BB44, whose caller is the root menu at B742.
          * Do not extend the shared routine's course/sound/demo submenus. */
@@ -61,10 +97,11 @@ static void Observe(CpuState *cpu, uint32_t pc)
         view.title = false;
         if (cpu->A != 6) return;
         view.screen = 1;
+        view.title_background = true;
         view.row = 0;
         view.error = NULL;
-        /* Rebuild the root menu on its original stack, then freeze at the
-         * next frame boundary. Back resumes that exact menu. */
+        /* Rebuild the root menu on its original stack. Run it without guest
+         * input underneath the picker, preserving animation and music. */
         interp_bridge_pre_opcode_redirect(0x83b720);
         break;
     }
@@ -73,7 +110,10 @@ static void Observe(CpuState *cpu, uint32_t pc)
 void KdcPracticeInitialize(void)
 {
     if (!interp_bridge_add_pre_opcode_hook(0x83bbd8, Observe) ||
-        !interp_bridge_add_pre_opcode_hook(0x83b74e, Observe)) {
+        !interp_bridge_add_pre_opcode_hook(0x83b74e, Observe) ||
+        !interp_bridge_add_pre_opcode_hook(0x80f266, Observe) ||
+        !interp_bridge_add_pre_opcode_hook(0x80f48c, Observe) ||
+        !interp_bridge_add_pre_opcode_hook(0x83b64b, Observe)) {
         fputs("Unable to register practice menu\n", stderr);
         abort();
     }
@@ -84,7 +124,17 @@ void KdcPracticeReset(void)
     if (view.active || view.screen) swallowed |= previous;
     view.screen = 0;
     view.title = false;
+    view.title_background = false;
     view.error = NULL;
+    /* Ctrl+R also replays the selected hole while viewing the returned picker. */
+    if (view.active && !picker_reset && !KdcDevEnabled()) {
+        char selector[40];
+        snprintf(selector, sizeof(selector), "%s:%d:%d", modes[view.mode],
+                 view.course + 1, view.hole + 1);
+        KdcDevSelect(selector);
+        KdcDevReset();
+    }
+    ability_pending = view.active && KdcDevEnabled();
 }
 
 void KdcPracticeStateLoaded(void) { KdcPracticeReset(); }
@@ -149,7 +199,7 @@ static void ExitPractice(void)
 
 bool KdcPracticeFrame(uint32_t *inputs)
 {
-    uint32_t held = *inputs & 0xfff, pressed = held & ~previous;
+    uint32_t held = *inputs & 0xffffff, pressed = held & ~previous;
     previous = held;
     swallowed &= held;
     *inputs &= ~swallowed;
@@ -162,17 +212,22 @@ bool KdcPracticeFrame(uint32_t *inputs)
         return false;
     }
     swallowed |= held;
+    /* Both controller seats belong to the overlay while the title runs. */
+    *inputs = 0;
     uint32_t directions = held & (SNES_PAD_UP | SNES_PAD_DOWN | SNES_PAD_LEFT | SNES_PAD_RIGHT);
     if (!directions || (pressed & directions)) repeat = 0;
     else if (++repeat >= 20 && (repeat - 20) % 6 == 0) pressed |= directions;
     if (pressed & SNES_PAD_B) {
-        view.screen = view.screen == 1 && view.active ? 2 : 0;
+        if (view.screen == 1 && view.active) { ExitPractice(); return false; }
+        view.screen = 0;
+        view.title_background = false;
         view.row = 0;
         view.error = NULL;
-        return false;
+        return true;
     }
-    if (pressed & SNES_PAD_UP) view.row = (view.row + 3) % 4;
-    if (pressed & SNES_PAD_DOWN) view.row = (view.row + 1) % 4;
+    int rows = view.screen == 1 ? 5 : 4;
+    if (pressed & SNES_PAD_UP) view.row = (view.row + rows - 1) % rows;
+    if (pressed & SNES_PAD_DOWN) view.row = (view.row + 1) % rows;
     if (view.screen == 1) {
         int direction = !!(pressed & SNES_PAD_RIGHT) - !!(pressed & SNES_PAD_LEFT);
         if (direction) {
@@ -184,18 +239,28 @@ bool KdcPracticeFrame(uint32_t *inputs)
                 int count = view.mode >= 2 ? 4 : 8;
                 view.course = (view.course + direction + count) % count;
             } else if (view.row == 2) view.hole = (view.hole + direction + 8) % 8;
+            else if (view.row == 3) view.ability =
+                (view.ability + direction + KDC_PRACTICE_ABILITIES) % KDC_PRACTICE_ABILITIES;
         }
         if (pressed & (SNES_PAD_A | SNES_PAD_START)) {
-            if (view.row == 3) StartHole();
+            if (view.row == 4) { StartHole(); return false; }
             else ++view.row;
         }
     } else if (pressed & (SNES_PAD_A | SNES_PAD_START)) {
         switch (view.row) {
         case 0: view.screen = 0; break;
         case 1: RtlReset(1); KdcPracticeReset(); break;
-        case 2: view.screen = 1; view.row = 0; break;
+        case 2:
+            KdcDevSelect(NULL);
+            picker_reset = true;
+            RtlReset(1);
+            picker_reset = false;
+            view.screen = 1;
+            view.title_background = true;
+            view.row = 0;
+            break;
         case 3: ExitPractice(); break;
         }
     }
-    return false;
+    return view.title_background;
 }
