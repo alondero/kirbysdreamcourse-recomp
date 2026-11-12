@@ -30,6 +30,24 @@ const char *KdcPracticeAbilityName(unsigned ability)
     return ability < KDC_PRACTICE_ABILITIES ? names[ability] : "NONE";
 }
 
+unsigned KdcPracticeGuestGlyph(char c)
+{
+    /* The title-menu font sheet the picker decodes at runtime (BG3,
+     * character base 5, VRAM word 0x5000) is not ASCII-ordered. Reading
+     * it out of the live title VRAM gives: digits at 16..25, space at 31,
+     * the hyphen at 29, the question mark at 13 and letters at 33..58.
+     * ASCII-32 happens to match the digits and the letters, but it points
+     * at the question mark for the hyphen and at a solid block for '>', so
+     * the sheet is addressed by its own indices. The sheet carries no '<'
+     * or '>' glyph at all; the picker draws those arrows itself. */
+    if (c == ' ') return 31u;
+    if (c >= '0' && c <= '9') return (unsigned)(c - '0') + 16u;
+    if (c >= 'A' && c <= 'Z') return (unsigned)(c - 'A') + 33u;
+    if (c == '-') return 29u;
+    if (c == '?') return 13u;
+    return KDC_PRACTICE_NO_GLYPH;
+}
+
 const KdcPracticeView *KdcPracticeCurrentView(void) { return &view; }
 bool KdcPracticeVisible(void) { return view.screen || view.active; }
 bool KdcPracticeSnapshotsAllowed(void) { return !view.screen && !view.active; }

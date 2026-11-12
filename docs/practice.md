@@ -54,6 +54,17 @@ generated game source or recording is distributed. The picker decodes the font
 already loaded into title-menu BG3 VRAM at runtime. Ability portraits are decoded
 from the user's ROM at runtime; no extracted artwork is shipped.
 
+That font sheet is not ASCII-ordered. Reading it out of the live title VRAM
+(BG3, character base 5, VRAM word `0x5000`) gives digits at 16..25, the
+hyphen at 29, the space at 31 and letters at 33..58. ASCII-32 happens to
+agree with the digits and the letters, but it points at the question mark
+for the hyphen and at a solid block for `>`, so the overlay addresses the
+sheet by its own indices (`KdcPracticeGuestGlyph`). The sheet carries no `<`
+or `>` glyph, so the ability carousel draws those two arrows as small
+triangles instead. Before this correction the ability row read `HI?JUMP`,
+with a cross for the left arrow and a white block where the right-hand
+arrow belonged.
+
 Local 65816 disassembly identifies these game-specific sites:
 
 - `$83BBD8` finishes constructing a menu, before the tilemap upload. Stack
@@ -161,6 +172,26 @@ correcting the table. A fresh Windows Release build and the 82-test standard
 suite passed (18 optional skips). All seven practice checks then passed with
 the real ROM, including every starting ability, UFO completion/replay, and
 ordinary-boot WRAM/SRAM equality against the PR 53 executable.
+
+The font-sheet follow-up was checked on Windows on 2026-11-12 with a fresh
+Release build of the same pinned framework:
+
+- The guest's title-menu font sheet was decoded out of the live title VRAM.
+  Its own indices are digits 16..25, hyphen 29, space 31 and letters 33..58,
+  which is why the ability row read `HI?JUMP` and drew a cross and a solid
+  block for the carousel arrows.
+- Headless SDL-software captures of the presented frame (the host's own
+  screenshot path, not the bare guest field) show `HI?JUMP` with the cross and
+  the block before the change, and `HI-JUMP` with two triangular arrows after
+  it. Other labels, the course and hole digits and the `FIREBALL` entry were
+  captured too and are unchanged.
+- The ROM-free fixture now pins the sheet's indices for space, hyphen,
+  question mark, digits and letters, and that `<` and `>` have no glyph.
+- The standard suite passed (88 tests) and all six real-ROM practice checks
+  passed with the new executable: every starting ability, the completion and
+  replay transition for all four mode families, restart, hole change, exit,
+  save isolation and the animated picker. The ordinary-boot comparison stayed
+  skipped because no pre-change executable was supplied.
 
 Run `python -m unittest discover -s tests -p test_practice.py -v` with
 `SNESRECOMP_ROOT`, `KDC_TEST_PRACTICE=1`, `KDC_PRACTICE_ROM` and

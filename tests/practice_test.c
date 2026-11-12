@@ -100,6 +100,21 @@ int main(void)
         if (i + 1 < KDC_PRACTICE_ABILITIES) Tap(SNES_PAD_RIGHT);
     }
     CHECK(!strcmp(KdcPracticeAbilityName(KdcPracticeCurrentView()->ability), "UFO"));
+    /* The title-menu font sheet is not ASCII-ordered: it carries the
+     * hyphen at 29, the space at 31, digits at 16..25 and letters at
+     * 33..58. ASCII-32 would draw the question mark for the hyphen and
+     * a solid block for '>', which is how the ability row read
+     * "HI?JUMP". */
+    CHECK(KdcPracticeGuestGlyph(' ') == 31);
+    CHECK(KdcPracticeGuestGlyph('-') == 29);
+    CHECK(KdcPracticeGuestGlyph('?') == 13);
+    CHECK(KdcPracticeGuestGlyph('0') == 16);
+    CHECK(KdcPracticeGuestGlyph('9') == 25);
+    CHECK(KdcPracticeGuestGlyph('A') == 33);
+    CHECK(KdcPracticeGuestGlyph('Z') == 58);
+    /* The sheet has no '<' or '>' glyph; the picker draws those. */
+    CHECK(KdcPracticeGuestGlyph('<') == KDC_PRACTICE_NO_GLYPH);
+    CHECK(KdcPracticeGuestGlyph('>') == KDC_PRACTICE_NO_GLYPH);
     for (int i = 0; i < 3; ++i) Tap(SNES_PAD_UP);
     Tap(SNES_PAD_B); CHECK(KdcPracticeSnapshotsAllowed());
     Observe(&cpu, 0x83b74e);
