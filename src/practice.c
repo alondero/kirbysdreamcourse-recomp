@@ -21,9 +21,11 @@ static const char *const modes[] = {"normal", "extra", "multi", "multi-extra"};
 
 const char *KdcPracticeAbilityName(unsigned ability)
 {
+    /* Guest ability IDs, shared by D852/D854 and the conditions portraits
+     * at 849E07. Keep labels in this order rather than a separate UI order. */
     static const char *const names[KDC_PRACTICE_ABILITIES] = {
-        "NONE", "STONE", "PARASOL", "FIREBALL", "SPARK", "WHEEL",
-        "TORNADO", "FREEZE", "NEEDLE", "UFO", "HI-JUMP"
+        "NONE", "STONE", "PARASOL", "FIREBALL", "NEEDLE", "TORNADO",
+        "WHEEL", "SPARK", "HI-JUMP", "FREEZE", "UFO"
     };
     return ability < KDC_PRACTICE_ABILITIES ? names[ability] : "NONE";
 }

@@ -84,7 +84,21 @@ int main(void)
     for (int i = 0; i < 3; ++i) Tap(SNES_PAD_DOWN);
     Tap(SNES_PAD_LEFT); CHECK(KdcPracticeCurrentView()->ability == 10);
     Tap(SNES_PAD_RIGHT); CHECK(KdcPracticeCurrentView()->ability == 0);
-    for (int i = 0; i < 9; ++i) Tap(SNES_PAD_RIGHT);
+    /* Verified USA conditions portraits, in guest ability-ID order. */
+    static const char *const names[] = {
+        "NONE", "STONE", "PARASOL", "FIREBALL", "NEEDLE", "TORNADO",
+        "WHEEL", "SPARK", "HI-JUMP", "FREEZE", "UFO"
+    };
+    CHECK(sizeof(names) / sizeof(names[0]) == KDC_PRACTICE_ABILITIES);
+    for (unsigned i = 0; i < KDC_PRACTICE_ABILITIES; ++i) {
+        CHECK(KdcPracticeCurrentView()->ability == (int)i);
+        const char *actual = KdcPracticeAbilityName(KdcPracticeCurrentView()->ability);
+        if (strcmp(actual, names[i])) {
+            fprintf(stderr, "Ability %u: expected %s, got %s\n", i, names[i], actual);
+            return 1;
+        }
+        if (i + 1 < KDC_PRACTICE_ABILITIES) Tap(SNES_PAD_RIGHT);
+    }
     CHECK(!strcmp(KdcPracticeAbilityName(KdcPracticeCurrentView()->ability), "UFO"));
     for (int i = 0; i < 3; ++i) Tap(SNES_PAD_UP);
     Tap(SNES_PAD_B); CHECK(KdcPracticeSnapshotsAllowed());
@@ -97,12 +111,12 @@ int main(void)
     CHECK(battery[0] == 0x33 && ordinary_file[0] == 0xa5 && resets == 1);
     CHECK(!KdcPracticeSnapshotsAllowed());
     Observe(&cpu, 0x80f266);
-    CHECK(ram[0xd852] == 9 && ram[0xd854] == 9 && ram[0xd853] == 0);
+    CHECK(ram[0xd852] == 10 && ram[0xd854] == 10 && ram[0xd853] == 0);
     ram[0xd852] = 0; Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 0);
     /* A held confirm cannot leak into the first playable frame. */
     uint32_t input = SNES_PAD_A; CHECK(KdcPracticeFrame(&input) && input == 0);
     OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A); CHECK(resets == 2);
-    Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 9);
+    Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 10);
     /* All four known course families use the same developer hook. */
     for (int mode = 0; mode < 4; ++mode) {
         OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A);
@@ -133,7 +147,7 @@ int main(void)
     CHECK(!KdcDevEnabled());
     RtlReset(1); /* Ctrl+R from the returned picker restores the target too. */
     CHECK(KdcDevEnabled() && KdcPracticeCurrentView()->screen == 0);
-    Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 9);
+    Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 10);
     memset(battery, 0x77, sizeof(battery));
     OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_DOWN);
     write_ok = false; Tap(SNES_PAD_A);
