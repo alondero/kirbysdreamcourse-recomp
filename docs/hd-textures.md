@@ -442,6 +442,88 @@ view itself now takes about 3.6 ms (1.5 ms preparation, 2.1 ms drawing) per
 present on average. The `still` and `shot` scenarios, which do not use this
 renderer, produce byte-identical images at unchanged speed.
 
+### Reusing scenery animation, 2026-11-13
+
+The orbit/high-refresh renderer was enlarging a backdrop again whenever its
+characters changed, even when it returned to an animation frame seen two
+updates earlier. On hole 1-1, the twinkling stars repeatedly invalidated most
+of the scenery image. Smaller dirty rectangles cannot eliminate this repeated
+work, because the scaler's neighbourhood extends across character boundaries.
+
+`KdcSceneryUpdate` now retains four enlarged animation frames. A hit requires
+an exact match of the entire decoded 256x256 source and the settled luma used
+for edge decisions. The image contains indices, so live palette animation
+continues without rebuilding it. Cache misses retain partial enlargement:
+when replacing a different slot, the last displayed image seeds its unchanged
+area. The bounded cache uses at most 4 MiB of HD indices and about 256 KiB of
+keys (roughly 3.25 MiB more than before), and is freed on reset or HD disable.
+The normal 4x backdrop sampler also walks consecutive texels directly instead
+of dividing and taking a remainder for every output pixel. Other scales keep
+the existing sampler.
+
+A ROM-free two-phase animation replay on one thread fell from 5.778 to
+0.068 ms per update after warmup. This is the cost of updating the scenery,
+not a whole-game frame-rate claim. The regression fixture asserts zero further
+enlargements after both phases have been seen, and checks exact pixels against
+fresh enlargement through cache eviction, map/flip changes, palette animation,
+settled palette changes and HD toggling. The orbit fixtures also check guest
+state preservation and rendering at native and HD dimensions.
+
+`KDC_ORBIT_PROFILE=1` now includes `scenery_enlargements` and
+`scenery_cache_hits`. The deterministic benchmark accepts `--threads`, `--hole`
+and `--max-compose-ms`, so composition can be budgeted independently of PPU
+raster time. Example (all captures remain under ignored `local/`):
+
+```powershell
+python tools/benchmark_hd.py --executable local/hd-build/KirbyDreamCourseRecomp.exe --baseline local/hd-baseline/KirbyDreamCourseRecomp.exe --scenario orbit --repeat 2
+```
+
+Windows Release, Ryzen 9 3900X, SDL dummy/software display, widescreen,
+unpaced, default twelve rendering threads; two runs against a baseline built
+from the same revision (`d756846`) and the same pinned framework/dependencies:
+
+| HD orbit | Before | After |
+| --- | --- | --- |
+| Composition mean, averaged across runs | 3.802 ms | 2.802 ms |
+| Whole-run throughput, averaged across runs | 77.8 fps | 84.7 fps |
+| Composition peak, run 1 / run 2 | 13.2 / 17.0 ms | 14.8 / 12.6 ms |
+
+Composition fell about 26%; whole-run throughput increased about 9%. The
+peaks remain at first orbit entry (frame 501), so this is not a cold-start
+improvement. Every HD-on and HD-off frame-800 capture matched the baseline
+byte-for-byte. Timing varies with host load; these are bounded replay results,
+not a guarantee of full speed across courses or hardware.
+
+With `--threads 1`, the same orbit replay fell from 19.740 to 12.507 ms of
+HD composition (37% less), and rose from 43.1 to 53.5 fps. HD-off remained
+110.5 fps. The images still matched exactly. This isolates rendering worker
+count on the same CPU; it is not a substitute for testing a slower machine,
+and the result still falls short of full game speed with just one worker.
+
+Normal PPU-only views were unchanged within timing variation: HD still
+85.0 to 86.6 fps, HD shot 78.7 to 79.2 fps. Their frame-340/frame-800 captures,
+respectively, matched exactly with both HD settings. Windows Release builds
+and six targeted tests passed (`test_course_terrain`, `test_course_orbit_render`,
+`test_hd_image`, `test_hd_tiles`; the orbit module runs three fixtures).
+
+The remaining improvement routes are distinct:
+
+- Normal-view PPU tile recording and subpixel composition are unchanged by
+  this work: still/shot HD raster costs about 5.3–5.6 ms versus about 1.2 ms
+  with HD off in these runs. Moving that composition to a GPU would require
+  preserving the existing per-pixel priority, window and colour-math exactness
+  checks.
+- Orbit terrain rasterization and the 4x surface transfer still run on the
+  CPU. GPU rasterization could remove substantially more per-pixel work, but
+  requires a separate renderer and differential image validation.
+- First-time scenery/terrain enlargement still costs time. This cache removes
+  recurring animation work; it does not remove cold course-entry spikes or
+  guarantee that every backdrop's animation fits in four entries.
+
+No reference-emulator comparison is claimed for enhanced subpixels. Baseline
+image comparisons and synthetic guest-state preservation checks validate this
+presentation-only change; Linux and slower physical machines remain untested.
+
 ## Known limits
 
 - Each character is scaled on its own, so the scaler cannot see across
@@ -462,8 +544,8 @@ renderer, produce byte-identical images at unchanged speed.
 - A terrain character that animates regenerates the enlargement around every
   place it is used: about 2 to 9 ms on the measured courses, on the frame it
   changes. Palette animation does not.
-- The HD path costs about 4 ms of CPU per frame on the development PC. It has
-  not been measured on slower machines or Linux.
+- HD CPU cost depends on the renderer and animation state; measured scenarios
+  are recorded above. It has not been measured on slower machines or Linux.
 - The per-cell memo trusts a cell for the rest of the frame unless VRAM is
   written through counted paths, CGRAM changes, or the frame advances. A
   widescreen tile provider whose answer changes mid-frame without such a

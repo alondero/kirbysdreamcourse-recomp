@@ -48,6 +48,14 @@ static uint32_t Color(unsigned rgb15)
            ((g << 3 | g >> 2) << 8) | (b << 3 | b >> 2);
 }
 
+enum { kSceneryFrames = 4 };
+typedef struct SceneryFrame {
+    uint8_t native[256 * 256];
+    float luma[32];
+    uint8_t *hd;
+    bool valid;
+} SceneryFrame;
+
 static struct {
     KdcScenery view;
     uint8_t native[256 * 256];
@@ -58,12 +66,26 @@ static struct {
     float luma[256];   /* the luma the enlargement was made with */
     float seen[32];    /* the luma of the previous update */
     uint8_t steady;    /* updates the luma has held still (kSettle) */
+    SceneryFrame frames[kSceneryFrames];
+    unsigned next_frame;
 } scenery;
+
+static void FreeSceneryFrames(void)
+{
+    for (unsigned i = 0; i < kSceneryFrames; ++i) {
+        free(scenery.frames[i].hd);
+        scenery.frames[i].hd = NULL;
+        scenery.frames[i].valid = false;
+    }
+    scenery.next_frame = 0;
+    scenery.hd = NULL;
+    scenery.view.hd = NULL;
+    scenery.hd_valid = false;
+}
 
 void KdcTerrainReset(void)
 {
-    free(scenery.hd);
-    scenery.hd = NULL;
+    FreeSceneryFrames();
     scenery.valid = scenery.hd_valid = false;
     free(state.native);
     free(state.mask);
@@ -370,9 +392,7 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         memcmp(scenery.luma, luma, sizeof(luma)) != 0;
     scenery.view.native = scenery.native;
     if (!hd && scenery.hd_valid) {
-        free(scenery.hd);
-        scenery.hd = NULL;
-        scenery.hd_valid = false;
+        FreeSceneryFrames();
     }
     scenery.view.hd = scenery.hd;
     /* Only cells whose map word or character changed are redrawn: the HUD
@@ -409,8 +429,33 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     ++state.stats.scenery_builds;
     if (luma_changed || !scenery.hd_valid) memcpy(scenery.luma, luma, sizeof(luma));
     if (!hd) return &scenery.view;
-    if (!scenery.hd) scenery.hd = malloc(1024 * 1024);
-    if (!scenery.hd) return &scenery.view; /* drawn from the source image */
+    /* Backdrops often loop through a few animation frames. Compare the
+     * complete decoded image and the effective (settled) luma, not VRAM
+     * addresses or a hash alone. Live colours are still applied by the draw.
+     * Retaining four index images costs at most 4 MiB plus their keys. */
+    for (unsigned i = 0; i < kSceneryFrames; ++i) {
+        const SceneryFrame *frame = &scenery.frames[i];
+        if (frame->valid && !memcmp(frame->luma, scenery.luma, sizeof(frame->luma)) &&
+            !memcmp(frame->native, scenery.native, sizeof(frame->native))) {
+            scenery.view.hd = scenery.hd = frame->hd;
+            scenery.hd_valid = true;
+            ++state.stats.scenery_cache_hits;
+            return &scenery.view;
+        }
+    }
+    SceneryFrame *frame = &scenery.frames[scenery.next_frame];
+    if (!frame->hd) frame->hd = malloc(1024 * 1024);
+    if (!frame->hd) {
+        /* Allocation failure must never expose the previous frame's art. */
+        FreeSceneryFrames();
+        return &scenery.view;
+    }
+    /* Partial updates are relative to the image shown last, which may be a
+     * different cache entry. Seed the replacement before changing its area. */
+    if (!enlarge_all && frame->hd != scenery.hd)
+        memcpy(frame->hd, scenery.hd, 1024 * 1024);
+    frame->valid = false;
+    scenery.hd = frame->hd;
     SceneryJob job = {
         .image = {.src = scenery.native, .width = 256, .height = 256, .src_stride = 256,
                   .dst = scenery.hd, .dst_stride = 1024, .luma = scenery.luma},
@@ -428,7 +473,12 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         if (job.y1 > 256) job.y1 = 256;
     }
     const unsigned rows = (unsigned)((job.y1 - job.y0 + kSceneryTileHeight - 1) / kSceneryTileHeight);
+    ++state.stats.scenery_enlargements;
     KdcParallelFor(rows * SceneryColumns(&job), EnlargeScenery, &job);
+    memcpy(frame->native, scenery.native, sizeof(frame->native));
+    memcpy(frame->luma, scenery.luma, sizeof(frame->luma));
+    frame->valid = true;
+    scenery.next_frame = (scenery.next_frame + 1) % kSceneryFrames;
     scenery.hd_valid = true;
     scenery.view.hd = scenery.hd;
     return &scenery.view;

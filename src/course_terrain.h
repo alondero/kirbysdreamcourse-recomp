@@ -46,7 +46,8 @@ typedef struct KdcScenery {
     uint32_t colors[32];   /* 0xffRRGGBB */
 } KdcScenery;
 
-/* Rebuilt only when the map, its characters or its palette's luma change. */
+/* Changed scenery reuses one of four exact source/luma matches when possible;
+ * otherwise only the affected area is enlarged. Colours remain live. */
 const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bool hd);
 
 /* Releases the images; the next update rebuilds everything. */
@@ -58,6 +59,8 @@ typedef struct KdcTerrainStats {
     uint64_t composed_tiles; /* characters decoded into the source image */
     uint64_t scaled_tiles;   /* characters whose enlargement was regenerated */
     uint64_t scenery_builds; /* scenery images redrawn (native or enlarged) */
+    uint64_t scenery_enlargements; /* actual HD regeneration, excluding reuse */
+    uint64_t scenery_cache_hits;   /* previously enlarged animation frames */
 } KdcTerrainStats;
 void KdcTerrainGetStats(KdcTerrainStats *stats);
 

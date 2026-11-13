@@ -31,6 +31,9 @@ def main():
     parser.add_argument('--scenario', choices=SCENARIOS, default='still')
     parser.add_argument('--repeat', type=int, default=3)
     parser.add_argument('--max-raster-ms', type=float, help='Fail if any HD raster mean exceeds this budget')
+    parser.add_argument('--max-compose-ms', type=float, help='Fail if HD composition mean exceeds this budget')
+    parser.add_argument('--threads', type=int, choices=range(1, 17), help='Fix the rendering worker count')
+    parser.add_argument('--hole', default='normal:1:1', help='Developer course start, e.g. normal:8:8')
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error('--repeat must be positive')
@@ -67,7 +70,9 @@ def main():
                 env.update(SDL_AUDIODRIVER='dummy', KDC_HD=str(hd),
                            SNESRECOMP_SCREENSHOT=str(case / 'frame.ppm'),
                            SNESRECOMP_SCREENSHOT_FRAME=str(scenario['screenshot']))
-                command = [str(host), '--no-launcher', '--rom', str(rom), '--dev-hole', 'normal:1:1']
+                if args.threads is not None:
+                    env['KDC_THREADS'] = str(args.threads)
+                command = [str(host), '--no-launcher', '--rom', str(rom), '--dev-hole', args.hole]
                 if scenario['script']:
                     (case / 'shot.script').write_text(scenario['script'])
                     command += ['--script', str(case / 'shot.script')]
@@ -101,6 +106,7 @@ def main():
                     raise AssertionError(f'{case}: missing host profile')
                 captures[name, hd] = hashlib.sha256((case / 'frame.ppm').read_bytes()).hexdigest()
                 result = dict(repeat=repeat, build=name, hd=hd, scenario=args.scenario,
+                              hole=args.hole, threads=args.threads,
                               fps=float(fps[1]), mean_ms=stages, max_ms=maxima,
                               screenshot_sha256=captures[name, hd])
                 results.append(result)
@@ -111,6 +117,8 @@ def main():
                       f'fps={float(fps[1]):.1f}', flush=True)
                 if name == 'candidate' and hd and args.max_raster_ms is not None:
                     assert stages['raster-capture'] <= args.max_raster_ms, 'HD raster budget exceeded'
+                if name == 'candidate' and hd and args.max_compose_ms is not None:
+                    assert stages['compose'] <= args.max_compose_ms, 'HD composition budget exceeded'
         if args.baseline:
             for hd in (0, 1):
                 assert captures['baseline', hd] == captures['candidate', hd], f'HD={hd}: image changed'
