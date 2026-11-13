@@ -110,7 +110,7 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
     const uint32_t white = 0xffffffff, yellow = 0xffffe890, pink = 0xffffb8de;
     if (!v->screen) {
         /* CPU matches are labelled in the game's own player 2 name box. */
-        int y = g_snes && KdcHudOverlayPixel(g_snes->ppu, 128, 12) ? 38 : 3;
+        int y = g_snes && KdcHudTopStripActive(g_snes->ppu) ? kKdcHudMultiTopY1 + 2 : 3;
         Box(&c, 84, y, 88, 12, 0xff30206a);
         Center(&c, y + 2, "PRACTICE", yellow);
         return;

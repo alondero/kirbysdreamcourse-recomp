@@ -94,6 +94,9 @@ static bool HdLinePolicy(const Ppu *ppu, unsigned line, int first_x, unsigned co
 {
     (void)context;
     if (!course_active) return false;
+    /* Re-collect on line 1 (first drawn scanline) as well as frame changes so
+     * tests or hosts that re-render without incrementing snes_frame_counter
+     * still refresh HUD portrait and meter bounds each frame. */
     if (hud_frame != snes_frame_counter || line == 1) {
         hud_frame = snes_frame_counter;
         hud_count = 0;

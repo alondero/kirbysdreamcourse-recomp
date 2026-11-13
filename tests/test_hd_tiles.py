@@ -26,3 +26,15 @@ class HdTilesTest(unittest.TestCase):
                             '-lm', '-o', str(executable)], check=True, capture_output=True)
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            policy_exe = Path(directory) / 'hd_textures_policy_test.exe'
+            subprocess.run([compiler, '-std=c11', '-O1', '-ffunction-sections', '-fdata-sections',
+                            '-Wl,--gc-sections', '-I', str(root / 'src'), '-I', str(source),
+                            str(root / 'tests/hd_textures_policy_test.c'),
+                            str(root / 'src/hd_textures.c'),
+                            str(root / 'src/course_hud.c'),
+                            str(root / 'src/course_view.c'),
+                            str(source / 'snes/ws_shadow.c'), str(source / 'snes/ppu_legacy.c'),
+                            '-lm', '-o', str(policy_exe)], check=True, capture_output=True)
+            result = subprocess.run([str(policy_exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
