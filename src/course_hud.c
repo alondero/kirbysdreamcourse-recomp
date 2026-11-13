@@ -7,7 +7,7 @@
  * No values are written into guest RAM, OAM, VRAM or registers. */
 static struct {
     const uint8_t *ram;
-    bool enabled, active, multi, expanded;
+    bool enabled, active, multi, expanded, top_strip;
     int extra, shift[2];
 } hud;
 
@@ -19,6 +19,19 @@ static uint16_t Map(const Ppu *ppu, int column, int row)
 bool KdcHudActive(const Ppu *ppu)
 {
     return ppu && hud.active && ppu->backgroundSample == KdcHudSample;
+}
+
+/* Practice's top-center badge is drawn after the whole frame finishes, so
+ * query the 2P top-strip latch recorded on the top strip's own scanlines
+ * (lines 7..34 prepare drawn rows 8..35) rather than reading end-of-frame
+ * registers that later scanlines may have modified. KdcPrepareHud clears the
+ * latch at the start of every draw, so the badge always follows the most
+ * recent draw (which is the picture that gets presented, including under
+ * run-ahead), and a forced-blank draw that skips PrepareLine leaves the
+ * latch cleared. */
+bool KdcHudTopStripActive(const Ppu *ppu)
+{
+    return ppu && hud.top_strip;
 }
 
 static bool Signature(const Ppu *ppu)
@@ -81,10 +94,14 @@ static bool Windows(const Ppu *ppu, unsigned layer, int y,
         if (y >= 180 && y < 212) { ranges[n++] = left + 36; ranges[n++] = left + 112; }
         if (y >= 164 && y < 212) { ranges[n++] = right - 80; ranges[n++] = right + 32; }
     } else {
-        if (y >= 12 && y < 32) { ranges[n++] = 48; ranges[n++] = 208; }
+        if (y >= kKdcHudMultiTopY0 + kKdcHudMultiTopPad &&
+            y < kKdcHudMultiTopY1 - kKdcHudMultiTopPad) {
+            ranges[n++] = kKdcHudMultiTopX0 + kKdcHudMultiTopPad;
+            ranges[n++] = kKdcHudMultiTopX1 - kKdcHudMultiTopPad;
+        }
         if (y >= 180 && y < 196) {
-            ranges[n++] = left + 36; ranges[n++] = left + 108;
-            ranges[n++] = right - 76; ranges[n++] = right - 4;
+            ranges[n++] = left + 32; ranges[n++] = left + 112;
+            ranges[n++] = right - 80; ranges[n++] = right;
         }
     }
     edges[0] = -ppu->extraLeftCur;
@@ -124,6 +141,7 @@ static bool SupportedWindow(const Ppu *ppu, int line)
 static void PrepareLine(Ppu *ppu, int line, void *context)
 {
     (void)context;
+    bool on_top = line >= kKdcHudMultiTopY0 - 1 && line < kKdcHudMultiTopY1 - 1;
     memset(ppu->presentationObjShift, 0, sizeof(ppu->presentationObjShift));
     PpuSetBackgroundSample(ppu, NULL, NULL);
     hud.active = false;
@@ -141,7 +159,10 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     hud.shift[0] = left - (hud.multi ? 16 : 20);
     hud.shift[1] = right - 208;
     hud.active = Portraits(ppu);
-    if (hud.active) PpuSetBackgroundSample(ppu, KdcHudSample, NULL);
+    if (hud.active) {
+        PpuSetBackgroundSample(ppu, KdcHudSample, NULL);
+        if (on_top && hud.multi && hud.expanded) hud.top_strip = true;
+    }
 }
 
 int KdcHudPortraitShift(const Ppu *ppu, int x, int y, uint16_t attributes)
@@ -182,20 +203,40 @@ static void SoloCard(const Ppu *ppu, int dx, int y,
      * outer corners/rails rather than the counter panel's inner cells. */
     int column = dx < 8 ? 2 : dx >= 112 ? 29 : 3;
     if (y < 168 || y >= 208) {
-        *tile = Map(ppu, column, y < 168 ? 22 : 26);
+        *tile = Map(ppu, column == 2 ? 29 : column, y < 168 ? 22 : 26) ^ (column == 2 ? 0x4000 : 0);
         *px = dx & 7; *py = y & 7;
     } else if (column != 3) {
         *tile = Map(ppu, column, 23); *px = dx & 7; *py = y & 7;
     }
     /* Keep the complete name drawing and counters, including the drawing's
      * lower pink border. Stock occupies a separate row after a clear gap. */
-    if (dx >= 8 && dx < 112 && y >= 164 && y < 194) {
+    if (dx >= 8 && dx < 112 && y >= 167 && y < 193) {
         int sx = 56 + dx - 8, sy = y + 16;
         *tile = Map(ppu, sx >> 3, sy >> 3); *px = sx & 7; *py = sy & 7;
     }
     if (dx >= 24 && dx < 96 && y >= 200 && y < 208) {
         int sx = 160 + dx - 24;
         *tile = Map(ppu, sx >> 3, 25); *px = sx & 7; *py = y & 7;
+    }
+}
+
+/* 4px end caps for the split 2P cards. In the USA ROM's BG3 HUD charset,
+ * the 4 cap columns of tiles $0E7 (row 21 cols 4/27) and $0F7 (row 26
+ * cols 5/26) are 100% opaque (2bpp color indices 1 and 2, zero transparent
+ * pixels), so the window mask starts 4px inward at the white interior. */
+static void MultiCap(const Ppu *ppu, bool right_cap, int dx, int y, int y0, int y1,
+                     uint16_t *tile, int *px, int *py)
+{
+    *px = (right_cap ? 4 : 0) + dx;
+    if (y < y0 + 4) {
+        *tile = Map(ppu, right_cap ? 27 : 4, 21);
+        *py = y - y0;
+    } else if (y >= y1 - 4) {
+        *tile = Map(ppu, right_cap ? 26 : 5, 26);
+        *py = 4 + (y - (y1 - 4));
+    } else {
+        *tile = Map(ppu, right_cap ? 26 : 5, 26);
+        *py = y & 3;
     }
 }
 
@@ -206,7 +247,7 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
     if (layer != 2 || !KdcHudActive(ppu)) return false;
     /* Suppress only the original expanded status band; shot art is separate.
      * Native screen y here is the SNES scanline, including its +1 phase. */
-    if (hud.expanded && y >= (hud.multi ? 168 : 176) && y < 216)
+    if (hud.expanded && y >= (hud.multi ? 168 : 176) && y < kKdcHudCardY1)
         *tile = Clean(x, y, px, py);
     if (!hud.expanded) return true;
     int left = (hud.multi ? 16 : 20) + hud.shift[0];
@@ -216,8 +257,14 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
         /* Original portrait enclosure + energy tiles. Stock is removed from
          * this extension and reattached below the original identity/counters. */
         int dx = x - (left - 4);
-        if (y >= 176 && y < 216 && dx >= 0 && dx < 120) {
-            sx = dx < 40 ? 16 + dx : 160 + dx - 40;
+        if (y >= 176 && y < kKdcHudCardY1 && dx >= 0 && dx < 120) {
+            /* dx == 40 (left + 36, native sx = 56, tile col 7 px 0) is the
+             * inner-left edge of the white energy window (y = 180..211). Its
+             * top and bottom pixels (y = 180 at row 22 py 4, y = 211 at row 26
+             * py 3) carry the 1px purple corner rounding matching dx = 111
+             * (tile col 28 px 7), whereas rows 181..210 of tile col 7 hold the
+             * player name box border and must sample the energy area at sx = 160. */
+            sx = (dx < 40 || (dx == 40 && (y == 180 || y == 211))) ? 16 + dx : 160 + dx - 40;
             if (y >= 200 && y < 208 && dx >= 40 && dx < 112) {
                 Padding(ppu, x, tile, px, py);
                 return true;
@@ -225,7 +272,7 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
         }
         int edge = 256 + hud.extra - (hud.extra > 96 ? hud.extra - 96 : 0) - 8;
         dx = x - (edge - 120);
-        if (dx >= 0 && dx < 120 && y >= 160 && y < 216) {
+        if (dx >= 0 && dx < 120 && y >= kKdcHudCardY0 && y < kKdcHudCardY1) {
             SoloCard(ppu, dx, y, tile, px, py);
             return true;
         }
@@ -233,11 +280,39 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
         /* Energy retains the original pink/yellow frame; the original player
          * labels and POINT counters form a centered upper strip. */
         int dx = x - (left + 32);
-        if (dx >= 0 && dx < 80 && y >= 176 && y < 200) { sx = 48 + dx; sy = y + 16; }
-        dx = x - (right - 80);
-        if (dx >= 0 && dx < 80 && y >= 176 && y < 200) { sx = 128 + dx; sy = y + 16; }
-        dx = x - 32;
-        if (dx >= 0 && dx < 192 && y >= 8 && y < 32) { sx = 32 + dx; sy = y + 160; }
+        if (dx >= 0 && dx < 84 && y >= 176 && y < 200) {
+            if (dx >= 80) {
+                MultiCap(ppu, true, dx - 80, y, 176, 200, tile, px, py);
+                return true;
+            }
+            sx = 48 + dx; sy = y + 16;
+        }
+        dx = x - (right - 84);
+        if (dx >= 0 && dx < 84 && y >= 176 && y < 200) {
+            if (dx < 4) {
+                MultiCap(ppu, false, dx, y, 176, 200, tile, px, py);
+                return true;
+            }
+            sx = 128 + dx - 4; sy = y + 16;
+        }
+        if (x >= kKdcHudMultiTopX0 && x < kKdcHudMultiTopX1 &&
+            y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1) {
+            if (x < kKdcHudMultiTopX0 + kKdcHudMultiTopPad ||
+                x >= kKdcHudMultiTopX1 - kKdcHudMultiTopPad) {
+                MultiCap(ppu, x >= kKdcHudMultiTopX1 - kKdcHudMultiTopPad,
+                         x < kKdcHudMultiTopX0 + kKdcHudMultiTopPad
+                             ? x - kKdcHudMultiTopX0
+                             : x - (kKdcHudMultiTopX1 - kKdcHudMultiTopPad),
+                         y, kKdcHudMultiTopY0, kKdcHudMultiTopY1, tile, px, py);
+                return true;
+            }
+            if (y >= kKdcHudMultiTopY1 - kKdcHudMultiTopPad) {
+                *tile = Map(ppu, 5, 21) ^ 0x8000;
+                *px = x & 7; *py = 4 + (y - (kKdcHudMultiTopY1 - kKdcHudMultiTopPad));
+                return true;
+            }
+            sx = x; sy = y + 160;
+        }
     }
     if (sx >= 0) {
         uint16_t source = Map(ppu, sx >> 3, sy >> 3);
@@ -250,6 +325,46 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
 bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 {
     if (!KdcHudActive(ppu)) return false;
+    bool in_hud = false;
+    if (hud.expanded) {
+        if (hud.multi && y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1 &&
+            x >= kKdcHudMultiTopX0 && x < kKdcHudMultiTopX1) {
+            if (y >= kKdcHudMultiTopY0 + kKdcHudMultiTopPad &&
+                y < kKdcHudMultiTopY1 - kKdcHudMultiTopPad &&
+                x >= kKdcHudMultiTopX0 + kKdcHudMultiTopPad &&
+                x < kKdcHudMultiTopX1 - kKdcHudMultiTopPad)
+                return true;
+            in_hud = true;
+        } else if (y >= (hud.multi ? 168 : kKdcHudCardY0) && y < kKdcHudCardY1) {
+            int left = (hud.multi ? 16 : 20) + hud.shift[0];
+            int right = 208 + hud.shift[1];
+            if (hud.multi) {
+                if (y >= 180 && y < 196 &&
+                    ((x >= left + 32 && x < left + 112) || (x >= right - 80 && x < right)))
+                    return true;
+                in_hud = y >= 176 && y < 200 &&
+                    ((x >= left + 32 && x < left + 116) || (x >= right - 84 && x < right));
+            } else {
+                if ((y >= 180 && y < 212 && x >= left + 36 && x < left + 112) ||
+                    (y >= 164 && y < 212 && x >= right - 80 && x < right + 32))
+                    return true;
+                in_hud = (y >= 176 && x >= left - 4 && x < left + 116) ||
+                    (x >= right - 84 && x < right + 36);
+            }
+        }
+    }
+    if (!in_hud) {
+        if (x < 0 || x >= 256 ||
+            (hud.expanded && y >= (hud.multi ? 168 : 176) && y < kKdcHudCardY1))
+            return false;
+        uint16_t tile = Map(ppu, x >> 3, y >> 3);
+        uint16_t clean = KdcReadWord(hud.ram, 0xdadc + 2 * (((y >> 3) & 31) * 32 + (x >> 3)));
+        if (tile == clean) return false;
+        int px = (tile & 0x4000) ? ((x & 7) ^ 7) : (x & 7);
+        int py = (tile & 0x8000) ? ((y & 7) ^ 7) : (y & 7);
+        unsigned bits = PpuRenderVram(ppu)[(0x4000 + (tile & 1023) * 8 + py) & 0x7fff] >> (7 - px);
+        return ((bits & 1) | ((bits >> 7) & 2)) != 0;
+    }
     int px, py;
     uint16_t clean = Clean(x, y, &px, &py);
     uint16_t tile = x >= 0 && x < 256 ? Map(ppu, x >> 3, y >> 3) : clean;
@@ -260,16 +375,15 @@ bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
         unsigned bits = PpuRenderVram(ppu)[(0x4000 + (tile & 1023) * 8 + py) & 0x7fff] >> (7 - px);
         if ((bits & 1) | ((bits >> 7) & 2)) return true;
     }
-    int16_t edges[8]; uint8_t count, mask;
-    if (Windows(ppu, 0, y, edges, &count, &mask))
-        for (unsigned i = 0; i < count; ++i)
-            if ((mask & (1u << i)) && x >= edges[i] && x < edges[i + 1]) return true;
     return false;
 }
 
+/* Resets the per-draw static HUD state and top-strip latch before each PPU
+ * frame render (including authentic debug renders). */
 void KdcPrepareHud(Ppu *ppu, const uint8_t *ram, int extra, bool enabled)
 {
-    hud.ram = ram; hud.extra = extra; hud.enabled = enabled; hud.active = false;
+    hud.ram = ram; hud.extra = extra; hud.enabled = enabled;
+    hud.active = false; hud.top_strip = false;
     memset(ppu->presentationObjShift, 0, sizeof(ppu->presentationObjShift));
     ppu->presentationPrepare = enabled && extra ? PrepareLine : NULL;
     ppu->presentationContext = NULL;

@@ -580,8 +580,8 @@ static void HdEdgeHud(void)
     hd_enabled = true;
     assert(KdcOrbitDrawHd((uint8_t *)output, w * 4, NULL, 342, height, 1, 4));
     /* 43px margin + 20px source X - 51px shift = 12px from left. */
-    assert(output[(178 * 4) * w + 12 * 4] == 0xffffff00);
-    assert(output[(193 * 4 + 3) * w + 27 * 4 + 3] == 0xffffff00);
+    assert(output[(179 * 4) * w + 12 * 4] == 0xffffff00);
+    assert(output[(194 * 4 + 3) * w + 27 * 4 + 3] == 0xffffff00);
     hd_enabled = false; use_custom = false;
     KdcPrepareHud(&ppu, g_ram, 0, false);
     ppu = before;

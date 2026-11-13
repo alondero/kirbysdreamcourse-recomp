@@ -1,6 +1,7 @@
 /* Decode the typeface from the user's live title-menu VRAM. No extracted
  * artwork ships with this panel; its geometry is drawn by the host. */
 #include "practice.h"
+#include "course_hud.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes/cart.h"
@@ -109,8 +110,9 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
     const uint32_t white = 0xffffffff, yellow = 0xffffe890, pink = 0xffffb8de;
     if (!v->screen) {
         /* CPU matches are labelled in the game's own player 2 name box. */
-        Box(&c, 84, 3, 88, 12, 0xff30206a);
-        Center(&c, 5, "PRACTICE", yellow);
+        int y = g_snes && KdcHudTopStripActive(g_snes->ppu) ? kKdcHudMultiTopY1 + 2 : 3;
+        Box(&c, 84, y, 88, 12, 0xff30206a);
+        Center(&c, y + 2, "PRACTICE", yellow);
         return;
     }
     Box(&c, 14, 22, 230, 184, 0xff161038);

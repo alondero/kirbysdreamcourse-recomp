@@ -1042,7 +1042,7 @@ static void PreparePieces(Render *render)
                 piece->point = world ? KdcCameraProject(&render->camera,
                     sprite->x, sprite->y, z, render->width, render->height) :
                     (KdcCameraPoint){((int)(render->width / render->scale) - 256) / 2.0 * render->scale,
-                                     -(double)render->scale, 0};
+                                     0, 0};
                 double left = piece->point.x + sprite->offset_x * scale;
                 if (!world) left += (double)render->scale * KdcHudPortraitShift(render->ppu,
                     sprite->offset_x, sprite->offset_y, sprite->attributes);

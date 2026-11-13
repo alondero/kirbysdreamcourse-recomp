@@ -660,6 +660,42 @@ static void TestPauseSkipsTileWork(void)
     ppu_free(p);
 }
 
+static bool SampleBg3(const Ppu *ppu, unsigned layer, int x, int y,
+                      uint16_t *tile, int *px, int *py, void *context)
+{
+    (void)ppu;
+    (void)context;
+    if (layer != 2 || x < 16 || x >= 48 || y < 24 || y >= 56) return false;
+    *tile = 0x2001 | ((x & 8) ? 0x4000 : 0) | ((y & 8) ? 0x8000 : 0);
+    *px = (x + 3) & 7;
+    *py = (y + 5) & 7;
+    return true;
+}
+
+static void TestBackgroundSampleHdLines(void)
+{
+    Ppu *p = NewPpu(4, Nearest);
+    RandomScene(p);
+    PpuSetBackgroundSample(p, SampleBg3, NULL);
+    Render(p);
+    PpuHdTileStats stats;
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.hd_lines == kHeight);
+    assert(stats.native_lines == 0);
+    assert(stats.fallback_pixels == 0);
+    AssertNearest(4);
+    for (unsigned i = 0; i < kPpuHdCacheSlots; ++i)
+        if (p->hdTiles->entries[i].image) p->hdTiles->entries[i].image->same = 0;
+    Render(p);
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.replaced_pixels > 0);
+    assert(stats.fallback_pixels == 0);
+    AssertNearest(4);
+    PpuSetBackgroundSample(p, NULL, NULL);
+    PpuSetHdTiles(p, NULL, NULL);
+    ppu_free(p);
+}
+
 int main(void)
 {
     TestPauseSkipsTileWork();
@@ -671,6 +707,7 @@ int main(void)
     TestIdentity(4, false);
     TestIdentity(4, true);
     TestIdentity(2, false);
+    TestBackgroundSampleHdLines();
     TestRevealAndGrowth();
     TestFlips();
     TestOpaqueWinnerSubpixels();

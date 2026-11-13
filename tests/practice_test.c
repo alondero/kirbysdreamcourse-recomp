@@ -1,18 +1,37 @@
 #include "practice.h"
+#include "course_hud.h"
 #include "dev_start.h"
 #include "cpu_opponent.h"
 #include "common_rtl.h"
 #include "cpu_state.h"
 #include "snes/interp_bridge.h"
+#include "snes/ppu.h"
+#include "snes/snes.h"
 #include "snes_overlay_draw.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "CHECK %d: %s\n", __LINE__, #x); exit(1); } } while (0)
+Snes *g_snes;
+int snes_frame_counter = 1;
 uint8 *g_sram;
 int g_sram_size = 8192;
 static uint8_t ram[0x20000], battery[8192], ordinary_file[8192], practice_file[8192];
+
+void PpuSetBackgroundSample(Ppu *ppu,
+    bool (*sample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *),
+    void *context)
+{
+    ppu->backgroundSample = sample;
+    ppu->backgroundSampleContext = context;
+}
+
+bool KdcIsCourse(const Ppu *ppu)
+{
+    return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x51 && ppu->bgXsc[1] == 0x59 &&
+           ((ppu->screenEnabled[0] | ppu->screenEnabled[1]) & 2) != 0;
+}
 static char root[96] = "saves";
 static bool write_ok = true;
 static int resets;
@@ -57,6 +76,130 @@ static void Tap(uint32_t button)
 }
 static void ChoosePlay(void) { for (int i = 0; i < 4; ++i) Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A); }
 static void OpenPause(void) { Tap(SNES_PAD_START); CHECK(KdcPracticeCurrentView()->screen == 2); }
+
+static void CheckPracticeBadgeHudPlacement(void)
+{
+    static Snes snes_state;
+    static Ppu ppu;
+    static uint32_t fb[256 * 224];
+    memset(&snes_state, 0, sizeof(snes_state));
+    memset(&ppu, 0, sizeof(ppu));
+    snes_state.ppu = &ppu;
+    g_snes = &snes_state;
+
+    ppu.bgmode = 9;
+    ppu.bgXsc[0] = 0x51;
+    ppu.bgXsc[1] = 0x59;
+    ppu.bgXsc[2] = 0x3c;
+    ppu.bgTileAdr = 0x400;
+    ppu.screenEnabled[0] = 23;
+    ppu.screenWindowed[0] = 19;
+    ppu.inidisp = 15;
+    ppu.obsel = 3;
+    ppu.windowsel = 0x220000;
+    ppu.cgwsel = 0x10;
+    ppu.cgadsub = 0x33;
+    ppu.fixedColor = 0x7fff;
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    ppu.renderFlags = kPpuRenderFlags_NewRenderer;
+    for (unsigned player = 0; player < 2; ++player)
+        for (unsigned i = 0; i < 4; ++i) {
+            unsigned slot = player * 4 + i;
+            int x = player ? 208 : 16;
+            int y = 171;
+            ppu.oam[slot * 2] = (uint16_t)(x + (i & 1) * 16 + ((y + (i >> 1) * 16) << 8));
+            ppu.oam[slot * 2 + 1] = (uint16_t)((player ? 0x35a8 : 0x33a0) + i * 2);
+            ppu.highOam[slot / 4] |= (uint8_t)(2u << ((slot & 3) * 2));
+        }
+    ppu.vram[0x3c00 + 21 * 32 + 4] = 0x34e7;
+    KdcPrepareHud(&ppu, ram, 96, true);
+
+    /* Display blanked over scanlines 0..39 and enabled on scanlines 40..60:
+     * no top strip was drawn, so KdcHudTopStripActive must stay false and the
+     * badge must stay at y = 3 even though KdcHudActive is true at draw time. */
+    ram[0x17ff] = 1;
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    for (int line = 40; line <= 60; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    CHECK(KdcHudActive(&ppu) && !KdcHudTopStripActive(&ppu));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
+
+    /* 1P mode: top-center strip is inactive, so badge draws at y = 3. */
+    ram[0x17ff] = 0;
+    for (int line = 0; line < 36; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
+
+    /* 2P expanded Edge HUD: top-center strip active on scanlines 7..34 moves
+     * badge to y = 38 even if end-of-frame scanline 223 disables hud.active. */
+    ram[0x17ff] = 1;
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    for (int line = 0; line < 36; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    ppu.window1left = 0;
+    ppu.window1right = 255;
+    ppu.presentationPrepare(&ppu, 223, NULL);
+    CHECK(!KdcHudActive(&ppu) && KdcHudTopStripActive(&ppu));
+    /* Late register writes after the top strip (scanlines 7..34) must not
+     * clear the latched top-strip state at end-of-frame draw time. */
+    ppu.hScroll[2] = 1;
+    CHECK(KdcHudTopStripActive(&ppu));
+    ppu.hScroll[2] = 0;
+    ppu.inidisp = 14;
+    CHECK(KdcHudTopStripActive(&ppu));
+    ppu.inidisp = 15;
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[38 * 256 + 84] == 0xff30206a && fb[3 * 256 + 84] == 0);
+
+    /* Run-ahead model: speculative frames advance snes_frame_counter during
+     * RunaheadCapture (which calls GameDrawPpuFrame -> KdcPrepareHud), then
+     * snes_runahead restores snes_frame_counter before KdcPracticeDraw. The
+     * badge must still follow the presented speculative draw at y = 38. */
+    int saved_counter = snes_frame_counter;
+    snes_frame_counter = saved_counter + 2;
+    KdcPrepareHud(&ppu, ram, 96, true);
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    for (int line = 0; line < 36; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    snes_frame_counter = saved_counter;
+    CHECK(KdcHudTopStripActive(&ppu));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[38 * 256 + 84] == 0xff30206a && fb[3 * 256 + 84] == 0);
+
+    /* On a subsequent forced-blank frame, GameDrawPpuFrame calls KdcPrepareHud
+     * at the start of the draw and ppu_runLine skips presentationPrepare; the
+     * previous frame's top_strip latch must be cleared. */
+    ++snes_frame_counter;
+    ppu.inidisp = 0x80;
+    KdcPrepareHud(&ppu, ram, 96, true);
+    CHECK(!KdcHudTopStripActive(&ppu));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
+    ppu.inidisp = 15;
+
+    /* Next frame in 1P mode resets top_strip in KdcPrepareHud and restores y = 3. */
+    KdcPrepareHud(&ppu, ram, 96, true);
+    ram[0x17ff] = 0;
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    for (int line = 0; line < 36; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
+    g_snes = NULL;
+}
 
 int main(void)
 {
@@ -143,6 +286,7 @@ int main(void)
     CHECK(!KdcPracticeSnapshotsAllowed());
     Observe(&cpu, 0x80f266);
     CHECK(ram[0xd852] == 10 && ram[0xd854] == 10 && ram[0xd853] == 0);
+    CheckPracticeBadgeHudPlacement();
     ram[0xd852] = 0; Observe(&cpu, 0x80f266); CHECK(ram[0xd852] == 0);
     /* A held confirm cannot leak into the first playable frame. */
     uint32_t input = SNES_PAD_A; CHECK(KdcPracticeFrame(&input) && input == 0);
