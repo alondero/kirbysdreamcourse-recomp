@@ -149,6 +149,7 @@ if ($AutoJoyPhase) { $patches += 'snesrecomp-autojoy-phase-experiment.patch' }
 if ($SpcD4Phase) { $patches += 'snesrecomp-spc-indexed-write-state-experiment.patch' }
 if ($ApuBoundarySync) { $patches += 'snesrecomp-apu-boundary-sync.patch' }
 # Presentation-only HD tiles and surface; inert until the game enables them.
+$patches += 'snesrecomp-hud-presentation.patch'
 $patches += 'snesrecomp-hd-tiles.patch'
 $patches += 'snesrecomp-hd-tile-context.patch'
 $patches += 'snesrecomp-hd-present.patch'

@@ -1,6 +1,7 @@
 #include "hd_textures.h"
 #include "hd_scaler.h"
 #include "course_checker.h"
+#include "course_hud.h"
 #include "course_orbit.h"
 #include "course_sprites.h"
 #include "course_view.h"
@@ -71,8 +72,10 @@ static void CollectHudSprite(const KdcOrbitSprite *sprite, void *context)
     if (sprite->world || sprite->unresolved) return;
     if (hud_count == kMaxHudRects) { hud_overflow = true; return; }
     const int size = sizes[PPU_objSize(ppu)][sprite->large != 0];
-    hud_rects[hud_count++] = (HudRect){sprite->offset_x - 1, sprite->offset_y,
-                                       sprite->offset_x + size, sprite->offset_y + size + 1};
+    const int x = sprite->offset_x + KdcHudPortraitShift(
+        ppu, sprite->offset_x, sprite->offset_y, sprite->attributes);
+    hud_rects[hud_count++] = (HudRect){x - 1, sprite->offset_y,
+                                       x + size, sprite->offset_y + size + 1};
 }
 
 static void Keep(int x0, int x1, int first_x, unsigned count, uint8_t *keep_native)
@@ -91,7 +94,7 @@ static bool HdLinePolicy(const Ppu *ppu, unsigned line, int first_x, unsigned co
 {
     (void)context;
     if (!course_active) return false;
-    if (hud_frame != snes_frame_counter) {
+    if (hud_frame != snes_frame_counter || line == 1) {
         hud_frame = snes_frame_counter;
         hud_count = 0;
         hud_overflow = false;
@@ -101,6 +104,11 @@ static bool HdLinePolicy(const Ppu *ppu, unsigned line, int first_x, unsigned co
     for (unsigned i = 0; i < hud_count; ++i)
         if ((int)line >= hud_rects[i].y0 && (int)line <= hud_rects[i].y1)
             Keep(hud_rects[i].x0, hud_rects[i].x1, first_x, count, keep_native);
+    if (KdcHudActive(ppu)) {
+        for (unsigned k = 0; k < count; ++k)
+            if (KdcHudOverlayPixel(ppu, first_x + (int)k, (int)line)) keep_native[k] = 1;
+        return true;
+    }
     int left, right;
     if (ppu->bgXsc[2] == 0x3c && PPU_bgTileAdr(ppu, 2) == 0x4000 &&
         KdcHudSpan(PpuRenderVram(ppu) + 0x3c00, g_ram, (line + ppu->vScroll[2]) & 255,

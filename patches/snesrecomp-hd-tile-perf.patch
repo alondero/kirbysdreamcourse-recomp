@@ -313,10 +313,41 @@ index eadee7fd..0b3692ba 100644
        int ta = (tile & 0x8000) ? tileadr1 : tileadr0;
        PpuZbufType z = (tile & 0x2000) ? zhi : zlo;
        uint32 bits = READ_BITS(ta, tile & 0x3ff);
-@@ -2081,8 +2163,8 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
-   PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
-       PpuHdRecordRow(ppu, sub, layer) : NULL;
-   if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
+@@ -2034,8 +2116,12 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+   } else {
+     PpuApplyMarginGap(ppu, layer, &win, ws_bias);
+   }
++  PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
++      PpuHdRecordRow(ppu, sub, layer) : NULL;
++  if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
+   if (ppu->backgroundSample) {
+     const uint16_t *vram = PpuRenderVram(ppu);
++    const unsigned tileadr = PPU_bgTileAdr(ppu, layer);
+     for (size_t wi = 0; wi < win.nr; ++wi) {
+       if (win.bits & (1 << wi)) continue;
+       for (int sx = win.edges[wi]; sx < win.edges[wi + 1]; ++sx) {
+@@ -2053,9 +2139,13 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+         if (ppu->backgroundSample(ppu, layer, sx, (int)y, &sampled_tile, &sampled_x, &sampled_y, ppu->backgroundSampleContext)) {
+           tile = sampled_tile; px = sampled_x; py = sampled_y;
+         }
++        if (hd_rec)
++          PpuHdRecordBgSpan(ppu, hd_rec, layer, (size_t)(sx + kPpuExtraLeftRight), 1,
++                            tile, (u & ~7u) | (unsigned)(px & 7), (v & ~7u) | (unsigned)(py & 7),
++                            tileadr, 2, zhi, zlo, kPaletteShift, false);
+         if (tile & 0x4000) px ^= 7;
+         if (tile & 0x8000) py ^= 7;
+-        unsigned bits = vram[(PPU_bgTileAdr(ppu, layer) + (tile & 1023) * 8 + (py & 7)) & 0x7fff] >> (7 - (px & 7));
++        unsigned bits = vram[(tileadr + (tile & 1023) * 8 + (py & 7)) & 0x7fff] >> (7 - (px & 7));
+         unsigned color = (bits & 1) | ((bits >> 7) & 2);
+         if (!color) continue;
+         PpuZbufType z = ((tile & 0x2000) ? zhi : zlo) + ((tile & 0x1c00) >> 8);
+@@ -2078,11 +2168,8 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
+     layer, (int)(dstz - dstbuf->data) - kPpuExtraLeftRight, y, \
+     (uint16_t)(ppu->hScroll[layer] + ws_bias[windex]), \
+     (uint16_t)(tp - PpuRenderVram(ppu)), (uint16_t)(t)) : (uint32)(t))
+-  PpuHdTileRecord *hd_rec = dstbuf == &ppu->bgBuffers[sub] ?
+-      PpuHdRecordRow(ppu, sub, layer) : NULL;
+-  if (hd_rec) ppu->hdTiles->recorded[sub] |= (uint8_t)(1u << layer);
 -#define HD_RECORD(n, t, rx) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \
 -    (size_t)(dstz - dstbuf->data), (unsigned)(n), (t), (rx), y, tileadr, 2, zhi, zlo, kPaletteShift, false); } while (0)
 +#define HD_RECORD(n, t) do { if (hd_rec) PpuHdRecordBgSpan(ppu, hd_rec, layer, \

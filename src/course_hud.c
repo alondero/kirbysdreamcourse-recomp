@@ -83,8 +83,8 @@ static bool Windows(const Ppu *ppu, unsigned layer, int y,
     } else {
         if (y >= 12 && y < 32) { ranges[n++] = 48; ranges[n++] = 208; }
         if (y >= 180 && y < 196) {
-            ranges[n++] = left + 36; ranges[n++] = left + 108;
-            ranges[n++] = right - 76; ranges[n++] = right - 4;
+            ranges[n++] = left + 32; ranges[n++] = left + 112;
+            ranges[n++] = right - 80; ranges[n++] = right;
         }
     }
     edges[0] = -ppu->extraLeftCur;
@@ -182,20 +182,36 @@ static void SoloCard(const Ppu *ppu, int dx, int y,
      * outer corners/rails rather than the counter panel's inner cells. */
     int column = dx < 8 ? 2 : dx >= 112 ? 29 : 3;
     if (y < 168 || y >= 208) {
-        *tile = Map(ppu, column, y < 168 ? 22 : 26);
+        *tile = Map(ppu, column == 2 ? 29 : column, y < 168 ? 22 : 26) ^ (column == 2 ? 0x4000 : 0);
         *px = dx & 7; *py = y & 7;
     } else if (column != 3) {
         *tile = Map(ppu, column, 23); *px = dx & 7; *py = y & 7;
     }
     /* Keep the complete name drawing and counters, including the drawing's
      * lower pink border. Stock occupies a separate row after a clear gap. */
-    if (dx >= 8 && dx < 112 && y >= 164 && y < 194) {
+    if (dx >= 8 && dx < 112 && y >= 167 && y < 193) {
         int sx = 56 + dx - 8, sy = y + 16;
         *tile = Map(ppu, sx >> 3, sy >> 3); *px = sx & 7; *py = sy & 7;
     }
     if (dx >= 24 && dx < 96 && y >= 200 && y < 208) {
         int sx = 160 + dx - 24;
         *tile = Map(ppu, sx >> 3, 25); *px = sx & 7; *py = y & 7;
+    }
+}
+
+static void MultiCap(const Ppu *ppu, bool right_cap, int dx, int y, int y0, int y1,
+                     uint16_t *tile, int *px, int *py)
+{
+    *px = (right_cap ? 4 : 0) + dx;
+    if (y < y0 + 4) {
+        *tile = Map(ppu, right_cap ? 27 : 4, 21);
+        *py = y - y0;
+    } else if (y >= y1 - 4) {
+        *tile = Map(ppu, right_cap ? 26 : 5, 26);
+        *py = 4 + (y - (y1 - 4));
+    } else {
+        *tile = Map(ppu, right_cap ? 26 : 5, 26);
+        *py = y & 3;
     }
 }
 
@@ -217,7 +233,7 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
          * this extension and reattached below the original identity/counters. */
         int dx = x - (left - 4);
         if (y >= 176 && y < 216 && dx >= 0 && dx < 120) {
-            sx = dx < 40 ? 16 + dx : 160 + dx - 40;
+            sx = (dx < 40 || (dx == 40 && (y == 180 || y == 211))) ? 16 + dx : 160 + dx - 40;
             if (y >= 200 && y < 208 && dx >= 40 && dx < 112) {
                 Padding(ppu, x, tile, px, py);
                 return true;
@@ -233,11 +249,33 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
         /* Energy retains the original pink/yellow frame; the original player
          * labels and POINT counters form a centered upper strip. */
         int dx = x - (left + 32);
-        if (dx >= 0 && dx < 80 && y >= 176 && y < 200) { sx = 48 + dx; sy = y + 16; }
-        dx = x - (right - 80);
-        if (dx >= 0 && dx < 80 && y >= 176 && y < 200) { sx = 128 + dx; sy = y + 16; }
-        dx = x - 32;
-        if (dx >= 0 && dx < 192 && y >= 8 && y < 32) { sx = 32 + dx; sy = y + 160; }
+        if (dx >= 0 && dx < 84 && y >= 176 && y < 200) {
+            if (dx >= 80) {
+                MultiCap(ppu, true, dx - 80, y, 176, 200, tile, px, py);
+                return true;
+            }
+            sx = 48 + dx; sy = y + 16;
+        }
+        dx = x - (right - 84);
+        if (dx >= 0 && dx < 84 && y >= 176 && y < 200) {
+            if (dx < 4) {
+                MultiCap(ppu, false, dx, y, 176, 200, tile, px, py);
+                return true;
+            }
+            sx = 128 + dx - 4; sy = y + 16;
+        }
+        if (x >= 44 && x < 212 && y >= 8 && y < 36) {
+            if (x < 48 || x >= 208) {
+                MultiCap(ppu, x >= 208, x < 48 ? x - 44 : x - 208, y, 8, 36, tile, px, py);
+                return true;
+            }
+            if (y >= 32) {
+                *tile = Map(ppu, 5, 21) ^ 0x8000;
+                *px = x & 7; *py = 4 + (y - 32);
+                return true;
+            }
+            sx = x; sy = y + 160;
+        }
     }
     if (sx >= 0) {
         uint16_t source = Map(ppu, sx >> 3, sy >> 3);

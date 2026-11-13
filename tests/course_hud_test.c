@@ -102,8 +102,17 @@ int main(void)
             KdcHudSample(p, 2, left + (multi ? 32 : 36), 184, &sampled, &tx, &ty, NULL);
             assert(sampled == (multi ? 0x3d40 : 0x3520) && tx == 0 && ty == 0);
             if (multi) {
-                KdcHudSample(p, 2, 32, 8, &sampled, &tx, &ty, NULL);
-                assert(sampled == 0x34e7);
+                int right = 256 + (extra > 96 ? 96 : extra) - 44;
+                KdcHudSample(p, 2, 44, 8, &sampled, &tx, &ty, NULL);
+                assert(sampled == 0x34e7 && tx == 0 && ty == 0);
+                KdcHudSample(p, 2, 208, 8, &sampled, &tx, &ty, NULL);
+                assert(sampled == p->vram[0x3c00 + 21 * 32 + 27] && tx == 4 && ty == 0);
+                KdcHudSample(p, 2, 64, 32, &sampled, &tx, &ty, NULL);
+                assert(sampled == (p->vram[0x3c00 + 21 * 32 + 5] ^ 0x8000) && ty == 4);
+                KdcHudSample(p, 2, left + 112, 184, &sampled, &tx, &ty, NULL);
+                assert(sampled == p->vram[0x3c00 + 26 * 32 + 26] && tx == 4);
+                KdcHudSample(p, 2, right - 84, 184, &sampled, &tx, &ty, NULL);
+                assert(sampled == p->vram[0x3c00 + 26 * 32 + 5] && tx == 0);
             } else {
                 int edge = 256 + (extra > 96 ? 96 : extra) - 8;
                 /* Empty space is transparent over the white window, never
@@ -112,6 +121,8 @@ int main(void)
                 assert(sampled == p->vram[0x3c00 + 22 * 32 + 3] && ty == 4);
                 KdcHudSample(p, 2, edge - 4, 184, &sampled, &tx, &ty, NULL);
                 assert(sampled == p->vram[0x3c00 + 23 * 32 + 29]);
+                KdcHudSample(p, 2, edge - 116, 165, &sampled, &tx, &ty, NULL);
+                assert(sampled == (p->vram[0x3c00 + 22 * 32 + 29] ^ 0x4000));
                 KdcHudSample(p, 2, edge - 120 + 8 + 48, 168, &sampled, &tx, &ty, NULL);
                 assert(sampled == 0x3d0e);
                 KdcHudSample(p, 2, edge - 120 + 24, 200, &sampled, &tx, &ty, NULL);
