@@ -5,6 +5,8 @@
 typedef struct CourseView {
     Ppu *ppu;
     const uint8_t *ram;
+    const uint8_t *rom; /* Verified USA image, or NULL. */
+    int extra;
 } CourseView;
 
 static CourseView view;
@@ -193,7 +195,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
 void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
 {
     static const uint8_t no_hints[16] = {0};
-    view = (CourseView){ppu, ram};
+    view = (CourseView){.ppu = ppu, .ram = ram, .extra = extra};
     WsShadowSetTileProvider(7, extra ? CourseTile : NULL, &view);
     /* In streamed courses BG3 combines scenery and a tile-based HUD.
      * The runtime otherwise assumes BG3 is a centered status bar. Visible
@@ -213,4 +215,83 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
      * the sides. The provider checks the live raster signature itself. */
     PpuSetWidescreenLayerClamp(ppu, extra && !world_scene ?
                               (IsMembers(ppu) ? 3 : 1) : 0);
+}
+
+/* Course-select sky beneath the label (docs/widescreen.md). BG3 vertical
+ * scroll comes from an HDMA table, one scanline per entry: a count byte of
+ * 1, then a word. USA ROM $83:A75C holds the complete 224-line table. Each
+ * frame the game copies it to WRAM $7E:120F minus a moving phase, but ends
+ * the copy at the label with one entry that switches to the label page.
+ * Continue the ROM table with that phase in the margins only. */
+enum { kSkyRomTable = 0x1a75c, kSkyLiveTable = 0x120f, kSkyLines = 224 };
+
+static bool SkyEntry(const uint8_t *table, unsigned entry, int *value)
+{
+    if (table[3 * entry] != 1) return false;
+    *value = table[3 * entry + 1] | table[3 * entry + 2] << 8;
+    return true;
+}
+
+/* The 10-bit scroll the uninterrupted table gives this drawn scanline. HDMA
+ * entry n is visible on scanline n + 1. Only label scanlines qualify: the
+ * native field shows BG3's second page with no fine scroll, so the margin
+ * columns are exactly the ones the sky above uses. */
+static bool SkyScroll(const CourseView *source, const Ppu *ppu, int line,
+                      unsigned *scroll)
+{
+    if (!source->rom || !source->extra || line < 1 || line > kSkyLines ||
+        !IsCourseSelect(ppu) || (ppu->hScroll[2] & 0x1ff) != 0x100 ||
+        (PPU_mosaicEnabled(ppu, 2) && PPU_mosaicSize(ppu) > 1)) return false;
+    const uint8_t *base = source->rom + kSkyRomTable;
+    const uint8_t *live = source->ram + kSkyLiveTable;
+    int base0, base1, live0, live1, value;
+    if (!SkyEntry(base, 0, &base0) || !SkyEntry(base, 1, &base1) ||
+        !SkyEntry(live, 0, &live0) || !SkyEntry(live, 1, &live1) ||
+        !SkyEntry(base, (unsigned)line - 1, &value)) return false;
+    /* One phase across both entries identifies the live sky table. */
+    if (((live0 - base0) - (live1 - base1)) & 1023) return false;
+    *scroll = (unsigned)(value + live0 - base0) & 1023;
+    return true;
+}
+
+/* A tile provider cannot change the row inside a tile; the sky's scroll
+ * differs from the label's below its first tile row, so sample pixels. */
+static bool SkySample(const Ppu *ppu, unsigned layer, int x, int y,
+                      uint16_t *tile, int *px, int *py, void *context)
+{
+    unsigned scroll;
+    if (layer != 2 || (x >= 0 && x < 256) ||
+        !SkyScroll(context, ppu, y, &scroll)) return false;
+    unsigned v = (unsigned)y + scroll;
+    bool flip;
+    unsigned column = KdcReflectedColumn(x, 0, &flip) & 31;
+    *tile = PpuRenderVram(ppu)[0x6000 + ((v >> 3) & 31) * 32 + column] ^
+            (flip ? 0x4000 : 0);
+    *px = x & 7;
+    *py = (int)(v & 7);
+    return true;
+}
+
+static void SkyLine(Ppu *ppu, int line, void *context)
+{
+    /* Called during sprite evaluation, one line before the BG draw. */
+    unsigned scroll;
+    bool sky = SkyScroll(context, ppu, line + 1, &scroll);
+    PpuSetBackgroundSample(ppu, sky ? SkySample : NULL, sky ? context : NULL);
+}
+
+void KdcPrepareSelectSky(Ppu *ppu, const uint8_t *rom, size_t rom_size)
+{
+    view.rom = rom && rom_size == 0x100000 ? rom : NULL;
+    /* The edge HUD's per-line hook is inert outside live courses. */
+    if (view.rom && view.extra && IsCourseSelect(ppu)) {
+        ppu->presentationPrepare = SkyLine;
+        ppu->presentationContext = &view;
+    } else if (ppu->presentationPrepare == SkyLine) {
+        ppu->presentationPrepare = NULL;
+        ppu->presentationContext = NULL;
+    } else {
+        return;
+    }
+    PpuSetBackgroundSample(ppu, NULL, NULL);
 }

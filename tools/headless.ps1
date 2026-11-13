@@ -95,8 +95,8 @@ if ($InputScript) { $hostArgs += @('--script', (Resolve-Path -LiteralPath $Input
 $previousWideOverride = $env:SNESRECOMP_WS_EXTRA
 try {
     $env:SNESRECOMP_WS_EXTRA = $wideOverride
-    $host = Invoke-NativeCommand -FilePath $copy -ArgumentList $hostArgs
-    if ($host.ExitCode -ne 0) { throw "Host failed: $($host.ExitCode)" }
+    $run = Invoke-NativeCommand -FilePath $copy -ArgumentList $hostArgs
+    if ($run.ExitCode -ne 0) { throw "Host failed: $($run.ExitCode)" }
 } finally {
     $env:SNESRECOMP_WS_EXTRA = $previousWideOverride
 }

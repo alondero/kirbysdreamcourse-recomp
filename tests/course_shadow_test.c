@@ -10,6 +10,9 @@ void PpuSetWidescreenLayerClamp(Ppu *ppu, uint8_t mask) { ppu->wsLayerClamp = ma
 void PpuSetWidescreenBg3Widen(Ppu *ppu, uint8_t y) { ppu->wsBg3WidenY = y; }
 void PpuWsSetOamRightHints(Ppu *ppu, const uint8_t *hints) { (void)ppu; (void)hints; }
 void PpuWsSetOamLeftHints(Ppu *ppu, const uint8_t *hints) { (void)ppu; (void)hints; }
+void PpuSetBackgroundSample(Ppu *ppu,
+    bool (*sample)(const Ppu *, unsigned, int, int, uint16_t *, int *, int *, void *),
+    void *context) { ppu->backgroundSample = sample; ppu->backgroundSampleContext = context; }
 static void word(unsigned a, uint16_t v) { ram[a] = v; ram[a + 1] = v >> 8; }
 
 int main(void)

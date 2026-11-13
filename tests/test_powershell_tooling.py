@@ -139,5 +139,32 @@ class NativeCMakeDiscoveryTest(unittest.TestCase):
             self.assertIn('Find-NativeCMake', text)
 
 
+@unittest.skipUnless(SHELL, 'PowerShell is not available on this machine.')
+class AutomaticVariableTest(unittest.TestCase):
+    """$Host is a read-only automatic variable. Assigning a native command's
+    result to it aborted tools/headless.ps1 after the run, before run.json."""
+
+    def test_tools_do_not_assign_read_only_automatic_variables(self):
+        script = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$readOnly = @('host', 'true', 'false', 'null', 'pid', 'pshome', 'shellid')\n"
+            "foreach ($file in Get-ChildItem -LiteralPath '" + str(TOOLS) + "' -Filter *.ps1) {\n"
+            "  $tokens = $null; $errors = $null\n"
+            "  $ast = [System.Management.Automation.Language.Parser]::ParseFile(\n"
+            "    $file.FullName, [ref]$tokens, [ref]$errors)\n"
+            "  $assignments = $ast.FindAll({ param($node)\n"
+            "    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and\n"
+            "    $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and\n"
+            "    $readOnly -contains $node.Left.VariablePath.UserPath.ToLowerInvariant() }, $true)\n"
+            "  foreach ($node in $assignments) {\n"
+            "    Write-Host ('ASSIGNS=' + $file.Name + ':' + $node.Extent.StartLineNumber) }\n"
+            "}\n"
+            "Write-Host 'DONE=1'\n")
+        result, values = probe(script)
+        self.assertEqual(values.get('DONE'), '1', result.stderr)
+        assignments = [line for line in result.stdout.splitlines() if line.startswith('ASSIGNS=')]
+        self.assertEqual(assignments, [])
+
+
 if __name__ == '__main__':
     unittest.main()
