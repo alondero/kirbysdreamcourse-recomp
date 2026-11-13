@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define WRAM_SIZE 0x20000u
 #define MAX_TARGETS 32u
@@ -215,10 +216,69 @@ static double Score(const uint8_t *r, const Shot *s)
     return score - sqrt(nearest) * 10 - s->power * 0.01;
 }
 
+static int EnvFlag(const char *name)
+{
+    const char *v = getenv(name);
+    return v && v[0] == '1' && v[1] == '\0';
+}
+
+static double NowMs(void)
+{
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+static int CmpDouble(const void *a, const void *b)
+{
+    double da = *(const double *)a, db = *(const double *)b;
+    return (da > db) - (da < db);
+}
+
+static double prof_samples[MAX_CANDIDATES * 2u];
+static unsigned prof_count, verify_checked, verify_matched, verify_mismatches;
+static uint8_t *verify_ram, *verify_in_ram;
+
+static void VerifyPreviewAgainstOracle(const uint8_t *r_new, bool ok_new,
+                                       const CpuState *c_in)
+{
+    if (!verify_ram) verify_ram = malloc(WRAM_SIZE);
+    if (!verify_ram) { fputs("CPU verify: out of memory\n", stderr); abort(); }
+    memcpy(verify_ram, verify_in_ram, WRAM_SIZE);
+    CpuState c_ref = *c_in;
+    c_ref.ram = verify_ram;
+    bool ok_ref = interp_bridge_run(&c_ref, 0x81a9b8) == 1;
+    ++verify_checked;
+    if (ok_new != ok_ref) {
+        ++verify_mismatches;
+        fprintf(stderr, "CPU verify MISMATCH candidate %u: return new=%d ref=%d\n",
+                verify_checked, (int)ok_new, (int)ok_ref);
+        return;
+    }
+    if (Word(r_new, 0x6aee) != Word(verify_ram, 0x6aee)) {
+        ++verify_mismatches;
+        fprintf(stderr, "CPU verify MISMATCH candidate %u: $6AEE new=%u ref=%u\n",
+                verify_checked, Word(r_new, 0x6aee), Word(verify_ram, 0x6aee));
+        return;
+    }
+    for (unsigned off = 0xb746u; off < 0xcf46u; ++off) {
+        if (r_new[off] != verify_ram[off]) {
+            ++verify_mismatches;
+            fprintf(stderr, "CPU verify MISMATCH candidate %u: $%04X new=%02X ref=%02X\n",
+                    verify_checked, off, r_new[off], verify_ram[off]);
+            return;
+        }
+    }
+    ++verify_matched;
+}
+
 /* Run one candidate through the guest preview on a fresh copy of the planning
  * image. Only called inside the private snapshot. */
 static bool Preview(const Shot *s)
 {
+    static int prof_on = -1, verify_on = -1;
+    if (prof_on < 0) prof_on = EnvFlag("KDC_CPU_PROFILE");
+    if (verify_on < 0) verify_on = EnvFlag("KDC_CPU_PREVIEW_VERIFY");
     uint8_t *r = g_cpu.ram;
     memcpy(r, image, WRAM_SIZE);
     Put(r, 0xd9b4, s->angle);
@@ -231,7 +291,18 @@ static bool Preview(const Shot *s)
     Put(r, 0x6ace, bounces);  /* A patient player's full lofted guide. */
     CpuState c = regs;
     c.ram = r;
-    return KdcCpuRunPreview(&c, 0x81a9b8, horizon);
+    if (verify_on) {
+        if (!verify_in_ram) verify_in_ram = malloc(WRAM_SIZE);
+        if (!verify_in_ram) { fputs("CPU verify: out of memory\n", stderr); abort(); }
+        memcpy(verify_in_ram, r, WRAM_SIZE);
+    }
+    double t0 = prof_on ? NowMs() : 0.0;
+    bool ok = KdcCpuRunPreview(&c, 0x81a9b8, horizon);
+    if (prof_on && prof_count < sizeof(prof_samples) / sizeof(prof_samples[0])) {
+        prof_samples[prof_count++] = NowMs() - t0;
+    }
+    if (verify_on) VerifyPreviewAgainstOracle(r, ok, &c);
+    return ok;
 }
 
 static void Refine(void)
@@ -273,6 +344,20 @@ static void Decide(void)
     fprintf(stderr, "CPU %s: turn %u angle %u loft %u spin %u/%u power %u score %.2f "
             "(%u previews over %u frames)\n", KdcCpuName(difficulty), turn, best.angle, best.loft,
             best.spin_x, best.spin_y, best.power, best_score, previews, think_frames);
+    if (EnvFlag("KDC_CPU_PROFILE") && prof_count > 0) {
+        qsort(prof_samples, prof_count, sizeof(prof_samples[0]), CmpDouble);
+        double total = 0.0;
+        for (unsigned i = 0; i < prof_count; ++i) total += prof_samples[i];
+        double med = (prof_count & 1u)
+            ? prof_samples[prof_count / 2u]
+            : 0.5 * (prof_samples[prof_count / 2u - 1u] + prof_samples[prof_count / 2u]);
+        fprintf(stderr, "CPU profile: previews=%u preview_ms(med=%.3f min=%.3f max=%.3f total=%.3f)\n",
+                prof_count, med, prof_samples[0], prof_samples[prof_count - 1u], total);
+    }
+    if (EnvFlag("KDC_CPU_PREVIEW_VERIFY")) {
+        fprintf(stderr, "CPU verify: %u/%u candidates matched oracle ($6AEE + $B746..$CF45), mismatches=%u\n",
+                verify_matched, verify_checked, verify_mismatches);
+    }
 }
 
 static void Think(void)
@@ -321,6 +406,7 @@ static void StartTurn(void)
     phase = THINK;
     regs_ready = image_ready = false;
     queued = evaluated = previews = think_frames = 0;
+    prof_count = verify_checked = verify_matched = verify_mismatches = 0;
 }
 
 /* Turn the aim with the held and tapped Left/Right a person uses: one degree,

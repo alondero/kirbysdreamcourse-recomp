@@ -78,7 +78,7 @@ static bool PreviewReadWord(void *mem, uint32_t adrl, uint32_t adrh, uint16_t *o
         *out = (uint16_t)b->ram[addr] | ((uint16_t)b->ram[addr + 1u] << 8);
         return true;
     }
-    if (b->rom && PreviewIsLoRom(bank, addr) && addr < 0xFFFFu) {
+    if (b->rom && PreviewIsLoRom(bank, addr) && (addr & 0x7FFFu) < 0x7FFFu) {
         uint32_t off = PreviewLoRomOffset(bank, addr, b->rom_mask);
         *out = (uint16_t)b->rom[off] | ((uint16_t)b->rom[off + 1u] << 8);
         return true;
