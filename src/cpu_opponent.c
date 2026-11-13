@@ -231,7 +231,7 @@ static bool Preview(const Shot *s)
     Put(r, 0x6ace, bounces);  /* A patient player's full lofted guide. */
     CpuState c = regs;
     c.ram = r;
-    return interp_bridge_run(&c, 0x81a9b8) == 1;
+    return KdcCpuRunPreview(&c, 0x81a9b8, horizon);
 }
 
 static void Refine(void)

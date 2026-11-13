@@ -22,4 +22,7 @@ void KdcCpuReset(void);
 void KdcCpuFrame(uint32_t *inputs);
 /* True only while the planner holds its private rollback snapshot. */
 bool KdcCpuPlanning(void);
+/* Runs the guest trajectory preview subroutine on the caller's snapshot. */
+struct CpuState;
+bool KdcCpuRunPreview(struct CpuState *cpu, uint32_t entry_pc, unsigned horizon);
 #endif
