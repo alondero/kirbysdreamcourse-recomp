@@ -336,6 +336,59 @@ and two-player selection layouts, other menu/ending screens, mosaic effects,
 all course unlock states and unsampled scene transitions remain unqualified.
 
 
+## Course-select sky beneath the label (2026-11-12)
+
+The selection's bottom course-label panel spans exactly the native 256 pixels.
+Beside it, the margins previously showed a frozen strip of sky while the sky
+above drifted. BG3's sky is a perspective effect, not a static picture: an HDMA
+table writes BG3 vertical scroll on every scanline, and the game advances the
+whole table by one pixel each frame. On the label's scanlines the game replaces
+the remaining entries with one that selects the label page (horizontal scroll
+256, vertical scroll 0), so the reflected margins read a fixed sky row.
+
+| Data | Location | Layout |
+| --- | --- | --- |
+| Complete sky table | USA ROM `$83:A75C` | 224 one-line HDMA entries: count `1`, then a word |
+| Live table | WRAM `$7E:120F` | ROM entries minus the frame's phase for scanlines 1-175, then a 72-line label entry |
+
+HDMA entry `n` is visible on scanline `n + 1`. In a captured selection every
+live entry 0-174 equalled the ROM entry minus a single phase (58 at one frame,
+59 the next and 88 sixty frames later); the ROM table continues 233, 233, 234
+... beneath the split. The margins therefore use the ROM entry for the drawn
+scanline plus the live phase (live entry 0 minus ROM entry 0). Entries 0 and 1
+must both be one-line entries with the same phase, or the sky is not extended.
+
+A tile provider chooses only tiles: the PPU takes the row inside each tile from
+the native scanline's scroll, which differs from the sky's. The selection
+therefore installs the PPU's per-pixel background sampler, only on scanlines
+where the native field shows the label page without fine scroll, and only for
+BG3 margin pixels. Other layers, the native panel and every other scanline use
+the ordinary path. Margin columns are the existing reflected sky columns: the
+label's horizontal scroll is exactly one page. The sampler is enabled per line
+by the PPU's line-preparation hook, which the edge HUD owns during gameplay; on
+course select that hook is inert and the selection replaces it for the frame.
+HD textures do not apply to course select.
+
+The ROM-free regression `tests/course_select_sky_test.c` covers every label
+scanline at both margins, frame-to-frame phase changes, the native panel,
+other layers, sky scanlines, the end of the table, mosaic, mismatched live or
+ROM entries, a mid-frame scene change, disabled widescreen, a missing or
+wrong-size ROM, both cloud character banks, and leaving another owner's
+per-line hook in place. Before the implementation it failed at its first check.
+
+Real-ROM capture: the completed-course save, Start at frames 301/451/651 and A
+at 851/1051 (ten frames each), 43 extra columns. Across frames 1300-1399 the
+native 256 columns are pixel-identical to the previous build on every frame;
+all differences are in margin pixels of scanlines 176-224. Margin pixels on
+those scanlines changed during the interval (previously none did), matching
+the drift above the panel without a seam at the panel's top edge. An 800-column
+capture shows continuous sky beneath the panel to both edges.
+
+Not qualified: extra and two-player selection layouts, transitions into and out
+of selection, and the interpreter fallback. Any layout whose live table differs
+keeps the previous reflected strip.
+
+
 ## Between-hole scorecard classification (2026-11-04)
 
 The scorecard reuses the gameplay map registers `$51/$59/$3C` and character

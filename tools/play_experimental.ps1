@@ -76,8 +76,8 @@ try {
         if ($NoLauncher -or $Frames -gt 0 -or $DevHole) { $hostArgs += '--no-launcher' }
         if ($DevHole) { $hostArgs += @('--dev-hole', $DevHole) }
         if ($DevTwoPlayer) { $hostArgs += '--dev-two-player' }
-        $host = Invoke-NativeCommand -FilePath $exePath -ArgumentList $hostArgs
-        if ($host.ExitCode -ne 0) { throw "Experimental host exited with code $($host.ExitCode)." }
+        $run = Invoke-NativeCommand -FilePath $exePath -ArgumentList $hostArgs
+        if ($run.ExitCode -ne 0) { throw "Experimental host exited with code $($run.ExitCode)." }
     } finally {
         Pop-Location
     }

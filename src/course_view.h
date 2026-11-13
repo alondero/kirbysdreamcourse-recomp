@@ -3,11 +3,17 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 struct Ppu;
 /* Live terrain, excluding scorecards that reuse the course layout. */
 bool KdcIsCourse(const struct Ppu *ppu);
 void KdcPrepareCourseView(struct Ppu *ppu, const uint8_t *ram, int extra);
+/* Course select: continue the scrolling sky into the side margins of the
+ * course-label scanlines. rom is the verified 1 MiB USA image (NULL
+ * disables). Call after KdcPrepareCourseView and any other per-line hook
+ * owner (the edge HUD), which it temporarily replaces on course select. */
+void KdcPrepareSelectSky(struct Ppu *ppu, const uint8_t *rom, size_t rom_size);
 
 static inline uint16_t KdcReadWord(const uint8_t *ram, unsigned address)
 {

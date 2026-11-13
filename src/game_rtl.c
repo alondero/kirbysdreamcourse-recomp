@@ -142,6 +142,8 @@ void GameDrawPpuFrame(void)
     KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
     KdcPrepareSprites(g_snes->ppu, g_ram, g_ws_extra);
     KdcPrepareHud(g_snes->ppu, g_ram, g_ws_extra, KdcHudEdges());
+    KdcPrepareSelectSky(g_snes->ppu, g_snes->cart ? g_snes->cart->rom : NULL,
+                        g_snes->cart ? g_snes->cart->romImageSize : 0);
     snes_beam_frame_driver_draw_ppu_frame();
     KdcPracticeCaptureFont(g_snes->ppu);
     KdcReportSprites(snes_frame_counter);
