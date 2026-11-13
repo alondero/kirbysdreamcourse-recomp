@@ -108,6 +108,7 @@ class CpuRuntimeTest(unittest.TestCase):
                     self.assertEqual(first['after.wram.bin'], fallback['after.wram.bin'])
 
     def test_preview_runner_matches_bridge_oracle_across_holes(self):
+        import re
         from test_practice import PracticeRuntimeTest
         tap = PracticeRuntimeTest.tap
         entry = 'wait 500\n' + tap('start') + 'wait 120\n' + tap('down') * 4 + tap('a') + 'wait 60\n'
@@ -125,10 +126,21 @@ class CpuRuntimeTest(unittest.TestCase):
                     self, script, frames=6500, extra_env={'KDC_CPU_PREVIEW_VERIFY': '1'})
                 oracle, oracle_log = PracticeRuntimeTest.run_case(
                     self, script, frames=6500, extra_env={'KDC_CPU_PREVIEW_BRIDGE': '1'})
-                self.assertIn('mismatches=0', fast_log)
                 fast_turn = [l for l in fast_log.splitlines() if 'CPU HARD: turn 1 ' in l]
                 oracle_turn = [l for l in oracle_log.splitlines() if 'CPU HARD: turn 1 ' in l]
                 self.assertEqual(len(fast_turn), 1)
                 self.assertEqual(fast_turn, oracle_turn)
+                turn_m = re.search(r'\((\d+) previews over (\d+) frames\)', fast_turn[0])
+                self.assertIsNotNone(turn_m, fast_turn[0])
+                expected_previews = int(turn_m.group(1))
+                verify_m = re.search(
+                    r'CPU verify: (\d+)/(\d+) candidates matched oracle \(\$6AEE \+ \$B746\.\.\$CF45\), mismatches=(\d+)',
+                    fast_log)
+                self.assertIsNotNone(verify_m, fast_log)
+                matched, checked, mismatches = map(int, verify_m.groups())
+                self.assertEqual(mismatches, 0)
+                self.assertGreater(checked, 0)
+                self.assertEqual(matched, checked)
+                self.assertEqual(checked, expected_previews)
                 self.assertEqual(fast['after.wram.bin'], oracle['after.wram.bin'])
                 self.assertEqual(fast['after.sram.bin'], oracle['after.sram.bin'])
