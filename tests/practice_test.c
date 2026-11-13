@@ -14,6 +14,7 @@
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "CHECK %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 Snes *g_snes;
+int snes_frame_counter = 1;
 uint8 *g_sram;
 int g_sram_size = 8192;
 static uint8_t ram[0x20000], battery[8192], ordinary_file[8192], practice_file[8192];
@@ -133,12 +134,21 @@ static void CheckPracticeBadgeHudPlacement(void)
     ppu.window1right = 255;
     ppu.presentationPrepare(&ppu, 223, NULL);
     CHECK(!KdcHudActive(&ppu) && KdcHudTopStripActive(&ppu));
+    /* Late register writes after the top strip (scanlines 7..34) must not
+     * clear the latched top-strip state at end-of-frame draw time. */
+    ppu.hScroll[2] = 1;
+    CHECK(KdcHudTopStripActive(&ppu));
+    ppu.hScroll[2] = 0;
+    ppu.inidisp = 14;
+    CHECK(KdcHudTopStripActive(&ppu));
+    ppu.inidisp = 15;
     memset(fb, 0, sizeof(fb));
     KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
     CHECK(fb[38 * 256 + 84] == 0xff30206a && fb[3 * 256 + 84] == 0);
 
-    /* On a subsequent forced-blank frame, presentationPrepare is not called by
-     * ppu_runLine; KdcHudTopStripActive must not report a stale top strip. */
+    /* On a subsequent forced-blank frame, RtlRunFrame advances snes_frame_counter
+     * and ppu_runLine skips presentationPrepare; the stale stamp must not match. */
+    ++snes_frame_counter;
     ppu.inidisp = 0x80;
     CHECK(!KdcHudTopStripActive(&ppu));
     memset(fb, 0, sizeof(fb));

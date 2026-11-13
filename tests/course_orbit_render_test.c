@@ -19,6 +19,7 @@ static Ppu ppu, saved_ppu;
 static Cart cart;
 static Snes snes;
 Snes *g_snes = &snes;
+int snes_frame_counter;
 static uint32_t pixels[stride * height + 8], first[stride * height + 8];
 static uint32_t wide_pixels[(342 + padding) * height + 8];
 static uint32_t native_field[342 * height];

@@ -3,12 +3,14 @@
 #include "snes/ppu.h"
 #include <string.h>
 
+extern int snes_frame_counter;
+
 /* USA-only presentation. All artwork, digits and visibility are live.
  * No values are written into guest RAM, OAM, VRAM or registers. */
 static struct {
     const uint8_t *ram;
     bool enabled, active, multi, expanded, saw_top_lines, top_strip;
-    int extra, shift[2];
+    int extra, shift[2], top_strip_frame;
 } hud;
 
 static uint16_t Map(const Ppu *ppu, int column, int row)
@@ -21,6 +23,21 @@ bool KdcHudActive(const Ppu *ppu)
     return ppu && hud.active && ppu->backgroundSample == KdcHudSample;
 }
 
+/* Practice's top-center badge is drawn after the whole frame finishes, so
+ * query the 2P top-strip state recorded on the top strip's own scanlines
+ * (lines 7..34 prepare drawn rows 8..35) rather than re-reading end-of-frame
+ * registers that later scanlines may have modified. Stamping the latch with
+ * snes_frame_counter (incremented in RtlRunFrame before draw_ppu_frame) also
+ * expires the latch on a subsequent forced-blank frame where ppu_runLine
+ * skips sprite evaluation and PrepareLine never runs. */
+bool KdcHudTopStripActive(const Ppu *ppu)
+{
+    if (!ppu) return false;
+    return hud.saw_top_lines
+        ? (hud.top_strip && hud.top_strip_frame == snes_frame_counter)
+        : (KdcHudActive(ppu) && hud.multi && hud.expanded);
+}
+
 static bool Signature(const Ppu *ppu)
 {
     return hud.enabled && hud.ram && hud.extra >= 43 && KdcIsCourse(ppu) &&
@@ -31,19 +48,6 @@ static bool Signature(const Ppu *ppu)
         !PPU_objInterlace(ppu) && PPU_objSize(ppu) == 0 &&
         ppu->hScroll[2] == 0 && ppu->vScroll[2] == 0 &&
         !(ppu->screenWindowed[0] & 4) && !(ppu->cgadsub & 4);
-}
-
-/* Practice's top-center badge is drawn after the full frame finishes, so
- * query the 2P top-strip state recorded on the top strip's own scanlines
- * (lines 7..34 prepare drawn rows 8..35) rather than relying on whatever
- * window state the final scanline of the frame left behind. Re-check
- * Signature(ppu) so a subsequent forced-blank frame (where ppu_runLine skips
- * sprite evaluation) cannot report a stale latch. */
-bool KdcHudTopStripActive(const Ppu *ppu)
-{
-    if (!ppu || !Signature(ppu)) return false;
-    return hud.saw_top_lines ? hud.top_strip
-                             : (KdcHudActive(ppu) && hud.multi && hud.expanded);
 }
 
 /* Four 16px pieces form each fixed conditions portrait. Matching the full
@@ -144,6 +148,7 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     if (line == 0) {
         hud.saw_top_lines = false;
         hud.top_strip = false;
+        hud.top_strip_frame = -1;
     }
     bool on_top = line >= kKdcHudMultiTopY0 - 1 && line < kKdcHudMultiTopY1 - 1;
     if (on_top) hud.saw_top_lines = true;
@@ -166,7 +171,10 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     hud.active = Portraits(ppu);
     if (hud.active) {
         PpuSetBackgroundSample(ppu, KdcHudSample, NULL);
-        if (on_top && hud.multi && hud.expanded) hud.top_strip = true;
+        if (on_top && hud.multi && hud.expanded) {
+            hud.top_strip = true;
+            hud.top_strip_frame = snes_frame_counter;
+        }
     }
 }
 
@@ -387,6 +395,7 @@ void KdcPrepareHud(Ppu *ppu, const uint8_t *ram, int extra, bool enabled)
 {
     hud.ram = ram; hud.extra = extra; hud.enabled = enabled;
     hud.active = false; hud.saw_top_lines = false; hud.top_strip = false;
+    hud.top_strip_frame = -1;
     memset(ppu->presentationObjShift, 0, sizeof(ppu->presentationObjShift));
     ppu->presentationPrepare = enabled && extra ? PrepareLine : NULL;
     ppu->presentationContext = NULL;
