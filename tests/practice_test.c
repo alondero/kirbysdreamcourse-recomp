@@ -159,17 +159,37 @@ static void CheckPracticeBadgeHudPlacement(void)
     KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
     CHECK(fb[38 * 256 + 84] == 0xff30206a && fb[3 * 256 + 84] == 0);
 
-    /* On a subsequent forced-blank frame, RtlRunFrame advances snes_frame_counter
-     * and ppu_runLine skips presentationPrepare; the stale stamp must not match. */
+    /* Run-ahead model: speculative frames advance snes_frame_counter during
+     * RunaheadCapture (which calls GameDrawPpuFrame -> KdcPrepareHud), then
+     * snes_runahead restores snes_frame_counter before KdcPracticeDraw. The
+     * badge must still follow the presented speculative draw at y = 38. */
+    int saved_counter = snes_frame_counter;
+    snes_frame_counter = saved_counter + 2;
+    KdcPrepareHud(&ppu, ram, 96, true);
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    for (int line = 0; line < 36; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    snes_frame_counter = saved_counter;
+    CHECK(KdcHudTopStripActive(&ppu));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[38 * 256 + 84] == 0xff30206a && fb[3 * 256 + 84] == 0);
+
+    /* On a subsequent forced-blank frame, GameDrawPpuFrame calls KdcPrepareHud
+     * at the start of the draw and ppu_runLine skips presentationPrepare; the
+     * previous frame's top_strip latch must be cleared. */
     ++snes_frame_counter;
     ppu.inidisp = 0x80;
+    KdcPrepareHud(&ppu, ram, 96, true);
     CHECK(!KdcHudTopStripActive(&ppu));
     memset(fb, 0, sizeof(fb));
     KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
     CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
     ppu.inidisp = 15;
 
-    /* Next frame in 1P mode resets top_strip on line 0 and restores y = 3. */
+    /* Next frame in 1P mode resets top_strip in KdcPrepareHud and restores y = 3. */
+    KdcPrepareHud(&ppu, ram, 96, true);
     ram[0x17ff] = 0;
     ppu.window1left = 128;
     ppu.window1right = 127;
