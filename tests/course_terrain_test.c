@@ -3,6 +3,8 @@
  * regenerate the enlargement on every frame yet always shows its live
  * colours, and once a palette settles the enlargement catches up once. */
 #include "course_terrain.h"
+#include "hd_image.h"
+#include "hd_scaler.h"
 #include "snes/ppu.h"
 
 #include <stdio.h>
@@ -53,6 +55,19 @@ static uint64_t Scaled(void)
     KdcTerrainStats stats;
     KdcTerrainGetStats(&stats);
     return stats.scaled_tiles;
+}
+
+static void CheckFreshScenery(const KdcScenery *scenery)
+{
+    static uint8_t expected[1024 * 1024];
+    float luma[256] = {0};
+    for (unsigned i = 0; i < 32; ++i)
+        luma[i] = i & 3 ? KdcXbrLuma555(ppu.cgram[i]) : -1;
+    KdcHdImage image = {.src = scenery->native, .width = 256, .height = 256,
+        .src_stride = 256, .dst = expected, .dst_stride = 1024, .luma = luma};
+    CHECK(KdcHdImageUpdate(&image, 0, 0, 256, 256), "fresh enlargement failed");
+    CHECK(scenery->hd && !memcmp(expected, scenery->hd, sizeof(expected)),
+          "cached/partial scenery differs from a fresh enlargement");
 }
 
 int main(void)
@@ -121,6 +136,60 @@ int main(void)
     scenery = KdcSceneryUpdate(&ppu, ram, true);
     CHECK(!memcmp(incremental, scenery->hd, sizeof(incremental)),
           "the incremental scenery differs from a complete rebuild");
+
+    /* A looping backdrop must reuse its enlarged animation frames. Compare
+     * every hit with a fresh build, then change the map and settled palette
+     * to ensure neither can accidentally retrieve old artwork. */
+    static uint8_t phases[2][1024 * 1024];
+    for (unsigned phase = 0; phase < 2; ++phase) {
+        KdcTerrainReset();
+        ppu.vram[0x4000 + 16] = phase ? 0x00ff : 0xffff;
+        scenery = KdcSceneryUpdate(&ppu, ram, true);
+        memcpy(phases[phase], scenery->hd, sizeof(phases[phase]));
+    }
+    KdcTerrainReset();
+    for (unsigned frame = 0; frame < 20; ++frame) {
+        ppu.vram[0x4000 + 16] = frame & 1 ? 0x00ff : 0xffff;
+        scenery = KdcSceneryUpdate(&ppu, ram, true);
+        CHECK(!memcmp(phases[frame & 1], scenery->hd, sizeof(phases[0])),
+              "animation frame %u differs from fresh enlargement", frame);
+        if (frame == 1) {
+            KdcTerrainGetStats(&stats);
+            before = stats.scenery_enlargements;
+        }
+    }
+    KdcTerrainGetStats(&stats);
+    CHECK(stats.scenery_enlargements == before, "looping scenery was enlarged again");
+    CHECK(stats.scenery_cache_hits >= 18, "animation did not reuse cached frames");
+
+    for (unsigned frame = 0; frame < 10; ++frame) {
+        ppu.cgram[1] = frame & 1 ? 0x001f : 0x7fff;
+        ppu.vram[0x4000 + 16] = frame & 1 ? 0x00ff : 0xffff;
+        scenery = KdcSceneryUpdate(&ppu, ram, true);
+        CHECK(scenery->colors[1] == (frame & 1 ? 0xffff0000u : 0xffffffffu),
+              "cached scenery did not use live colours");
+        CHECK(!memcmp(phases[frame & 1], scenery->hd, sizeof(phases[0])),
+              "cycling palette changed the unsettled edge decisions");
+    }
+    KdcTerrainGetStats(&stats);
+    CHECK(stats.scenery_enlargements == before, "cycling palette defeated animation reuse");
+
+    /* Eviction plus small dirty rectangles: the chosen slot may contain an
+     * unrelated old frame, so unchanged regions must come from the last one. */
+    for (unsigned phase = 0; phase < 7; ++phase) {
+        Word(0xdadc + 2 * (phase * 137), 1 | ((phase & 1) ? 0xc000 : 0));
+        scenery = KdcSceneryUpdate(&ppu, ram, true);
+        CheckFreshScenery(scenery);
+    }
+    ppu.cgram[1] = 0x7fff;
+    for (unsigned i = 0; i < 31; ++i) scenery = KdcSceneryUpdate(&ppu, ram, true);
+    CheckFreshScenery(scenery);
+    scenery = KdcSceneryUpdate(&ppu, ram, false);
+    CHECK(!scenery->hd, "HD off retained a cached image");
+    ppu.vram[0x4000 + 8] ^= 0x00ff;
+    KdcSceneryUpdate(&ppu, ram, false);
+    scenery = KdcSceneryUpdate(&ppu, ram, true);
+    CheckFreshScenery(scenery);
 
     KdcTerrainReset();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);

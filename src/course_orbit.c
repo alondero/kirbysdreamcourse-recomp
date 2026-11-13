@@ -706,6 +706,18 @@ static void BackgroundRows(const Render *render, int row0, int row1)
                 if (enlarged) {
                     const uint8_t *source = scenery->hd +
                         (size_t)(v * 4 + (unsigned)((2 * sy + 1) * 4 / (2 * scale))) * 1024 + column * 32;
+                    if (scale == kKdcTerrainScale) {
+                        /* At the texture's own scale each output pixel is
+                         * the next texel. Avoid two runtime divisions per
+                         * pixel over the entire HD backdrop. */
+                        const int start = flip ? 31 - first * scale : first * scale;
+                        const int step = flip ? -1 : 1;
+                        for (int i = 0; i < run * scale; ++i) {
+                            const unsigned index = source[start + i * step];
+                            line[i] = index ? scenery->colors[index] : render->backdrop;
+                        }
+                        continue;
+                    }
                     for (int i = 0; i < run * scale; ++i) {
                         const int tx = (first + i / scale) * 4 + (2 * (i % scale) + 1) * 4 / (2 * scale);
                         const unsigned index = source[flip ? 31 - tx : tx];
@@ -1333,21 +1345,27 @@ static void ReportProfile(double prepared, double drawn)
     KdcTerrainGetStats(&now);
     if (prepared + drawn > kSlowPresent)
         fprintf(stderr, "[orbit] slow present: prepare_ms=%.3f draw_ms=%.3f terrain_rebuilds=%llu "
-                "composed_tiles=%llu scaled_tiles=%llu scenery_builds=%llu\n", prepared, drawn,
+                "composed_tiles=%llu scaled_tiles=%llu scenery_builds=%llu scenery_enlargements=%llu "
+                "scenery_cache_hits=%llu\n", prepared, drawn,
                 (unsigned long long)(now.rebuilds - previous.rebuilds),
                 (unsigned long long)(now.composed_tiles - previous.composed_tiles),
                 (unsigned long long)(now.scaled_tiles - previous.scaled_tiles),
-                (unsigned long long)(now.scenery_builds - previous.scenery_builds));
+                (unsigned long long)(now.scenery_builds - previous.scenery_builds),
+                (unsigned long long)(now.scenery_enlargements - previous.scenery_enlargements),
+                (unsigned long long)(now.scenery_cache_hits - previous.scenery_cache_hits));
     previous = now;
     prepare_total += prepared;
     draw_total += drawn;
     if (++frames < 300) return;
     fprintf(stderr, "[orbit] frames=%u prepare_ms=%.3f draw_ms=%.3f threads=%u faces=%u "
-            "terrain_rebuilds=%llu composed_tiles=%llu scaled_tiles=%llu\n", frames,
+            "terrain_rebuilds=%llu composed_tiles=%llu scaled_tiles=%llu scenery_enlargements=%llu "
+            "scenery_cache_hits=%llu\n", frames,
             prepare_total / frames, draw_total / frames, KdcParallelThreads(), mesh.count,
             (unsigned long long)(now.rebuilds - before.rebuilds),
             (unsigned long long)(now.composed_tiles - before.composed_tiles),
-            (unsigned long long)(now.scaled_tiles - before.scaled_tiles));
+            (unsigned long long)(now.scaled_tiles - before.scaled_tiles),
+            (unsigned long long)(now.scenery_enlargements - before.scenery_enlargements),
+            (unsigned long long)(now.scenery_cache_hits - before.scenery_cache_hits));
     before = now;
     prepare_total = draw_total = 0;
     frames = 0;
