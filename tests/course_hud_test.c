@@ -84,8 +84,13 @@ int main(void)
         p->vram[0x3c00 + 23 * 32 + 13] = 0x3d0e;
         p->vram[0x3c00 + 25 * 32 + 20] = 0x3d3c;
         p->vram[0x3c00 + 25 * 32 + 6] = 0x3d40;
-        for (unsigned row = 0; row < 8; ++row)
+        p->vram[0x3c00 + 28 * 32 + 16] = 0x34e7;
+        for (unsigned row = 0; row < 8; ++row) {
             p->vram[0x4000 + (0x34e7 & 1023) * 8 + row] = 0xffff;
+            /* Padding and outer rails Map(3, 22/26) have transparent interior rows. */
+            p->vram[0x4000 + (p->vram[0x3c00 + 22 * 32 + 3] & 1023) * 8 + row] = 0;
+            p->vram[0x4000 + (p->vram[0x3c00 + 26 * 32 + 3] & 1023) * 8 + row] = 0;
+        }
         memcpy(before_ram, ram, sizeof(ram));
         memcpy(before_vram, p->vram, sizeof(p->vram));
         memcpy(before_oam, p->oam, sizeof(p->oam));
@@ -142,6 +147,15 @@ int main(void)
                 assert(!WindowMasked(p, right - 81, 185) && WindowMasked(p, right - 80, 185));
                 assert(WindowMasked(p, right - 77, 185) && WindowMasked(p, right - 4, 185));
                 assert(WindowMasked(p, right - 1, 185) && !WindowMasked(p, right, 185));
+                /* Direct KdcHudOverlayPixel checks on window-masked interior edges
+                 * where the sampled BG3 tile equals clean (transparent without window). */
+                assert(!KdcHudOverlayPixel(p, 48, 11) && !KdcHudOverlayPixel(p, 207, 11));
+                assert(KdcHudOverlayPixel(p, 48, 12) && KdcHudOverlayPixel(p, 207, 12));
+                assert(KdcHudOverlayPixel(p, 48, 31) && KdcHudOverlayPixel(p, 207, 31));
+                assert(!KdcHudOverlayPixel(p, left + 32, 179) && KdcHudOverlayPixel(p, left + 32, 180));
+                assert(KdcHudOverlayPixel(p, left + 111, 195) && !KdcHudOverlayPixel(p, left + 111, 196));
+                assert(!KdcHudOverlayPixel(p, right - 80, 179) && KdcHudOverlayPixel(p, right - 80, 180));
+                assert(KdcHudOverlayPixel(p, right - 1, 195) && !KdcHudOverlayPixel(p, right - 1, 196));
             } else {
                 int edge = 256 + (extra > 96 ? 96 : extra) - 8;
                 /* Empty space is transparent over the white window, never
@@ -168,9 +182,20 @@ int main(void)
                 assert(sampled == 0x3d0e);
                 KdcHudSample(p, 2, edge - 120 + 24, 200, &sampled, &tx, &ty, NULL);
                 assert(sampled == 0x3d3c);
+                /* Direct KdcHudOverlayPixel checks on 1P transparent padding/clean
+                 * pixels backed by the left energy and right SoloCard windows. */
+                assert(!KdcHudOverlayPixel(p, left + 44, 179) && KdcHudOverlayPixel(p, left + 44, 180));
+                assert(KdcHudOverlayPixel(p, left + 36, 200) && KdcHudOverlayPixel(p, left + 111, 200));
+                assert(!KdcHudOverlayPixel(p, left + 112, 200));
+                assert(KdcHudOverlayPixel(p, left + 111, 211) && !KdcHudOverlayPixel(p, left + 111, 212));
+                assert(!KdcHudOverlayPixel(p, edge - 112, 163) && KdcHudOverlayPixel(p, edge - 112, 164));
+                assert(KdcHudOverlayPixel(p, edge - 112, 195) && KdcHudOverlayPixel(p, edge - 9, 195));
+                assert(KdcHudOverlayPixel(p, edge - 9, 211) && !KdcHudOverlayPixel(p, edge - 9, 212));
             }
             assert(!KdcHudOverlayPixel(p, 128, 100));
             assert(!KdcHudOverlayPixel(p, 128, 185));
+            /* Drawn scanline 224 (bottom visible row) must still evaluate BG3 overlay tiles. */
+            assert(KdcHudOverlayPixel(p, 128, 224));
             sampled = 0x4567; tx = 3; ty = 4;
             KdcHudSample(p, 2, 128, 130, &sampled, &tx, &ty, NULL);
             assert(sampled == 0x4567 && tx == 3 && ty == 4);

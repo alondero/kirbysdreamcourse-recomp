@@ -137,6 +137,15 @@ static void CheckPracticeBadgeHudPlacement(void)
     KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
     CHECK(fb[38 * 256 + 84] == 0xff30206a && fb[3 * 256 + 84] == 0);
 
+    /* On a subsequent forced-blank frame, presentationPrepare is not called by
+     * ppu_runLine; KdcHudTopStripActive must not report a stale top strip. */
+    ppu.inidisp = 0x80;
+    CHECK(!KdcHudTopStripActive(&ppu));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
+    ppu.inidisp = 15;
+
     /* Next frame in 1P mode resets top_strip on line 0 and restores y = 3. */
     ram[0x17ff] = 0;
     ppu.window1left = 128;

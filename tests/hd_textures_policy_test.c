@@ -163,8 +163,11 @@ int main(void)
     assert(HdAt(left + 4, 185) != hd_color);
     assert(HdAt(40, 185) == hd_color);
 
-    /* 2. Relocated Edge HUD card (left+36) stays native; old center HUD x=128 gets HD. */
+    /* 2. Relocated Edge HUD card (left+36 opaque border, left+44 and right-card
+     * x=284 window-masked native interior) stays native; old center HUD x=128 gets HD. */
     assert(HdAt(left + 36, 185) != hd_color);
+    assert(HdAt(left + 44, 185) == native_color);
+    assert(HdAt(284, 185) == native_color);
     assert(HdAt(128, 185) == hd_color);
 
     /* 3. Re-rendering from line 1 without advancing snes_frame_counter refreshes hud_rects. */

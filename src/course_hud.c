@@ -21,16 +21,6 @@ bool KdcHudActive(const Ppu *ppu)
     return ppu && hud.active && ppu->backgroundSample == KdcHudSample;
 }
 
-/* Practice's top-center badge is drawn after the full frame finishes, so
- * query the 2P top-strip state recorded on the top strip's own scanlines
- * (lines 7..34 prepare drawn rows 8..35) rather than relying on whatever
- * window state the final scanline of the frame left behind. */
-bool KdcHudTopStripActive(const Ppu *ppu)
-{
-    return ppu && (hud.saw_top_lines ? hud.top_strip
-                                     : (KdcHudActive(ppu) && hud.multi && hud.expanded));
-}
-
 static bool Signature(const Ppu *ppu)
 {
     return hud.enabled && hud.ram && hud.extra >= 43 && KdcIsCourse(ppu) &&
@@ -41,6 +31,19 @@ static bool Signature(const Ppu *ppu)
         !PPU_objInterlace(ppu) && PPU_objSize(ppu) == 0 &&
         ppu->hScroll[2] == 0 && ppu->vScroll[2] == 0 &&
         !(ppu->screenWindowed[0] & 4) && !(ppu->cgadsub & 4);
+}
+
+/* Practice's top-center badge is drawn after the full frame finishes, so
+ * query the 2P top-strip state recorded on the top strip's own scanlines
+ * (lines 7..34 prepare drawn rows 8..35) rather than relying on whatever
+ * window state the final scanline of the frame left behind. Re-check
+ * Signature(ppu) so a subsequent forced-blank frame (where ppu_runLine skips
+ * sprite evaluation) cannot report a stale latch. */
+bool KdcHudTopStripActive(const Ppu *ppu)
+{
+    if (!ppu || !Signature(ppu)) return false;
+    return hud.saw_top_lines ? hud.top_strip
+                             : (KdcHudActive(ppu) && hud.multi && hud.expanded);
 }
 
 /* Four 16px pieces form each fixed conditions portrait. Matching the full
@@ -326,7 +329,7 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
 
 bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 {
-    if (!KdcHudActive(ppu) || y < 0 || y >= 224) return false;
+    if (!KdcHudActive(ppu)) return false;
     bool in_hud = false;
     if (hud.expanded) {
         if (hud.multi && y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1 &&
