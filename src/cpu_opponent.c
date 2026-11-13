@@ -13,7 +13,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#undef MAX_PATH
+#else
 #include <time.h>
+#endif
 
 #define WRAM_SIZE 0x20000u
 #define MAX_TARGETS 32u
@@ -222,11 +228,34 @@ static int EnvFlag(const char *name)
     return v && v[0] == '1' && v[1] == '\0';
 }
 
-static double NowMs(void)
+static double NowMonoMs(void)
 {
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+#else
     struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+#endif
+}
+
+static double NowThreadCpuMs(void)
+{
+#ifdef _WIN32
+    FILETIME ct, et, kt, ut;
+    if (!GetThreadTimes(GetCurrentThread(), &ct, &et, &kt, &ut)) return 0.0;
+    ULARGE_INTEGER k = {{kt.dwLowDateTime, kt.dwHighDateTime}};
+    ULARGE_INTEGER u = {{ut.dwLowDateTime, ut.dwHighDateTime}};
+    return (double)(k.QuadPart + u.QuadPart) / 10000.0;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+#endif
 }
 
 static int CmpDouble(const void *a, const void *b)
@@ -235,7 +264,7 @@ static int CmpDouble(const void *a, const void *b)
     return (da > db) - (da < db);
 }
 
-static double prof_samples[MAX_CANDIDATES * 2u];
+static double prof_samples[MAX_CANDIDATES * 2u], prof_think_ms, prof_think_cpu_ms;
 static unsigned prof_count, verify_checked, verify_matched, verify_mismatches;
 static uint8_t *verify_new_ram, *verify_in_ram, *verify_snap;
 
@@ -311,10 +340,10 @@ static bool Preview(const Shot *s)
             abort();
         }
     }
-    double t0 = prof_on ? NowMs() : 0.0;
+    double t0 = prof_on ? NowMonoMs() : 0.0;
     bool ok = KdcCpuRunPreview(&c, 0x81a9b8, horizon);
     if (prof_on && prof_count < sizeof(prof_samples) / sizeof(prof_samples[0])) {
-        prof_samples[prof_count++] = NowMs() - t0;
+        prof_samples[prof_count++] = NowMonoMs() - t0;
     }
     if (verify_on) {
         memcpy(verify_new_ram, r, WRAM_SIZE);
@@ -370,8 +399,13 @@ static void Decide(void)
         double med = (prof_count & 1u)
             ? prof_samples[prof_count / 2u]
             : 0.5 * (prof_samples[prof_count / 2u - 1u] + prof_samples[prof_count / 2u]);
-        fprintf(stderr, "CPU profile: previews=%u preview_ms(med=%.3f min=%.3f max=%.3f total=%.3f)\n",
-                prof_count, med, prof_samples[0], prof_samples[prof_count - 1u], total);
+        double q1 = prof_samples[prof_count / 4u];
+        double q3 = prof_samples[(prof_count * 3u) / 4u];
+        fprintf(stderr,
+                "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
+                "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f)\n",
+                prof_count, prof_think_ms, prof_think_cpu_ms,
+                med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total);
     }
     if (EnvFlag("KDC_CPU_PREVIEW_VERIFY")) {
         fprintf(stderr, "CPU verify: %u/%u candidates matched oracle ($6AEE + $B746..$CF45), mismatches=%u\n",
@@ -381,6 +415,10 @@ static void Decide(void)
 
 static void Think(void)
 {
+    static int prof_on = -1;
+    if (prof_on < 0) prof_on = EnvFlag("KDC_CPU_PROFILE");
+    double think_t0 = prof_on ? NowMonoMs() : 0.0;
+    double think_cpu0 = prof_on ? NowThreadCpuMs() : 0.0;
     if (!image) image = malloc(WRAM_SIZE);
     if (!snapshot) {
         snapshot_capacity = RtlRollbackSnapshotBound();
@@ -407,6 +445,10 @@ static void Think(void)
     /* A failed restore would leave preview scratch in live guest state. */
     if (!restored) { fputs("CPU planner: rollback failed\n", stderr); abort(); }
     ++think_frames;
+    if (prof_on) {
+        prof_think_ms += NowMonoMs() - think_t0;
+        prof_think_cpu_ms += NowThreadCpuMs() - think_cpu0;
+    }
     if (evaluated < queued) return;
     if (!refined) Refine();
     else Decide();
@@ -426,6 +468,7 @@ static void StartTurn(void)
     regs_ready = image_ready = false;
     queued = evaluated = previews = think_frames = 0;
     prof_count = verify_checked = verify_matched = verify_mismatches = 0;
+    prof_think_ms = prof_think_cpu_ms = 0.0;
 }
 
 /* Turn the aim with the held and tapped Left/Right a person uses: one degree,

@@ -118,6 +118,8 @@ class CpuRuntimeTest(unittest.TestCase):
             ('course1_hole1', ('wait 90\n' + tap('a')) * 4),
             ('course2_hole1', 'wait 90\n' + tap('a') + 'wait 90\n' + tap('right') + 'wait 12\n' + tap('a') + ('wait 90\n' + tap('a')) * 2),
         ]
+        seen_maps = set()
+        total_checked = 0
         for label, course_pick in courses:
             with self.subTest(hole=label):
                 setup = course_pick + 'wait 400\n' + (tap('down') + 'wait 20\n') * 3 + tap('a')
@@ -126,6 +128,10 @@ class CpuRuntimeTest(unittest.TestCase):
                     self, script, frames=6500, extra_env={'KDC_CPU_PREVIEW_VERIFY': '1'})
                 oracle, oracle_log = PracticeRuntimeTest.run_case(
                     self, script, frames=6500, extra_env={'KDC_CPU_PREVIEW_BRIDGE': '1'})
+                map_id = int.from_bytes(fast['before.wram.bin'][0xabb2:0xabb4], 'little')
+                self.assertGreater(map_id, 0)
+                self.assertNotIn(map_id, seen_maps, f'{label} reused map_id={map_id}')
+                seen_maps.add(map_id)
                 fast_turn = [l for l in fast_log.splitlines() if 'CPU HARD: turn 1 ' in l]
                 oracle_turn = [l for l in oracle_log.splitlines() if 'CPU HARD: turn 1 ' in l]
                 self.assertEqual(len(fast_turn), 1)
@@ -139,8 +145,10 @@ class CpuRuntimeTest(unittest.TestCase):
                 self.assertIsNotNone(verify_m, fast_log)
                 matched, checked, mismatches = map(int, verify_m.groups())
                 self.assertEqual(mismatches, 0)
-                self.assertGreater(checked, 0)
+                self.assertGreaterEqual(checked, 77)
                 self.assertEqual(matched, checked)
                 self.assertEqual(checked, expected_previews)
+                total_checked += checked
                 self.assertEqual(fast['after.wram.bin'], oracle['after.wram.bin'])
                 self.assertEqual(fast['after.sram.bin'], oracle['after.sram.bin'])
+        self.assertGreaterEqual(total_checked, 128)
