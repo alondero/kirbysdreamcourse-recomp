@@ -115,6 +115,19 @@ static void CheckPracticeBadgeHudPlacement(void)
     ppu.vram[0x3c00 + 21 * 32 + 4] = 0x34e7;
     KdcPrepareHud(&ppu, ram, 96, true);
 
+    /* Display blanked over scanlines 0..39 and enabled on scanlines 40..60:
+     * no top strip was drawn, so KdcHudTopStripActive must stay false and the
+     * badge must stay at y = 3 even though KdcHudActive is true at draw time. */
+    ram[0x17ff] = 1;
+    ppu.window1left = 128;
+    ppu.window1right = 127;
+    for (int line = 40; line <= 60; ++line)
+        ppu.presentationPrepare(&ppu, line, NULL);
+    CHECK(KdcHudActive(&ppu) && !KdcHudTopStripActive(&ppu));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDraw((uint8_t *)fb, 256 * 4, 256, 224);
+    CHECK(fb[3 * 256 + 84] == 0xff30206a && fb[38 * 256 + 84] == 0);
+
     /* 1P mode: top-center strip is inactive, so badge draws at y = 3. */
     ram[0x17ff] = 0;
     for (int line = 0; line < 36; ++line)

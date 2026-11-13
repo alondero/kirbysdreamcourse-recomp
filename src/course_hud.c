@@ -9,7 +9,7 @@ extern int snes_frame_counter;
  * No values are written into guest RAM, OAM, VRAM or registers. */
 static struct {
     const uint8_t *ram;
-    bool enabled, active, multi, expanded, saw_top_lines, top_strip;
+    bool enabled, active, multi, expanded, top_strip;
     int extra, shift[2], top_strip_frame;
 } hud;
 
@@ -24,18 +24,17 @@ bool KdcHudActive(const Ppu *ppu)
 }
 
 /* Practice's top-center badge is drawn after the whole frame finishes, so
- * query the 2P top-strip state recorded on the top strip's own scanlines
- * (lines 7..34 prepare drawn rows 8..35) rather than re-reading end-of-frame
- * registers that later scanlines may have modified. Stamping the latch with
- * snes_frame_counter (incremented in RtlRunFrame before draw_ppu_frame) also
- * expires the latch on a subsequent forced-blank frame where ppu_runLine
- * skips sprite evaluation and PrepareLine never runs. */
+ * query the 2P top-strip latch recorded on the top strip's own scanlines
+ * (lines 7..34 prepare drawn rows 8..35) rather than reading end-of-frame
+ * registers that later scanlines may have modified. KdcPrepareHud clears the
+ * latch at the start of each draw, and the stamp must equal snes_frame_counter
+ * at draw time so a subsequent forced-blank draw that skips PrepareLine cannot
+ * reuse an earlier frame's latch. Run-ahead restores snes_frame_counter after
+ * speculation and is disabled for this game in launcher_settings.c. */
 bool KdcHudTopStripActive(const Ppu *ppu)
 {
     if (!ppu) return false;
-    return hud.saw_top_lines
-        ? (hud.top_strip && hud.top_strip_frame == snes_frame_counter)
-        : (KdcHudActive(ppu) && hud.multi && hud.expanded);
+    return hud.top_strip && hud.top_strip_frame == snes_frame_counter;
 }
 
 static bool Signature(const Ppu *ppu)
@@ -146,12 +145,10 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
 {
     (void)context;
     if (line == 0) {
-        hud.saw_top_lines = false;
         hud.top_strip = false;
         hud.top_strip_frame = -1;
     }
     bool on_top = line >= kKdcHudMultiTopY0 - 1 && line < kKdcHudMultiTopY1 - 1;
-    if (on_top) hud.saw_top_lines = true;
     memset(ppu->presentationObjShift, 0, sizeof(ppu->presentationObjShift));
     PpuSetBackgroundSample(ppu, NULL, NULL);
     hud.active = false;
@@ -394,7 +391,7 @@ bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 void KdcPrepareHud(Ppu *ppu, const uint8_t *ram, int extra, bool enabled)
 {
     hud.ram = ram; hud.extra = extra; hud.enabled = enabled;
-    hud.active = false; hud.saw_top_lines = false; hud.top_strip = false;
+    hud.active = false; hud.top_strip = false;
     hud.top_strip_frame = -1;
     memset(ppu->presentationObjShift, 0, sizeof(ppu->presentationObjShift));
     ppu->presentationPrepare = enabled && extra ? PrepareLine : NULL;
