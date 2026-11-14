@@ -582,6 +582,34 @@ static void HdEdgeHud(void)
     /* 43px margin + 20px source X - 51px shift = 12px from left. */
     assert(output[(179 * 4) * w + 12 * 4] == 0xffffff00);
     assert(output[(194 * 4 + 3) * w + 27 * 4 + 3] == 0xffffff00);
+    /* Versus stars are BG3 overlays, including while status is quiet. The
+     * orbit compositor must keep their relocated native colors and remove
+     * the old screen-space copies. Drawn row 7 samples SNES scanline 8. */
+    Word(0x17ff, 1);
+    ppu.window1left = 128; ppu.window1right = 127;
+    ppu.vram[0x3c00 + 21 * 32 + 4] = 0;
+    ppu.vram[0x3c00 + 32 + 1] = 0x0802;
+    ppu.vram[0x3c00 + 32 + 29] = 0x0802;
+    for (unsigned player = 0; player < 2; ++player)
+        for (unsigned i = 0; i < 4; ++i) {
+            unsigned slot = player * 4 + i;
+            ppu.oam[slot * 2] = (player ? 208 : 16) + (i & 1) * 16 +
+                                  ((171 + (i >> 1) * 16) << 8);
+            ppu.oam[slot * 2 + 1] = (player ? 0x35a8 : 0x33a0) + i * 2;
+            ppu.highOam[player] |= 2 << (i * 2);
+        }
+    KdcPrepareHud(&ppu, g_ram, 43, true);
+    ppu.presentationPrepare(&ppu, 7, NULL);
+    assert(KdcHudActive(&ppu));
+    use_custom = true; custom_count = 0;
+    for (unsigned i = 0; i < 342 * height; ++i) native_field[i] = 0xff123456;
+    assert(KdcOrbitDrawHd((uint8_t *)output, w * 4, (uint8_t *)native_field,
+                         342, height, 1, 4));
+    assert(output[(7 * 4) * w + 4 * 4] == 0xff123456);
+    assert(output[(7 * 4) * w + 322 * 4] == 0xff123456);
+    assert(output[(7 * 4) * w + (43 + 8) * 4] != 0xff123456);
+    assert(output[(7 * 4) * w + (43 + 232) * 4] != 0xff123456);
+    Word(0x17ff, 0);
     hd_enabled = false; use_custom = false;
     KdcPrepareHud(&ppu, g_ram, 0, false);
     ppu = before;

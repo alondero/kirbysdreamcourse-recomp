@@ -85,6 +85,16 @@ int main(void)
         p->vram[0x3c00 + 25 * 32 + 20] = 0x3d3c;
         p->vram[0x3c00 + 25 * 32 + 6] = 0x3d40;
         p->vram[0x3c00 + 28 * 32 + 16] = 0x34e7;
+        /* Versus star stacks occupy BG3 columns 1/2 and 29/30, rows 1..20.
+         * Synthetic opaque tiles stand in for the live star/empty cells. */
+        if (multi) {
+            p->vram[0x3c00 + 32 + 1] = 0x3d50;
+            p->vram[0x3c00 + 20 * 32 + 30] = 0x3d51;
+            for (unsigned row = 0; row < 8; ++row) {
+                p->vram[0x4000 + 0x150 * 8 + row] = 0xffff;
+                p->vram[0x4000 + 0x151 * 8 + row] = 0xffff;
+            }
+        }
         for (unsigned row = 0; row < 8; ++row) {
             p->vram[0x4000 + (0x34e7 & 1023) * 8 + row] = 0xffff;
             /* Padding and outer rails Map(3, 22/26) have transparent interior rows. */
@@ -124,6 +134,35 @@ int main(void)
             assert(sampled == (multi ? 0x3d40 : 0x3520) && tx == 0 && ty == 0);
             if (multi) {
                 int right = 256 + (extra > 96 ? 96 : extra) - 44;
+                int star_left = left - 8, star_right = right + 24;
+                KdcHudSample(p, 2, star_left, 8, &sampled, &tx, &ty, NULL);
+                assert(sampled == 0x3d50 && tx == 0 && ty == 0);
+                KdcHudSample(p, 2, star_right + 8, 167, &sampled, &tx, &ty, NULL);
+                assert(sampled == 0x3d51 && tx == 0 && ty == 7);
+                KdcHudSample(p, 2, 8, 8, &sampled, &tx, &ty, NULL);
+                assert(sampled == KdcReadWord(ram, 0xdadc + 2 * 33));
+                assert(KdcHudOverlayPixel(p, star_left, 8));
+                assert(KdcHudOverlayPixel(p, star_right + 8, 167));
+                assert(!KdcHudOverlayPixel(p, 8, 8));
+                /* Exercise the real PPU drawer with its unaligned edge shift,
+                 * retaining each stack's source pixels across the full row. */
+                PpuPixelPrioBufs native, moved;
+                PpuSetBackgroundSample(p, NULL, NULL);
+                ClearBackdrop(p, &native);
+                PpuDrawBackground_2bpp(p, &native, 8, false, 2, 0xf200, 0x1200);
+                PpuSetBackgroundSample(p, KdcHudSample, NULL);
+                ClearBackdrop(p, &moved);
+                PpuDrawBackground_2bpp(p, &moved, 8, false, 2, 0xf200, 0x1200);
+                for (int column = 0; column < 8; ++column)
+                    assert(moved.data[kPpuExtraLeftRight + star_left + column] ==
+                           native.data[kPpuExtraLeftRight + 8 + column]);
+                /* A clean cell in the column must show destination scenery,
+                 * rather than transplanting scenery from the original edge. */
+                KdcHudSample(p, 2, star_left, 16, &sampled, &tx, &ty, NULL);
+                bool flip;
+                unsigned clean_column = KdcReflectedColumn(star_left, 0, &flip) & 31;
+                assert(sampled == (KdcReadWord(ram, 0xdadc + 2 * (2 * 32 + clean_column)) ^
+                                   (flip ? 0x4000 : 0)));
                 KdcHudSample(p, 2, 44, 8, &sampled, &tx, &ty, NULL);
                 assert(sampled == 0x34e7 && tx == 0 && ty == 0);
                 KdcHudSample(p, 2, 208, 8, &sampled, &tx, &ty, NULL);
@@ -209,6 +248,13 @@ int main(void)
             p->window1left = 128; p->window1right = 127;
             p->presentationPrepare(p, 185, NULL);
             assert(KdcHudActive(p) && p->presentationObjShift[0] == expanded_shift);
+            if (multi) {
+                /* Stacks remain visible while the lower status panel is quiet. */
+                KdcHudSample(p, 2, left - 8, 8, &sampled, &tx, &ty, NULL);
+                assert(sampled == 0x3d50 && KdcHudOverlayPixel(p, left - 8, 8));
+                KdcHudSample(p, 2, 8, 8, &sampled, &tx, &ty, NULL);
+                assert(sampled == KdcReadWord(ram, 0xdadc + 2 * 33));
+            }
             uint16_t tile = 0x4567; int px = 3, py = 4;
             KdcHudSample(p, 2, 128, 130, &tile, &px, &py, NULL);
             assert(tile == 0x4567 && px == 3 && py == 4);

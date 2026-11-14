@@ -535,7 +535,7 @@ No new counters, ability names, timers or turn indicators are inferred.
 | Solo ability/conditions portrait | Lower left; exactly the same position in quiet and expanded states |
 | Solo energy | Extends inward from the portrait only when the original expanded panel is visible |
 | Registered name/drawn symbol, HOLE/SHOT, reserve stock | Separate lower-right card using the original live tiles |
-| Versus portraits and six-slot energy gauges | Mirrored left/right groups, with portraits remaining when expanded status hides |
+| Versus portraits, star stacks and six-slot energy gauges | Mirrored left/right groups; portraits and stars remain when expanded status hides |
 | Versus PLAYER labels and POINT totals | Compact upper-center strip, visible with the original expanded panel |
 | Shot power/spin/aim instrument and its companions | Original coordinates, visibility and timing |
 | World guideline, trajectory, course sprites | Original world relationship |
@@ -557,7 +557,8 @@ wide physical corners. Pixel proportions and HUD scale are unchanged.
 `src/course_hud.c` owns the USA layout. The expanded state comes from the live
 BG3 border, not a host timer or a guessed gameplay phase. Each portrait must
 match its complete four-piece OAM quartet, size, palette and original position;
-only those slots receive a horizontal presentation shift. The tile glyphs,
+only those slots receive an OBJ presentation shift. The versus BG3 star columns
+follow the same player offsets in both quiet and expanded states. The tile glyphs,
 custom player drawing, counters, stock and energy still come directly from the
 game's current VRAM. The clean scenery map at WRAM `$7E:DADC` restores the old
 panel area. No ROM artwork is copied into source or packages.
@@ -736,3 +737,44 @@ host/reference divergence documented in compatibility.md. Other courses,
 two-player finales, high-refresh/orbit presentation, ranking/ending variants
 and Linux remain unqualified. The final 74-test suite passes with 11 optional
 tests skipped; both independent review axes found no blocking issues.
+
+## Versus star counters (2026-11-14)
+
+The edge layout previously left both players' vertical star stacks at their
+original viewport positions. This affects 2P and 1P versus CPU, which share the
+game's two-player HUD. In the verified USA ROM, `$83:AD71` builds the live star
+columns and `$83:AE8C` uploads them to BG3 columns 1/2 and 29/30, rows 1..20.
+These are tile overlays, separate from the portrait OAM and expanded panel.
+`course_hud.c` now samples those live columns at each portrait's horizontal
+offset and restores clean scenery at their old positions. Empty source cells
+retain destination scenery. The existing 448-column comfort span still applies.
+The orbit/HD overlay mask follows the relocated columns, including quiet status.
+
+Verified ROM SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`
+before inspection and captures. The real-PPU regression failed before the fix at
+the first relocated star sample. It now passes at extra widths
+0/42/43/96/213/272, checking both players, the bottom stack row, quiet/expanded
+status, original-position cleanup, actual drawer pixels and unchanged guest
+resources. The orbit fixture checks both relocated columns' native colors and
+the removal of the old copies at 4x output scale.
+
+Windows build: native CMake/MinGW/Ninja, pinned patched framework
+`147b55e252dcb3e7680a99c7c2f50e7183891844`, existing guarded nine-state profile,
+`KDC_RELEASE_DEFAULTS=ON`; `cmake --build local/star-build -j 8`.
+Run the focused fixtures with `SNESRECOMP_ROOT` set to that patched framework:
+`python -m unittest discover -s tests -p test_course_hud.py -v` and
+`python -m unittest discover -s tests -p test_course_orbit_render.py -v`.
+The full `python -m unittest discover -s tests -v` suite passes: 95 tests,
+20 optional environment/runtime skips. Both independent review axes found
+no blocking issues.
+
+Two zero-SRAM, identical-input 6,500-frame Easy CPU matches at 448 columns
+replayed the natural-star scenario from `tests/test_cpu_opponent.py` against
+the pre-change and fixed builds. The CPU earned one star; visual inspection at
+6499 confirms its counter moved to the right edge. All ten retained checkpoints
+(6490..6499) have identical WRAM, VRAM and CGRAM: no guest-resource divergence
+was observed. Captures and executable builds remain private in ignored `local/`.
+The live capture covers the right stack; left/multiple-star stacks and other
+widths are covered synthetically. No fresh reference-emulator or Linux run was
+performed for this presentation change. Full match/turn-transition coverage
+remains unqualified; the existing host/reference timing divergence is unchanged.
