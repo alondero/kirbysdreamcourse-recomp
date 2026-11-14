@@ -80,6 +80,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_HD_COMPOSIT
 if(NOT KDC_HD_COMPOSITION_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-composition.patch after the HD performance patch")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.h" KDC_PRESENTATION_BUDGET_API
+     REGEX "snes_host_clock_presentation_allowed" LIMIT_COUNT 1)
+if(NOT KDC_PRESENTATION_BUDGET_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-presentation-budget.patch after the HD composition patch")
+endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/practice.c src/practice_draw.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c

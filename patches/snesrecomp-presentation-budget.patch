@@ -1,0 +1,185 @@
+--- a/runner/src/desktop/host_clock.h
++++ b/runner/src/desktop/host_clock.h
+@@ -9,12 +9,14 @@
+  * display's refresh rate while simulating at the guest's, interpolating
+  * between simulated frames; `alpha` is the interpolation weight.
+  *
+- * Debt policy: an ordinary slow frame drops its wall-time debt (the next
++ * Debt policy: a lockstep slow frame drops its wall-time debt (the next
+  * deadline is re-anchored to now) so the guest never bursts forward to catch
+  * up. A game may ask to PRESERVE the debt for phases where bursting is the
+  * right thing -- Super Metroid's door transitions, whose non-interactive
+  * frames refill the guest-driven audio queue -- through the host descriptor's
+- * keep_pacing_debt hook.
++ * keep_pacing_debt hook. Decoupled hosts instead retain up to 250 ms of
++ * ordinary debt and skip presentation while catching up. A stalled host
++ * resumes from the current time rather than replaying an unbounded backlog.
+  *
+  * Moved up from SuperMetroidRecomp's sm_video.c, where it was called SmClock
+  * and hardwired to that title's frame rate. Nothing in it was Super Metroid.
+@@ -33,6 +35,7 @@
+ typedef struct SnesHostClock {
+   double next_simulation, next_presentation;
+   double simulation_hz, presentation_hz;
++  double presentation_cost, last_presentation_finished;
+   uint64_t simulation_frames, presentations, missed_presentations;
+ } SnesHostClock;
+
+@@ -45,6 +48,22 @@
+                                        bool preserve_debt, double elapsed_periods);
+ bool   snes_host_clock_presentation_due(const SnesHostClock *c, double now);
+ void   snes_host_clock_presentation_done(SnesHostClock *c, double now);
++/* Decoupled hosts retain ordinary overruns so presentation can be dropped
++ * while simulation catches up. Non-loader debt is bounded to 250 ms. */
++void snes_host_clock_decoupled_simulation_done(SnesHostClock *c, double now,
++                                               bool preserve_debt, double elapsed_periods);
++/* A realtime consumer may throttle a frame even while the wall clock says
++ * it is late. Align to the actual producer start (excluding its waits), so
++ * catch-up does not fight that clock or suppress affordable interpolation. */
++void snes_host_clock_consumer_paced(SnesHostClock *c, double frame_started, double waited);
++/* Intermediate draws must fit before the next simulation. Post-simulation
++ * draws yield to overdue simulation, except a 100 ms starvation escape or
++ * a frame already throttled by an external realtime consumer (audio). */
++bool snes_host_clock_presentation_allowed(const SnesHostClock *c, double now,
++                                          bool intermediate, bool simulation_throttled);
++void snes_host_clock_presentation_finished(SnesHostClock *c, double started, double finished);
++double snes_host_clock_budget_deadline(const SnesHostClock *c, double now);
++
+ double snes_host_clock_alpha(const SnesHostClock *c, double now);
+ double snes_host_clock_next_deadline(const SnesHostClock *c);
+
+--- a/runner/src/desktop/host_clock.c
++++ b/runner/src/desktop/host_clock.c
+@@ -8,6 +8,7 @@
+   *c = (SnesHostClock){
+       .next_simulation = now,
+       .next_presentation = now,
++      .last_presentation_finished = now,
+       .simulation_hz = isfinite(simulation_hz) && simulation_hz > 0
+                            ? simulation_hz : SNES_HOST_NTSC_HZ,
+       .presentation_hz = isfinite(presentation_hz) && presentation_hz > 0
+@@ -61,3 +62,42 @@
+   if (!isfinite(display_refresh) || display_refresh < 1) return 60;
+   return fmin(display_refresh, 360);
+ }
++
++void snes_host_clock_decoupled_simulation_done(SnesHostClock *c, double now,
++                                               bool preserve_debt, double elapsed_periods) {
++  snes_host_clock_simulation_done(c, now, true, elapsed_periods);
++  if (!preserve_debt && c->next_simulation < now - 0.250)
++    c->next_simulation = now;
++}
++
++void snes_host_clock_consumer_paced(SnesHostClock *c, double frame_started, double waited) {
++  if (waited > 0) c->next_simulation = fmax(c->next_simulation, frame_started + waited);
++}
++
++bool snes_host_clock_presentation_allowed(const SnesHostClock *c, double now,
++                                          bool intermediate, bool simulation_throttled) {
++  if (!snes_host_clock_presentation_due(c, now)) return false;
++  if (intermediate) {
++    /* A decaying peak includes composition, upload and blocking vsync.
++     * Until the first measurement, reserve one requested present period. */
++    double cost = c->presentation_cost > 0 ? c->presentation_cost : 1 / c->presentation_hz;
++    return now + cost < c->next_simulation;
++  }
++  /* Audio backpressure already paced this simulation. A wall-clock backlog
++   * must not starve video while waiting for that independent consumer. */
++  return simulation_throttled || !snes_host_clock_simulation_due(c, now) ||
++         now - c->last_presentation_finished >= 0.100;
++}
++
++void snes_host_clock_presentation_finished(SnesHostClock *c, double started, double finished) {
++  snes_host_clock_presentation_done(c, started);
++  c->presentation_cost = fmax(fmax(0, finished - started), c->presentation_cost * 0.95);
++  c->last_presentation_finished = finished;
++}
++
++double snes_host_clock_budget_deadline(const SnesHostClock *c, double now) {
++  /* An unaffordable already-due presentation must not cause a busy wait. */
++  if (snes_host_clock_presentation_due(c, now) &&
++      !snes_host_clock_presentation_allowed(c, now, true, false)) return c->next_simulation;
++  return snes_host_clock_next_deadline(c);
++}
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -2321,6 +2321,7 @@
+ static SDL_AudioDeviceID g_audio_device;
+ /* Only the thread executing guest work may wait for the audio consumer. */
+ static _Thread_local bool g_audio_producer_active;
++static _Thread_local double g_audio_producer_wait_seconds;
+ static _Thread_local unsigned g_apu_lock_depth;
+ static _Thread_local bool g_audio_consumer_stalled;
+ static _Thread_local uint32_t g_audio_stalled_read;
+@@ -2380,7 +2381,9 @@
+       g_audio_stalled_read = read;
+       return;
+     }
++    double waited_at = MonotonicSeconds();
+     SDL_Delay(1);
++    g_audio_producer_wait_seconds += MonotonicSeconds() - waited_at;
+   }
+ }
+
+@@ -4437,7 +4440,7 @@
+       g_reset_clock = false;
+     }
+     if (paced_realtime && !snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
+-      if (snes_host_clock_presentation_due(&video_clock, MonotonicSeconds())) {
++      if (snes_host_clock_presentation_allowed(&video_clock, MonotonicSeconds(), true, false)) {
+         if (paced_custom) {
+           double presented_at = MonotonicSeconds();
+           g_present_alpha = presentation_hz != g_simulation_hz
+@@ -4446,10 +4449,10 @@
+           ++presentations;
+           /* Count deadlines at dispatch, not after the render/upload cost:
+            * crossing the next deadline while drawing does not consume it. */
+-          snes_host_clock_presentation_done(&video_clock, presented_at);
++          snes_host_clock_presentation_finished(&video_clock, presented_at, MonotonicSeconds());
+         }
+       }
+-      WaitUntil(paced_custom ? snes_host_clock_next_deadline(&video_clock)
++      WaitUntil(paced_custom ? snes_host_clock_budget_deadline(&video_clock, MonotonicSeconds())
+                              : video_clock.next_simulation);
+       continue;
+     }
+@@ -4612,6 +4615,7 @@
+     double guest_start = MonotonicSeconds();
+     PushExtraSeats();
+     if (game->before_run_frame) game->before_run_frame();
++    g_audio_producer_wait_seconds = 0;
+     g_audio_producer_active = paced_realtime && g_audio_device != 0;
+     /* Run-ahead owns the whole frame when it is on: it advances the guest
+      * once and speculates N further, so calling RtlRunFrame as well would
+@@ -4678,20 +4682,27 @@
+     ProfileEnd(kProfileTrace, profile_start);
+     if (paced_realtime) {
+       bool keep_debt = game->keep_pacing_debt && game->keep_pacing_debt();
+-      snes_host_clock_simulation_done(&video_clock, MonotonicSeconds(), keep_debt,
+-                                      RtlLastFramePeriods());
++      if (paced_custom) {
++        if (!keep_debt)
++          snes_host_clock_consumer_paced(&video_clock, guest_start, g_audio_producer_wait_seconds);
++        snes_host_clock_decoupled_simulation_done(&video_clock, MonotonicSeconds(), keep_debt,
++                                                  RtlLastFramePeriods());
++      } else
++        snes_host_clock_simulation_done(&video_clock, MonotonicSeconds(), keep_debt,
++                                        RtlLastFramePeriods());
+     }
+     else
+       snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
+     if (!g_snes->disableRender &&
+-        (!paced_custom || snes_host_clock_presentation_due(&video_clock, MonotonicSeconds()) ||
++        (!paced_custom || snes_host_clock_presentation_allowed(&video_clock, MonotonicSeconds(), false,
++                                                                 g_audio_producer_wait_seconds > 0) ||
+          (run_frames && frameCtr >= run_frames))) {
+       double presented_at = MonotonicSeconds();
+       g_present_alpha = paced_custom && presentation_hz != g_simulation_hz
+           ? snes_host_clock_alpha(&video_clock, presented_at) : 1;
+       DrawPpuFrameWithPerf();
+       ++presentations;
+-      snes_host_clock_presentation_done(&video_clock, presented_at);
++      snes_host_clock_presentation_finished(&video_clock, presented_at, MonotonicSeconds());
+     }
+     if (run_frames && frameCtr >= run_frames) {
+       running = false;
