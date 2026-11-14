@@ -7,7 +7,7 @@
  * No values are written into guest RAM, OAM, VRAM or registers. */
 static struct {
     const uint8_t *ram;
-    bool enabled, active, multi, expanded, top_strip;
+    bool enabled, active, multi, expanded, energy_only, top_strip;
     int extra, shift[2];
 } hud;
 
@@ -94,7 +94,7 @@ static bool Windows(const Ppu *ppu, unsigned layer, int y,
         if (y >= 180 && y < 212) { ranges[n++] = left + 36; ranges[n++] = left + 112; }
         if (y >= 164 && y < 212) { ranges[n++] = right - 80; ranges[n++] = right + 32; }
     } else {
-        if (y >= kKdcHudMultiTopY0 + kKdcHudMultiTopPad &&
+        if (!hud.energy_only && y >= kKdcHudMultiTopY0 + kKdcHudMultiTopPad &&
             y < kKdcHudMultiTopY1 - kKdcHudMultiTopPad) {
             ranges[n++] = kKdcHudMultiTopX0 + kKdcHudMultiTopPad;
             ranges[n++] = kKdcHudMultiTopX1 - kKdcHudMultiTopPad;
@@ -128,7 +128,14 @@ static bool SupportedWindow(const Ppu *ppu, int line)
     int left = 128, right = 127;
     if (hud.expanded) {
         if (!hud.multi && line >= 179 && line < 211) { left = 56; right = 235; }
-        if (hud.multi) {
+        if (hud.energy_only) {
+            /* The short panel returns during a shot without the score rows.
+             * Its backing starts at drawn row 196 and ends at row 212. */
+            if (line >= 195 && line < 201) { left = 48; right = 207; }
+            if (line == 201) { left = 47; right = 208; }
+            if (line == 202) { left = 46; right = 209; }
+            if (line >= 203 && line < 212) { left = 44; right = 212; }
+        } else if (hud.multi) {
             if (line == 171 || line == 202) { left = 46; right = 209; }
             if (line == 172 || line == 201) { left = 47; right = 208; }
             if (line >= 173 && line < 201) { left = 48; right = 207; }
@@ -149,9 +156,14 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     unsigned mode = KdcReadWord(hud.ram, 0x17ff);
     if (mode > 1) return;
     hud.multi = mode != 0;
-    /* The expanded panel's border is a live tile, not a guessed time/phase. */
+    /* The full and energy-only panels have independent live signatures.
+     * The game restores the energy rows before the score/name rows return. */
     uint16_t border = Map(ppu, hud.multi ? 4 : 2, hud.multi ? 21 : 22);
-    hud.expanded = border == (hud.multi ? 0x34e7 : 0x3519);
+    bool full = border == (hud.multi ? 0x34e7 : 0x3519);
+    hud.energy_only = hud.multi && !full &&
+        Map(ppu, 6, 24) == 0x3916 && Map(ppu, 25, 24) == 0x7516 &&
+        Map(ppu, 5, 26) == 0x34fc && Map(ppu, 26, 26) == 0x74fc;
+    hud.expanded = full || hud.energy_only;
     if (!SupportedWindow(ppu, line)) return;
     int inset = hud.extra > 96 ? hud.extra - 96 : 0;
     int left = -hud.extra + inset + 12;
@@ -161,7 +173,7 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
     hud.active = Portraits(ppu);
     if (hud.active) {
         PpuSetBackgroundSample(ppu, KdcHudSample, NULL);
-        if (on_top && hud.multi && hud.expanded) hud.top_strip = true;
+        if (on_top && hud.multi && full) hud.top_strip = true;
     }
 }
 
@@ -221,7 +233,7 @@ static void SoloCard(const Ppu *ppu, int dx, int y,
 }
 
 /* 4px end caps for the split 2P cards. In the USA ROM's BG3 HUD charset,
- * the 4 cap columns of tiles $0E7 (row 21 cols 4/27) and $0F7 (row 26
+ * the 4 cap columns of tiles $0E7 (row 21 cols 4/27) and $0FC (row 26
  * cols 5/26) are 100% opaque (2bpp color indices 1 and 2, zero transparent
  * pixels), so the window mask starts 4px inward at the white interior. */
 static void MultiCap(const Ppu *ppu, bool right_cap, int dx, int y, int y0, int y1,
@@ -229,7 +241,10 @@ static void MultiCap(const Ppu *ppu, bool right_cap, int dx, int y, int y0, int 
 {
     *px = (right_cap ? 4 : 0) + dx;
     if (y < y0 + 4) {
-        *tile = Map(ppu, right_cap ? 27 : 4, 21);
+        /* The short panel erases the score row from the map, but its HUD
+         * charset remains resident. Reuse that same outer-corner character. */
+        *tile = hud.energy_only ? (right_cap ? 0x74e7 : 0x34e7) :
+                                Map(ppu, right_cap ? 27 : 4, 21);
         *py = y - y0;
     } else if (y >= y1 - 4) {
         *tile = Map(ppu, right_cap ? 26 : 5, 26);
@@ -324,7 +339,7 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
             }
             sx = 128 + dx - 4; sy = y + 16;
         }
-        if (x >= kKdcHudMultiTopX0 && x < kKdcHudMultiTopX1 &&
+        if (!hud.energy_only && x >= kKdcHudMultiTopX0 && x < kKdcHudMultiTopX1 &&
             y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1) {
             if (x < kKdcHudMultiTopX0 + kKdcHudMultiTopPad ||
                 x >= kKdcHudMultiTopX1 - kKdcHudMultiTopPad) {
@@ -356,7 +371,7 @@ bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
     if (!KdcHudActive(ppu)) return false;
     bool in_hud = StarSourceX(x, y) >= 0;
     if (hud.expanded) {
-        if (hud.multi && y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1 &&
+        if (hud.multi && !hud.energy_only && y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1 &&
             x >= kKdcHudMultiTopX0 && x < kKdcHudMultiTopX1) {
             if (y >= kKdcHudMultiTopY0 + kKdcHudMultiTopPad &&
                 y < kKdcHudMultiTopY1 - kKdcHudMultiTopPad &&

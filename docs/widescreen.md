@@ -583,6 +583,16 @@ never enables it. Normal menu entry leaves those bounds at 255..0, while
 developer starts leave 0..0. These are title-specific observations, not new
 hardware rules.
 
+Versus also restores an energy-only panel during a shot, before the score/name
+rows return. Its live signature is the pair of energy corners at `(6,24)` and
+`(25,24)` (`$3916/$7516`) plus the bottom caps at `(5,26)` and `(26,26)`
+(`$34FC/$74FC`). Its native backing runs on prepared lines 195..211: 48..207
+through line 200, 47..208 at 201, 46..209 at 202, then 44..212. Edges moves
+these energy rows and their white backing to the same cards as the full panel,
+without showing the absent upper score strip. The erased score row no longer
+supplies its top caps; those cards sample the still-resident `$0E7` corner
+character directly. CPU matches share this multiplayer HUD path.
+
 The orbit renderer shares the portrait placement and restores the relocated
 HUD's opaque tiles/backing from the native field. It does not copy full old HUD
 row spans over the rotated world when Edges is active. The shot instrument
@@ -778,3 +788,40 @@ The live capture covers the right stack; left/multiple-star stacks and other
 widths are covered synthetically. No fresh reference-emulator or Linux run was
 performed for this presentation change. Full match/turn-transition coverage
 remains unqualified; the existing host/reference timing divergence is unchanged.
+
+### Versus energy-only edge HUD (2026-11-14)
+
+The third versus HUD state was being treated as quiet because the full
+score/name border was absent. Its original centered energy tiles survived,
+but the orbit compositor retained only their opaque pixels. This exposed the
+course through the white backing and left open corners where the original
+portraits had covered the frame. Recognizing the independent energy-only
+signature above keeps the energy cards, backing and caps together at the edges.
+
+Built the unchanged pinned guarded framework/profile with MinGW Release:
+`cmake --build local/hud-build -j 8`. With `SNESRECOMP_ROOT` pointing at that
+patched checkout, `python -m unittest discover -s tests -v` ran 95 tests:
+75 passed and 20 optional tests skipped. The real-PPU HUD fixture failed on
+the old source at the relocated energy sample, then passed with the fix. It
+covers all 224 prepared lines, widths 0/42/43/96/213/272, native window bounds,
+backing/overlay coverage, both caps, absent score strip and unchanged guest
+RAM/VRAM/OAM.
+
+Verified the supported ROM hash before deterministic local captures. The
+reproduction starts `--dev-hole multi:4:2` at width 342, Edges, HD and 144 Hz
+presentation, with camera vertical input -32768 on frames 500..559. The input
+script waits 649 frames, presses A for one frame, waits 118, presses A again,
+waits 118, presses A again, then waits 110. Across retained frames 600..999,
+all 1,200 WRAM/VRAM/CGRAM checkpoints match the pre-fix binary. The first
+changed presentation is frame 912; all 88 changed images have the short-panel
+signature, and playfield rows 40..159 match throughout. Visual inspection at
+980 confirms solid complete edge cards and no centered ghost. A standard
+renderer capture without HD or camera composition also retains complete cards.
+
+A natural Easy CPU match through the title/two-player menus reached its first
+CPU turn. Captures 3400..3700 include 123 energy-only checkpoints; inspected
+images retain both complete cards. Captures and runnable builds stay under
+ignored `local/`. These are presentation comparisons against the pre-fix host,
+not a new reference-emulator equivalence claim; the documented first baseline
+WRAM mismatch at host 15/reference 16 remains unresolved. Other abilities,
+later turns/holes, save/load, live resizing and Linux were not newly qualified.
