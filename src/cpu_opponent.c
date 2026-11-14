@@ -225,6 +225,14 @@ static double Score(const uint8_t *r, const Shot *s)
     return score - sqrt(nearest) * 10 - s->power * 0.01;
 }
 
+static int EnvInt(const char *name, int fallback)
+{
+    const char *v = getenv(name);
+    if (!v || !*v) return fallback;
+    int val = atoi(v);
+    return val > 0 ? val : fallback;
+}
+
 static int EnvFlag(const char *name)
 {
     const char *v = getenv(name);
@@ -282,7 +290,8 @@ static int CmpDouble(const void *a, const void *b)
 static double prof_samples[MAX_CANDIDATES * 2u], prof_cpu_samples[MAX_CANDIDATES * 2u];
 static double prof_think_ms, prof_think_cpu_ms;
 static unsigned prof_count, verify_checked, verify_matched, verify_mismatches;
-static uint8_t *verify_new_ram, *verify_in_ram, *verify_snap;
+static int prof_reps = 1;
+static uint8_t *verify_new_ram, *verify_in_ram, *verify_snap, *prof_in_ram;
 
 static void VerifyPreviewAgainstOracle(const uint8_t *r_new, bool ok_new,
                                        const CpuState *c_pre,
@@ -325,7 +334,10 @@ static void VerifyPreviewAgainstOracle(const uint8_t *r_new, bool ok_new,
 static bool Preview(const Shot *s)
 {
     static int prof_on = -1, verify_on = -1;
-    if (prof_on < 0) prof_on = EnvFlag("KDC_CPU_PROFILE");
+    if (prof_on < 0) {
+        prof_on = EnvFlag("KDC_CPU_PROFILE");
+        prof_reps = prof_on ? EnvInt("KDC_CPU_PROFILE_REPS", 1) : 1;
+    }
     if (verify_on < 0) verify_on = EnvFlag("KDC_CPU_PREVIEW_VERIFY");
     uint8_t *r = g_cpu.ram;
     memcpy(r, image, WRAM_SIZE);
@@ -356,12 +368,27 @@ static bool Preview(const Shot *s)
             abort();
         }
     }
+    if (prof_on && prof_reps > 1) {
+        if (!prof_in_ram) prof_in_ram = malloc(WRAM_SIZE);
+        if (!prof_in_ram) { fputs("CPU profile: out of memory\n", stderr); abort(); }
+        memcpy(prof_in_ram, r, WRAM_SIZE);
+    }
     double t0 = prof_on ? NowMonoMs() : 0.0;
-    double c0 = prof_on ? NowThreadCpuSample() : 0.0;
+    double c0 = prof_on ? (prof_reps > 1 ? NowThreadCpuMs() : NowThreadCpuSample()) : 0.0;
     bool ok = KdcCpuRunPreview(&c, 0x81a9b8, horizon);
+    if (prof_on && prof_reps > 1) {
+        for (int rep = 1; rep < prof_reps; ++rep) {
+            memcpy(r, prof_in_ram, WRAM_SIZE);
+            CpuState c_rep = c_pre;
+            c_rep.ram = r;
+            ok = KdcCpuRunPreview(&c_rep, 0x81a9b8, horizon);
+        }
+    }
     if (prof_on && prof_count < sizeof(prof_samples) / sizeof(prof_samples[0])) {
-        prof_cpu_samples[prof_count] = NowThreadCpuSample() - c0;
-        prof_samples[prof_count++] = NowMonoMs() - t0;
+        double c_dt = (prof_reps > 1 ? NowThreadCpuMs() : NowThreadCpuSample()) - c0;
+        double t_dt = NowMonoMs() - t0;
+        prof_cpu_samples[prof_count] = prof_reps > 1 ? (c_dt / (double)prof_reps) : c_dt;
+        prof_samples[prof_count++] = prof_reps > 1 ? (t_dt / (double)prof_reps) : t_dt;
     }
     if (verify_on) {
         memcpy(verify_new_ram, r, WRAM_SIZE);
@@ -429,14 +456,25 @@ static void Decide(void)
         double c_q1 = prof_cpu_samples[prof_count / 4u];
         double c_q3 = prof_cpu_samples[(prof_count * 3u) / 4u];
 #ifdef _WIN32
-        fprintf(stderr,
-                "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
-                "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
-                "preview_cpu_cyc(med=%.0f min=%.0f max=%.0f iqr=%.0f total=%.0f)\n",
-                prof_count, prof_think_ms, prof_think_cpu_ms,
-                med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total,
-                c_med, prof_cpu_samples[0], prof_cpu_samples[prof_count - 1u],
-                c_q3 - c_q1, cpu_total_raw);
+        if (prof_reps > 1) {
+            fprintf(stderr,
+                    "CPU profile: previews=%u reps=%d think_ms=%.3f think_cpu_ms=%.3f "
+                    "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
+                    "preview_cpu_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f)\n",
+                    prof_count, prof_reps, prof_think_ms, prof_think_cpu_ms,
+                    med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total,
+                    c_med, prof_cpu_samples[0], prof_cpu_samples[prof_count - 1u],
+                    c_q3 - c_q1, cpu_total_raw);
+        } else {
+            fprintf(stderr,
+                    "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
+                    "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
+                    "preview_cpu_cyc(med=%.0f min=%.0f max=%.0f iqr=%.0f total=%.0f)\n",
+                    prof_count, prof_think_ms, prof_think_cpu_ms,
+                    med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total,
+                    c_med, prof_cpu_samples[0], prof_cpu_samples[prof_count - 1u],
+                    c_q3 - c_q1, cpu_total_raw);
+        }
 #else
         fprintf(stderr,
                 "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
