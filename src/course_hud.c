@@ -240,11 +240,40 @@ static void MultiCap(const Ppu *ppu, bool right_cap, int dx, int y, int y0, int 
     }
 }
 
+/* $83:AD71 builds the live versus star columns; $83:AE8C uploads them to
+ * BG3 columns 1/2 and 29/30, rows 1..20. These remain when status hides. */
+static int StarPlayer(int x, int y)
+{
+    if (!hud.multi || y < 8 || y >= 168) return -1;
+    if (x >= 8 && x < 24) return 0;
+    if (x >= 232 && x < 248) return 1;
+    return -1;
+}
+
+static int StarSourceX(int x, int y)
+{
+    for (int player = 0; player < 2; ++player)
+        if (StarPlayer(x - hud.shift[player], y) == player)
+            return x - hud.shift[player];
+    return -1;
+}
+
 bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
                   uint16_t *tile, int *px, int *py, void *context)
 {
     (void)context;
     if (layer != 2 || !KdcHudActive(ppu)) return false;
+    int star_x = StarSourceX(x, y);
+    if (star_x >= 0 || StarPlayer(x, y) >= 0) {
+        *tile = Clean(x, y, px, py);
+        if (star_x >= 0) {
+            uint16_t source = Map(ppu, star_x >> 3, y >> 3);
+            uint16_t clean = KdcReadWord(hud.ram,
+                0xdadc + 2 * ((y >> 3) * 32 + (star_x >> 3)));
+            if (source != clean) { *tile = source; *px = star_x & 7; *py = y & 7; }
+        }
+        return true;
+    }
     /* Suppress only the original expanded status band; shot art is separate.
      * Native screen y here is the SNES scanline, including its +1 phase. */
     if (hud.expanded && y >= (hud.multi ? 168 : 176) && y < kKdcHudCardY1)
@@ -325,7 +354,7 @@ bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
 bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 {
     if (!KdcHudActive(ppu)) return false;
-    bool in_hud = false;
+    bool in_hud = StarSourceX(x, y) >= 0;
     if (hud.expanded) {
         if (hud.multi && y >= kKdcHudMultiTopY0 && y < kKdcHudMultiTopY1 &&
             x >= kKdcHudMultiTopX0 && x < kKdcHudMultiTopX1) {
@@ -355,6 +384,7 @@ bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
     }
     if (!in_hud) {
         if (x < 0 || x >= 256 ||
+            StarPlayer(x, y) >= 0 ||
             (hud.expanded && y >= (hud.multi ? 168 : 176) && y < kKdcHudCardY1))
             return false;
         uint16_t tile = Map(ppu, x >> 3, y >> 3);
