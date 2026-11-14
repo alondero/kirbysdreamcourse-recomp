@@ -50,6 +50,12 @@ bool RtlRollbackLoadFromMemory(const void *data, size_t size)
     return true;
 }
 
+bool KdcCpuRunPreview(CpuState *cpu, uint32_t entry_pc, unsigned horizon)
+{
+    (void)horizon;
+    return interp_bridge_run(cpu, entry_pc) == 1;
+}
+
 /* Where a shot from (2.5, 2.5) comes to rest along its angle. */
 static double Roll(unsigned power) { double v = power * 0.0025; return v * v / (2 * DECEL); }
 
