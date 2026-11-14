@@ -44,7 +44,9 @@ if ($DevHole) {
                 Copy-Item -LiteralPath $source -Destination $devDirectory -Recurse -Force
             }
         }
-        foreach ($name in @('config.ini', 'keybinds.ini')) {
+        foreach ($name in @('config.ini', 'keybinds.ini', 'kdc-hd.cfg',
+                           'kdc-presentation.cfg', 'kdc-hud.cfg',
+                           'kdc-widescreen.cfg', 'kdc-camera.cfg')) {
             $source = Join-Path $sourceDirectory $name
             $destination = Join-Path $devDirectory $name
             if ((Test-Path -LiteralPath $source) -and -not (Test-Path -LiteralPath $destination)) {

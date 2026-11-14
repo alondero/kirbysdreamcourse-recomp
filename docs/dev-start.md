@@ -5,6 +5,11 @@ save isolation is automatic; the developer CLI behavior below is unchanged.
 
 Build with `tools/setup.ps1`, then launch with `tools/play_experimental.ps1 -DevHole normal:3:7`. This is an opt-in testing shortcut. The original menu flow remains the default.
 
+The first developer launch seeds missing settings from the source executable,
+including HD textures, smooth presentation, HUD placement, view aspect and
+orbit-camera preferences. Existing settings in `local/dev-play` are retained,
+so subsequent developer changes remain independent of ordinary play.
+
 | Selection | Courses | Holes | ROM map slots |
 | --- | --- | --- | --- |
 | `normal:COURSE:HOLE` | 1-8 | 1-8 | 0-63 |
