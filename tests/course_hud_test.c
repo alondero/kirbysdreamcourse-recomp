@@ -38,6 +38,61 @@ static void Portrait(Ppu *p, bool multi)
         }
 }
 
+static void CompactVersus(Ppu *p)
+{
+    /* The score/name rows disappear during a shot, but the energy tiles
+     * return independently. Use synthetic art with the observed map signature. */
+    ram[0x17ff] = 1;
+    Portrait(p, true);
+    p->vram[0x3c00 + 21 * 32 + 4] = 0;
+    p->vram[0x3c00 + 24 * 32 + 6] = 0x3916;
+    p->vram[0x3c00 + 24 * 32 + 25] = 0x7516;
+    p->vram[0x3c00 + 26 * 32 + 5] = 0x34fc;
+    p->vram[0x3c00 + 26 * 32 + 26] = 0x74fc;
+    memcpy(before_ram, ram, sizeof(ram));
+    memcpy(before_vram, p->vram, sizeof(p->vram));
+    memcpy(before_oam, p->oam, sizeof(p->oam));
+    const int widths[] = {0, 42, 43, 96, 213, 272};
+    for (unsigned w = 0; w < sizeof(widths) / sizeof(widths[0]); ++w) {
+        int extra = widths[w];
+        int left = 12 - (extra > 96 ? 96 : extra);
+        int right = 256 + (extra > 96 ? 96 : extra) - 44;
+        PpuSetExtraSpace(p, extra);
+        KdcPrepareHud(p, ram, extra, true);
+        for (int line = 0; line < 224; ++line) {
+            /* Observed native short-panel HDMA profile, including its
+             * disabled score rows and one-line earlier bottom cutoff. */
+            p->window1left = 128; p->window1right = 127;
+            if (line >= 195 && line <= 200) { p->window1left = 48; p->window1right = 207; }
+            if (line == 201) { p->window1left = 47; p->window1right = 208; }
+            if (line == 202) { p->window1left = 46; p->window1right = 209; }
+            if (line >= 203 && line <= 211) { p->window1left = 44; p->window1right = 212; }
+            if (p->presentationPrepare) p->presentationPrepare(p, line, NULL);
+            assert(KdcHudActive(p) == (extra >= 43));
+            if (extra < 43) continue;
+            assert(p->presentationObjShift[0] == left - 16);
+            assert(p->presentationObjShift[4] == right - 208);
+        }
+        if (extra < 43) continue;
+        uint16_t tile = 0; int px = 0, py = 0;
+        KdcHudSample(p, 2, left + 32, 176, &tile, &px, &py, NULL);
+        assert(tile == 0x3916); /* Energy follows its edge portrait. */
+        assert(WindowMasked(p, left + 32, 185)); /* White backing follows too. */
+        assert(KdcHudOverlayPixel(p, left + 32, 185));
+        assert(KdcHudOverlayPixel(p, right - 1, 185));
+        assert(!KdcHudOverlayPixel(p, 128, 200)); /* No centered ghost strip. */
+        KdcHudSample(p, 2, left + 112, 176, &tile, &px, &py, NULL);
+        assert(tile == 0x74e7); /* Cap survives removal of the score row. */
+        KdcHudSample(p, 2, right - 84, 176, &tile, &px, &py, NULL);
+        assert(tile == 0x34e7);
+        assert(!WindowMasked(p, 128, 12));
+        assert(!KdcHudTopStripActive(p));
+    }
+    assert(!memcmp(before_ram, ram, sizeof(ram)));
+    assert(!memcmp(before_vram, p->vram, sizeof(p->vram)));
+    assert(!memcmp(before_oam, p->oam, sizeof(p->oam)));
+}
+
 int main(void)
 {
     Ppu *p = calloc(1, sizeof(*p));
@@ -280,6 +335,7 @@ int main(void)
         p->presentationPrepare(p, 185, NULL); assert(!KdcHudActive(p));
         p->screenEnabled[0] = 23;
     }
+    CompactVersus(p);
     KdcPrepareHud(p, ram, 96, false);
     assert(!p->presentationPrepare && !p->presentationWindows && !p->backgroundSample);
     free(p);
