@@ -156,13 +156,14 @@ frames in native and fallback modes, compares direct defaults with explicit
 developer settings and checks wrong-ROM rejection. It keeps diagnostics
 private. These checks do not qualify interactive UI or full-game playability.
 
-Test the extracted ZIP in a clean Windows directory without developer tools
-or a generation step: correct ROM, wrong/missing-ROM handling, launch, audio,
-input, settings and persistence. Test direct EXE launch and the actual release
-timing configuration, not just the development play script. Verify the local
-ROM's SHA-256 before ROM-dependent work. Replay deterministic native and
-fallback scenarios against the pinned reference where practical; record first
-divergence and untested paths in the notes. Report skipped checks accurately.
+Test the extracted ZIP without developer tools or a generation step. Verify
+the ROM hash before ROM-dependent work, exercise direct launch with the actual
+release timing defaults in native and fallback modes, and check wrong-ROM
+rejection. The packaged smoke checks above satisfy this baseline when they pass.
+Test audio, input, settings and persistence interactively when practical; an
+experimental release need not wait for unavailable interactive checks. Replay
+deterministic scenarios against the pinned reference where practical. Record
+the first known divergence and accurately report untested paths in the notes.
 
 If a needed workflow or build path is missing, implement and validate it only
 within the authorized release scope before proceeding. Never assume a workflow
