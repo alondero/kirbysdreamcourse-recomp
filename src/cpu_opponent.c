@@ -280,7 +280,7 @@ static int CmpDouble(const void *a, const void *b)
 }
 
 static double prof_samples[MAX_CANDIDATES * 2u], prof_cpu_samples[MAX_CANDIDATES * 2u];
-static double prof_think_ms, prof_think_cpu_ms, prof_think_cpu_raw;
+static double prof_think_ms, prof_think_cpu_ms;
 static unsigned prof_count, verify_checked, verify_matched, verify_mismatches;
 static uint8_t *verify_new_ram, *verify_in_ram, *verify_snap;
 
@@ -429,23 +429,25 @@ static void Decide(void)
         double c_q1 = prof_cpu_samples[prof_count / 4u];
         double c_q3 = prof_cpu_samples[(prof_count * 3u) / 4u];
 #ifdef _WIN32
-        double scale = (prof_think_cpu_raw > 0.0 && prof_think_cpu_ms > 0.0)
-            ? (prof_think_cpu_ms / prof_think_cpu_raw) : 0.0;
-#else
-        double scale = 1e-3; /* microseconds -> milliseconds */
-#endif
         fprintf(stderr,
                 "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
                 "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
-                "preview_cpu_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
-                "preview_cpu_raw(med=%.0f min=%.0f max=%.0f iqr=%.0f total=%.0f)\n",
+                "preview_cpu_cyc(med=%.0f min=%.0f max=%.0f iqr=%.0f total=%.0f)\n",
                 prof_count, prof_think_ms, prof_think_cpu_ms,
                 med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total,
-                c_med * scale, prof_cpu_samples[0] * scale,
-                prof_cpu_samples[prof_count - 1u] * scale, (c_q3 - c_q1) * scale,
-                cpu_total_raw * scale,
                 c_med, prof_cpu_samples[0], prof_cpu_samples[prof_count - 1u],
                 c_q3 - c_q1, cpu_total_raw);
+#else
+        fprintf(stderr,
+                "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
+                "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
+                "preview_cpu_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f)\n",
+                prof_count, prof_think_ms, prof_think_cpu_ms,
+                med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total,
+                c_med * 1e-3, prof_cpu_samples[0] * 1e-3,
+                prof_cpu_samples[prof_count - 1u] * 1e-3, (c_q3 - c_q1) * 1e-3,
+                cpu_total_raw * 1e-3);
+#endif
     }
     if (EnvFlag("KDC_CPU_PREVIEW_VERIFY")) {
         fprintf(stderr, "CPU verify: %u/%u candidates matched oracle ($6AEE + $B746..$CF45), mismatches=%u\n",
@@ -459,7 +461,6 @@ static void Think(void)
     if (prof_on < 0) prof_on = EnvFlag("KDC_CPU_PROFILE");
     double think_t0 = prof_on ? NowMonoMs() : 0.0;
     double think_cpu0 = prof_on ? NowThreadCpuMs() : 0.0;
-    double think_raw0 = prof_on ? NowThreadCpuSample() : 0.0;
     if (!image) image = malloc(WRAM_SIZE);
     if (!snapshot) {
         snapshot_capacity = RtlRollbackSnapshotBound();
@@ -489,7 +490,6 @@ static void Think(void)
     if (prof_on) {
         prof_think_ms += NowMonoMs() - think_t0;
         prof_think_cpu_ms += NowThreadCpuMs() - think_cpu0;
-        prof_think_cpu_raw += NowThreadCpuSample() - think_raw0;
     }
     if (evaluated < queued) return;
     if (!refined) Refine();
@@ -510,7 +510,7 @@ static void StartTurn(void)
     regs_ready = image_ready = false;
     queued = evaluated = previews = think_frames = 0;
     prof_count = verify_checked = verify_matched = verify_mismatches = 0;
-    prof_think_ms = prof_think_cpu_ms = prof_think_cpu_raw = 0.0;
+    prof_think_ms = prof_think_cpu_ms = 0.0;
 }
 
 /* Turn the aim with the held and tapped Left/Right a person uses: one degree,
