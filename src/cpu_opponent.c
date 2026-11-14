@@ -275,9 +275,7 @@ static double NowThreadCpuSample(void)
     ULONG64 cyc = 0;
     return QueryThreadCycleTime(GetCurrentThread(), &cyc) ? (double)cyc : 0.0;
 #else
-    struct timespec ts;
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-    return (double)ts.tv_sec * 1e6 + (double)ts.tv_nsec / 1e3; /* microseconds */
+    return NowThreadCpuMs();
 #endif
 }
 
@@ -477,14 +475,13 @@ static void Decide(void)
         }
 #else
         fprintf(stderr,
-                "CPU profile: previews=%u think_ms=%.3f think_cpu_ms=%.3f "
+                "CPU profile: previews=%u reps=%d think_ms=%.3f think_cpu_ms=%.3f "
                 "preview_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f) "
                 "preview_cpu_ms(med=%.3f min=%.3f max=%.3f iqr=%.3f total=%.3f)\n",
-                prof_count, prof_think_ms, prof_think_cpu_ms,
+                prof_count, prof_reps, prof_think_ms, prof_think_cpu_ms,
                 med, prof_samples[0], prof_samples[prof_count - 1u], q3 - q1, total,
-                c_med * 1e-3, prof_cpu_samples[0] * 1e-3,
-                prof_cpu_samples[prof_count - 1u] * 1e-3, (c_q3 - c_q1) * 1e-3,
-                cpu_total_raw * 1e-3);
+                c_med, prof_cpu_samples[0], prof_cpu_samples[prof_count - 1u],
+                c_q3 - c_q1, cpu_total_raw);
 #endif
     }
     if (EnvFlag("KDC_CPU_PREVIEW_VERIFY")) {
