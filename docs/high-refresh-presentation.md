@@ -118,6 +118,9 @@ records identity/match coverage. `--pictures` retains presented images for the
 shot interval instead of logging the whole session. Private ROM-derived data
 stays under `local/` and is not committed or packaged.
 
+Issue #67's HD orbit overload and the host presentation budget are covered in
+[HD orbit pacing](orbit-pacing.md), including paced reproduction commands.
+
 ## Results and limits
 
 Windows/MinGW-w64 GCC 15.2.0 Release build passed. The full suite ran 61 tests:
