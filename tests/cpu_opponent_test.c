@@ -4,6 +4,7 @@
 #include "cpu_opponent.h"
 #include "common_rtl.h"
 #include "cpu_state.h"
+#include "snes_overlay_draw.h"
 #include "snes/interp_bridge.h"
 #include <math.h>
 #include <stdio.h>
@@ -16,7 +17,7 @@ static uint8_t ram[0x20000], before[0x20000], saved[0x20000];
 static uint32_t sites[16];
 static InterpPreOpcodeHook hooks[16];
 static unsigned count, previews, max_loft, horizon_seen;
-static bool saved_valid;
+static bool saved_valid, stone_course;
 CpuState g_cpu;
 
 bool interp_bridge_add_pre_opcode_hook(uint32_t pc, InterpPreOpcodeHook hook)
@@ -67,14 +68,16 @@ int interp_bridge_run(CpuState *cpu, uint32_t pc)
     Put(0x6ad2, 40);
     At(cpu, 0x81aa0e); /* The guide's tick limit, as the guest reaches it. */
     unsigned ticks = Word(0x6ad2);
+    if (stone_course && Word(0xd9b6)) ticks = 240;
     if (!Word(0x6ad6)) horizon_seen = ticks;
     double a = Word(0xd9b4) * 3.14159265358979323846 / 180, v = Word(0x6b3c) * 0.0025;
+    if (stone_course && Word(0xd9b6)) v *= 1.4;
     double x = 2.5, y = 2.5;
     unsigned n = 0;
     for (; n < ticks / 3 && n < 512 && v > 0; ++n, v -= DECEL) {
         Fixed(0xb746 + n * 2, 0xbb46 + n * 2, x);
         Fixed(0xbf46 + n * 2, 0xc346 + n * 2, y);
-        Put(0xc746 + n * 2, 0); Put(0xcb46 + n * 2, 0);
+        Put(0xc746 + n * 2, 0); Put(0xcb46 + n * 2, stone_course && Word(0xd9b6) ? 4 : 0);
         x += cos(a) * v; y += sin(a) * v;
     }
     Put(0x6aee, n);
@@ -89,6 +92,13 @@ static void Course(unsigned d)
     Put(0x8b92, 16); Put(0x8b94, 16);
     Put(0xb4b8, 8); Put(0xb4ba, 0xffff); Put(0xb4f8, 0); Put(0x4e1c, 0x49);
     Put(0xb538, 6); Put(0xb578, 5); /* The cup, 5 cells away at about 37 degrees. */
+    /* Four closer stars must not crowd the open cup out of the search. */
+    for (unsigned i = 1; i <= 4; ++i) {
+        unsigned o = i * 2;
+        Put(0xb4b8 + o, 0x40); Put(0xb4f8 + o, o); Put(0x4e1c + o, 0x49);
+        Put(0xb538 + o, 2); Put(0xb578 + o, 2 + i);
+    }
+    Put(0xb4c2, 0xffff);
     Fixed(0xd8ac, 0xd8b0, 2.5); Fixed(0xd8b4, 0xd8b8, 2.5);
     unsigned level = KdcCpuHandicap(d);
     static const unsigned caps[] = {63, 58, 50};
@@ -96,6 +106,171 @@ static void Course(unsigned d)
     Put(0x6acc, 3 - level);
     Put(0x6b5e, 3 - level);
     Put(0xd9b4, 300); /* The previous aim, well away from the cup. */
+}
+
+static unsigned ChooseAngle(CpuState *cpu)
+{
+    Put(0x1803, 2);
+    At(cpu, 0x81a619);
+    At(cpu, 0x81a680);
+    for (unsigned f = 0; f < 800; ++f) {
+        uint32_t input = 0;
+        KdcCpuFrame(&input);
+        At(cpu, 0x81a680);
+        if (Word(0x6b) == 0x80) return Word(0xd9b4);
+        unsigned a = Word(0xd9b4);
+        if (Word(0x67) == 0x200) Put(0xd9b4, (a + 1) % 360);
+        if (Word(0x67) == 0x100) Put(0xd9b4, (a + 359) % 360);
+    }
+    CHECK(0);
+    return 0;
+}
+
+static void TargetPriorities(CpuState *cpu)
+{
+    for (unsigned d = 1; d <= 3; ++d) {
+        KdcCpuSelect(d);
+        Course(d);
+        /* A cup is still valid after its old enemy task has gone away. */
+        Put(0xb4f8, 0xffff);
+        unsigned a = ChooseAngle(cpu);
+        CHECK(a > 25 && a < 50);
+        for (unsigned gift = 0; gift <= 2; ++gift) {
+            KdcCpuSelect(d);
+            Course(d);
+            Put(0xb4b8, 0x40); Put(0xb4ba, 0x41); Put(0xb4bc, 0xffff);
+            Put(0xb4f8, 0); Put(0xb4fa, 2);
+            Put(0x4e1c, 0x49); Put(0x4e1e, 0x49);
+            Put(0xb538, 6); Put(0xb578, 2);
+            Put(0xb53a, 2); Put(0xb57a, 6);
+            Put(0x539c, 2); Put(0x539e, gift == 2 ? 0 : 2);
+            Put(0x531e, gift ? 3 : 0);
+            a = ChooseAngle(cpu);
+            if (gift == 1) CHECK(a > 80 && a < 100);
+            else CHECK(a < 10 || a > 350); /* A star does not grant an ability. */
+        }
+    }
+}
+
+static unsigned Pad(void)
+{
+    uint32_t input = 0xabcdef;
+    KdcCpuFrame(&input);
+    CHECK((input & 0xfff) == 0xdef); /* Never take P1's controller. */
+    return input >> 12;
+}
+
+static void Flight(CpuState *cpu, unsigned ability)
+{
+    Course(KDC_CPU_HARD);
+    Put(0x1803, 2); Put(0x180b, 2);
+    Put(0xd9c4, ability);
+    Fixed(0xd9f0, 0xd9f2, 2.5); Fixed(0xd9f4, 0xd9f6, 2.5);
+    Put(0xd9d4, 2097); Put(0xd9d6, 1573); /* Toward cup, would stop short. */
+    At(cpu, 0x81a619);
+    At(cpu, 0x81c04c);
+}
+
+static void PlannedStoneDrop(CpuState *cpu)
+{
+    stone_course = true;
+    for (unsigned ability = 0; ability <= 1; ++ability) {
+        KdcCpuSelect(KDC_CPU_HARD);
+        Course(KDC_CPU_HARD);
+        Put(0xb4ba, 0xffff); Put(0xb538, 12); Put(0xb578, 2);
+        Put(0xd9c4, ability);
+        unsigned a = ChooseAngle(cpu);
+        CHECK(a < 10 || a > 350);
+        /* Ground rolls cannot reach this cup. A loft crosses high above it.
+         * Only Stone makes that otherwise-poor trajectory worth choosing. */
+        if (!ability) { CHECK(!Word(0xd9b6)); continue; }
+        CHECK(Word(0xd9b6));
+        Put(0x180b, 2); Put(0xd9ec, 1);
+        Fixed(0xd9f8, 0xd9fa, 4); Put(0xd9d8, 0xff00);
+        Put(0xd9d4, 3000); Put(0xd9d6, 0);
+        At(cpu, 0x81c04c);
+        Fixed(0xd9f0, 0xd9f2, 11.5); Fixed(0xd9f4, 0xd9f6, 2.5);
+        CHECK(!Pad());
+        Fixed(0xd9f0, 0xd9f2, 12.29);
+        CHECK(!Pad());
+        Fixed(0xd9f0, 0xd9f2, 12.31);
+        CHECK(Pad() == SNES_PAD_B);
+    }
+    stone_course = false;
+}
+
+static void AbilityControls(CpuState *cpu)
+{
+    KdcCpuSelect(KDC_CPU_HARD);
+    Flight(cpu, 3);
+    memcpy(before, ram, sizeof(ram));
+    CHECK(Pad() == SNES_PAD_B);
+    CHECK(!memcmp(before, ram, sizeof(ram))); /* Controls, never patched physics. */
+    for (unsigned f = 0; f < 12; ++f) CHECK(!Pad());
+    Put(0xd9ca, 0xffff); CHECK(!Pad()); /* Guest consumed it. */
+    Flight(cpu, 3); Put(0x180b, 0); CHECK(!Pad());
+    Flight(cpu, 3); Put(0x1803, 0); CHECK(!Pad());
+    Flight(cpu, 3); Put(0xed07, 1); CHECK(!Pad());
+    Flight(cpu, 3); Put(0xda4a, 1); CHECK(!Pad());
+    Flight(cpu, 3); Put(0xd9ee, 1); CHECK(!Pad());
+    Flight(cpu, 3); Put(0xd9d2, 1); CHECK(!Pad());
+    Flight(cpu, 0); CHECK(!Pad());
+    Flight(cpu, 3); Put(0xd9d4, (unsigned)-2097); Put(0xd9d6, (unsigned)-1573);
+    CHECK(!Pad()); /* Do not accelerate away from the objective. */
+    Flight(cpu, 3); Fixed(0xd9f0, 0xd9f2, 6.4); Fixed(0xd9f4, 0xd9f6, 5.4);
+    CHECK(!Pad()); /* Do not boost across the cup. */
+    Flight(cpu, 1); Put(0xd9ec, 1); Fixed(0xd9f8, 0xd9fa, 1);
+    Fixed(0xd9f0, 0xd9f2, 6.5); Fixed(0xd9f4, 0xd9f6, 5.5);
+    Put(0xd9d4, 0); Put(0xd9d6, 0); Put(0xd9d8, 0xff00);
+    CHECK(Pad() == SNES_PAD_B); /* Stone drop with zero horizontal speed. */
+    Flight(cpu, 6); Put(0xd9c8, 6); Put(0xd9d6, 0);
+    CHECK(Pad() == SNES_PAD_LEFT); /* Hard can correct an active wheel. */
+    Flight(cpu, 10); Put(0xd9c8, 10);
+    Fixed(0xd9f0, 0xd9f2, 6.5); Fixed(0xd9f4, 0xd9f6, 5.5);
+    Put(0xd9d4, 0); Put(0xd9d6, 0);
+    CHECK(Pad() == SNES_PAD_B); /* UFO ends flight even when stationary. */
+    Flight(cpu, 7); CHECK(!Pad()); /* Spark is not a cup-entry tool. */
+    Flight(cpu, 4);
+    Fixed(0xd9f0, 0xd9f2, 6.4); Fixed(0xd9f4, 0xd9f6, 5.4);
+    CHECK(Pad() == SNES_PAD_B); /* Needle stops an overshoot. */
+    Flight(cpu, 2); Put(0xd9ec, 1); Put(0xd9d8, 0xff00);
+    Fixed(0xd9f0, 0xd9f2, 6.1); Fixed(0xd9f4, 0xd9f6, 5.2);
+    Put(0xd9d4, 6000); Put(0xd9d6, 4500);
+    CHECK(Pad() == SNES_PAD_B); /* Parasol brakes a descending overshoot. */
+    for (unsigned ability = 5; ability <= 10; ++ability) {
+        Flight(cpu, ability);
+        if (ability == 7 || ability == 9) {
+            Put(0xb4b8, 0x40); Put(0xb4ba, 0xffff); Put(0x539c, 2);
+            Fixed(0xd9f0, 0xd9f2, 6.1); Fixed(0xd9f4, 0xd9f6, 5.2);
+        }
+        CHECK(Pad() == SNES_PAD_B);
+    }
+    /* Mid-shot conversion: a new cup overrides the nearby star target. */
+    Flight(cpu, 1); Put(0xd9ec, 1); Fixed(0xd9f8, 0xd9fa, 1);
+    Fixed(0xd9f0, 0xd9f2, 2.5); Fixed(0xd9f4, 0xd9f6, 3.5);
+    CHECK(!Pad());
+    Put(0xb4b8, 0x40); Put(0xb4ba, 8);
+    CHECK(Pad() == SNES_PAD_B);
+
+    unsigned first[3] = {0};
+    for (unsigned repeat = 0; repeat < 2; ++repeat) {
+        for (unsigned d = 1; d <= 3; ++d) {
+            unsigned used = 0;
+            KdcCpuSelect(d);
+            for (unsigned shot = 0; shot < 128; ++shot) {
+                Flight(cpu, 3);
+                for (unsigned f = 0; f < 120; ++f) {
+                    if (Pad() & SNES_PAD_B) { ++used; Put(0xd9ca, 0xffff); }
+                }
+            }
+            if (d == 1) CHECK(used >= 4 && used <= 30);
+            if (d == 2) CHECK(used >= 75 && used <= 115);
+            if (d == 3) CHECK(used == 128);
+            if (repeat) CHECK(used == first[d - 1]);
+            else first[d - 1] = used;
+        }
+    }
+    KdcCpuSelect(0);
 }
 
 int main(void)
@@ -207,5 +382,8 @@ int main(void)
         Put(0x1803, 0);
         CHECK(!memcmp(before, ram, sizeof(ram)));
     }
+    TargetPriorities(&cpu);
+    AbilityControls(&cpu);
+    PlannedStoneDrop(&cpu);
     return 0;
 }

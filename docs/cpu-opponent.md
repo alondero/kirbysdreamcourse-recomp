@@ -58,9 +58,13 @@ stop after the handicap's bounce count, as the on-screen guide does.
 | Medium | Up to four targets, ground and 30° loft, then side spin (and top/backspin for lofts). 2° refinement. | about 0.5-1 s |
 | Hard | Up to four targets plus banks 45° either side, ground, 30° and 60° loft, spin. 1° refinement. | about 1-2 s |
 
-Each candidate path is scored against nearby enemies, opposing stars and the
-cup: hits and close approaches score, fast cup passes and paths ending outside
-the map are penalized, and modest power wins ties. Five powers between a fifth
+Once a cup opens, the search and scoring focus exclusively on entering it;
+nearby stars cannot displace it from the candidate budget or outweigh it with
+multiple hits. Until then, enemies and opposing stars are targets. An unclaimed
+enemy carrying an ability gets a small preference (8% in target ranking and
+8 extra points on a 100-point hit), so it wins close choices without encouraging
+large detours. Already-collected stars do not receive that bonus. Fast cup
+passes and paths ending outside the map are penalized, and modest power wins ties. Five powers between a fifth
 of the live cap and the cap are tried for each direction and loft, then the
 best is refined over angle and power.
 
@@ -70,6 +74,39 @@ off; on lofted shots the vertical spin marker can stop one step off, more often
 with the faster marker of a more handicapped column. Slips come from a
 deterministic host generator, independent of the game's generator and the
 clock, so restarting repeats them.
+
+### Ability controls
+
+During flight the CPU supplies ordinary player-two controller input. The game
+still owns activation, consumption and ability physics. A deterministic choice
+once per shot permits ability use on 1/8 of Easy shots, 3/4 of Medium shots and
+all Hard shots; these are opportunities, not guaranteed activations. Easy tries
+B once at a random time. Medium and Hard wait for a useful situation:
+
+- Stone drops over a target; Needle stops a ground overshoot.
+- Parasol brakes a descending overshoot. Fireball and Wheel extend a short roll
+  only when the objective is ahead and sufficiently far away.
+- Tornado and Hi-Jump help toward higher targets; Hard also tries them to extend
+  short rolls.
+- Spark and Freeze activate near collectibles, not as a way to enter the cup.
+- UFO extends a short approach and ends flight over the target.
+
+Medium makes intermittent Wheel/Parasol steering corrections. Hard reacts every
+frame with a tighter tolerance, allowing more demanding curved approaches and
+glides. The target list refreshes during flight, including when a new cup opens.
+B is released between attempts, and unavailable abilities, finished shots,
+demos and the human's turn are excluded.
+
+Hard also plans Stone drops: when carrying usable Stone, it can choose a
+lofted guide that passes directly above the cup and activate over it. This
+opportunity scores below a predicted ordinary entry; extrapolated guide points
+do not qualify. A synthetic regression requires Hard to choose this otherwise
+poor loft only when it has Stone, then request the drop over the objective.
+
+The aiming preview does **not** simulate ability effects. Stone planning and
+live position/velocity feedback are heuristics, not a search of complete
+ability-assisted trajectories. Terrain-specific tactics and measured success
+rates remain unqualified.
 
 ## USA integration evidence
 
@@ -105,7 +142,20 @@ under ignored `local/`.
   `$6AEE` points in the `$B746..$CB46` arrays.
 - Registry `$B4B8` identifies the cup as 8 and collectible enemies/stars in
   `$40..$57`; `$B4F8` maps them to type-$49 tasks. `$539C + task` records star
-  ownership. `$B538/$B578` hold cell coordinates.
+  ownership (0/1 = player star, 2 = unclaimed enemy). `$531C + task` is the
+  enemy's ability (1..10, or 11 for roulette), cleared on collection at
+  `$82:8AA8`. `$B538/$B578` hold cell coordinates. `$82:8B7A` changes the
+  last enemy's registry ID to 8; cup recognition does not require its previous
+  collectible task type to survive.
+- `$82:C875` checks ability activation through tapped B (`$006B & $8000`).
+  `$D9C4` is the current ability, `$D9C8` the active effect, and a negative
+  `$D9CA` means activation is spent. `$DA4A`, `$D9EE` and `$D9D2 & 1`
+  block activation. `$180B = 2` identifies player two's live physics state.
+  `$D9F0/$D9F2`, `$D9F4/$D9F6`, `$D9F8/$D9FA` hold 16.16 XYZ;
+  `$81:8805` adds signed `$D9D4/$D9D6/$D9D8` velocities to those coordinates.
+  `$82:CF23` and `$82:D674` consume Left/Right for Parasol and Wheel;
+  `$82:D515` handles ending UFO flight with B after activation.
+  These addresses were rechecked against the supported ROM for this change.
 - `$81:BFA9/$BFB5` handle spin input and confirmation; `$81:C005` handles
   power confirmation. `$81:C04C` starts shot conversion.
 - `$83:D495` reads the hole winner's controller at `$004F + 2*$6B84`. CPU wins
@@ -124,7 +174,12 @@ ROM-free tests cover the difficulty menu, entry into the original two-player
 path, save isolation and both ways of ending a match, the planner's
 one-preview-per-frame budget and invisibility, look-ahead per guide level,
 the candidates each difficulty considers, the aim glide through Left/Right,
-spin and power confirmation, scorecard ownership and the HUD name box.
+spin and power confirmation, scorecard ownership and the HUD name box. Target
+regressions cover a cup competing with four closer stars, a cup whose previous
+task is gone, and ability enemies versus ordinary enemies and collected stars.
+Flight fixtures exercise all ten abilities, ownership and activation guards,
+steering, mid-shot cup conversion, input-only mutation and repeatable difficulty
+frequencies across 128 shots per difficulty.
 Real-ROM checks are opt-in:
 
 ```powershell
@@ -138,9 +193,22 @@ python -m unittest discover -s tests -p test_cpu_opponent.py -v
 The live checks start through the new menu and the original two-player
 screens, then require the CPU to collect a star naturally, the handicap to be
 in play, and control to return to player 1. They compare repeated final work
-RAM for all difficulties and native/interpreter work RAM for Hard.
+RAM for all difficulties and native/interpreter work RAM for Hard. A natural
+Hard match now continues through the open-cup second turn and advances to the
+next map. A separate controlled fixture grants Fireball during that first shot
+without changing its position, velocity, cup or activation fields; the game
+must activate and consume it through CPU controller input. Its resulting WRAM
+must match a repeat and an interpreter-only run.
 
-This is a heuristic opponent. Ability activation tactics, moving-target
+On Windows, the Release build and the CPU ROM-free, natural-turn, preview-oracle,
+Fireball activation and open-hole progression checks were exercised against the
+verified USA ROM for this change. The practice menu/save lifecycle fixture also
+passes. CPU-controlled play has no equivalent reference-emulator opponent;
+comparisons here use this project's interpreter as the preview/execution oracle.
+Stone-drop selection and timing are covered synthetically; a successful live
+Stone landing and general ability success rates are not established.
+
+This is a heuristic opponent. Real-course ability success rates, moving-target
 prediction, water-specific strategy and measured win rates are not qualified.
 The preview does not model all effects of hitting an enemy or the other
 player. CPU planning state is host-owned, which is why ordinary snapshots stay

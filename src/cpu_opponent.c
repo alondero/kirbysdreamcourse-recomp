@@ -11,6 +11,7 @@
 #include "cpu_opponent.h"
 #include "common_rtl.h"
 #include "cpu_state.h"
+#include "snes_overlay_draw.h"
 #include "snes/interp_bridge.h"
 #include <math.h>
 #include <stdio.h>
@@ -58,9 +59,11 @@ static bool regs_ready, image_ready, planning, refined, applied;
 static CpuState regs;
 static uint8_t *image, *snapshot;
 static size_t snapshot_capacity;
-static uint32_t rng;
+static uint32_t rng, ability_rng;
 static Point targets[MAX_TARGETS];
-static bool cups[MAX_TARGETS];
+static bool cups[MAX_TARGETS], ability_enemies[MAX_TARGETS], hole_open;
+static unsigned flight_frames, ability_cooldown, random_activation;
+static bool use_ability;
 static unsigned target_count, max_power, horizon, bounces, marker;
 static Shot queue[MAX_CANDIDATES], best;
 static unsigned queued, evaluated, previews, think_frames;
@@ -72,7 +75,9 @@ static unsigned Word(const uint8_t *r, unsigned a) { return r[a] | (unsigned)r[a
 static void Put(uint8_t *r, unsigned a, unsigned v) { r[a] = (uint8_t)v; r[a + 1] = (uint8_t)(v >> 8); }
 static double Fixed(const uint8_t *r, unsigned lo, unsigned hi)
 { return (int16_t)Word(r, hi) + Word(r, lo) / 65536.0; }
-static uint32_t Random(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
+static uint32_t NextRandom(uint32_t *state)
+{ *state ^= *state << 13; *state ^= *state >> 17; *state ^= *state << 5; return *state; }
+static uint32_t Random(void) { return NextRandom(&rng); }
 
 const char *KdcCpuName(unsigned d)
 {
@@ -87,8 +92,11 @@ void KdcCpuReset(void)
 {
     turn = score_wait = settle = tap = last_pad = queued = evaluated = target_count = 0;
     phase = IDLE;
+    flight_frames = ability_cooldown = random_activation = 0;
+    use_ability = false;
     regs_ready = image_ready = planning = refined = applied = false;
     rng = 0x4b444331;
+    ability_rng = 0x4142494c;
 }
 void KdcCpuSelect(unsigned d) { difficulty = d <= 3 ? d : 0; KdcCpuReset(); }
 
@@ -106,6 +114,29 @@ static void Enqueue(Shot s)
     queue[queued++] = s;
 }
 
+/* Registry identity survives the last enemy's conversion into a cup; its
+ * task need not remain a collectible task. Only enemies need task/owner checks. */
+static void CollectTargets(const uint8_t *r)
+{
+    target_count = 0;
+    hole_open = false;
+    for (unsigned i = 0; i < 64 && target_count < MAX_TARGETS; i += 2) {
+        unsigned entity = Word(r, 0xb4b8 + i);
+        if (entity == 0xffff) break;
+        if (entity != 8 && (entity < 0x40 || entity >= 0x58)) continue;
+        unsigned slot = Word(r, 0xb4f8 + i);
+        if (entity != 8 && (slot >= 128 || (slot & 1) || Word(r, 0x4e1c + slot) != 0x49)) continue;
+        if (entity != 8 && Word(r, 0x539c + slot) == 1) continue;
+        cups[target_count] = entity == 8;
+        hole_open |= entity == 8;
+        unsigned ability = entity == 8 ? 0 : Word(r, 0x531c + slot);
+        ability_enemies[target_count] = entity != 8 && Word(r, 0x539c + slot) == 2 &&
+                                        ability >= 1 && ability <= 11;
+        targets[target_count++] = (Point){Word(r, 0xb538 + i) + 0.5,
+            Word(r, 0xb578 + i) + 0.5, Fixed(r, 0xb5b8 + i, 0xb5f8 + i)};
+    }
+}
+
 /* Collect the cup and every enemy or star the CPU does not already own, and
  * queue direct, banked and lofted approaches at a spread of powers. */
 static void Prepare(const uint8_t *r)
@@ -120,28 +151,19 @@ static void Prepare(const uint8_t *r)
     horizon = bounces == 3 ? 240 : bounces == 2 ? 120 : 40;
     marker = Word(r, 0x6b5e);
     if (marker < 1 || marker > 3) marker = 1;
-    target_count = 0;
-    for (unsigned i = 0; i < 64 && target_count < MAX_TARGETS; i += 2) {
-        unsigned entity = Word(r, 0xb4b8 + i);
-        if (entity == 0xffff) break;
-        if (entity != 8 && (entity < 0x40 || entity >= 0x58)) continue;
-        unsigned slot = Word(r, 0xb4f8 + i);
-        if (slot >= 128 || (slot & 1) || Word(r, 0x4e1c + slot) != 0x49) continue;
-        if (entity != 8 && Word(r, 0x539c + slot) == 1) continue;
-        cups[target_count] = entity == 8;
-        targets[target_count++] = (Point){Word(r, 0xb538 + i) + 0.5,
-            Word(r, 0xb578 + i) + 0.5, Fixed(r, 0xb5b8 + i, 0xb5f8 + i)};
-    }
+    CollectTargets(r);
     double ox = Fixed(r, 0xd8ac, 0xd8b0), oy = Fixed(r, 0xd8b4, 0xd8b8);
     unsigned angles[8], angle_count = 0, chosen = 0;
     for (unsigned j = 0; j < target_count && j < p->targets; ++j) {
         double nearest = 1e30;
-        unsigned next = 0;
+        unsigned next = MAX_TARGETS;
         for (unsigned t = 0; t < target_count; ++t) {
-            if (chosen & (1u << t)) continue;
+            if ((chosen & (1u << t)) || (hole_open && !cups[t])) continue;
             double dx = targets[t].x - ox, dy = targets[t].y - oy, d = dx * dx + dy * dy;
+            if (ability_enemies[t]) d /= 1.08; /* A small preference, not a long detour. */
             if (d < nearest) { nearest = d; next = t; }
         }
+        if (next == MAX_TARGETS) break;
         chosen |= 1u << next;
         int a = (int)lround(atan2(targets[next].y - oy, targets[next].x - ox) * 180 / PI);
         angles[angle_count++] = (unsigned)((a + 360) % 360);
@@ -195,15 +217,24 @@ static double Score(const uint8_t *r, const Shot *s)
     if (!count || !target_count) return -1e20;
     double score = 0, nearest = 1e20;
     Point end = path[count - 1];
-    if (end.x < 0 || end.y < 0 || end.x >= Word(r, 0x8b92) || end.y >= Word(r, 0x8b94))
-        score -= 500;
+    bool outside = end.x < 0 || end.y < 0 || end.x >= Word(r, 0x8b92) || end.y >= Word(r, 0x8b94);
+    bool planned_drop = false;
+    /* Hard can deliberately loft over the cup and use Stone to drop into
+     * it. This scores a vertical drop opportunity, not simulated ability
+     * physics; an ordinary entry still wins an equally good opportunity. */
+    bool stone_drop = difficulty == KDC_CPU_HARD && use_ability && s->loft &&
+                      Word(image, 0xd9c4) == 1 && !(Word(image, 0xd9ca) & 0x8000);
     double angle = s->angle * PI / 180;
     for (unsigned t = 0; t < target_count; ++t) {
-        double distance = 1e20, previous_forward = 0;
+        if (hole_open && !cups[t]) continue;
+        double distance = 1e20, drop_distance = 1e20, previous_forward = 0;
         for (unsigned i = 0; i < count; ++i) {
             Point q = path[i];
             double dx = q.x - targets[t].x, dy = q.y - targets[t].y, dz = q.z - targets[t].z;
             double d = dx * dx + dy * dy + dz * dz;
+            if (stone_drop && cups[t] && i < Word(r, 0x6aee) && dz > 0.25 &&
+                dx * dx + dy * dy < drop_distance)
+                drop_distance = dx * dx + dy * dy;
             if (cups[t] && i) {
                 double vx = q.x - path[i - 1].x, vy = q.y - path[i - 1].y;
                 d += 4 * (vx * vx + vy * vy); /* A soft entry beats a fast pass. */
@@ -218,9 +249,16 @@ static double Score(const uint8_t *r, const Shot *s)
             }
             if (d < distance) distance = d;
         }
+        if (distance < 0.20) score += 100 + (ability_enemies[t] ? 8 : 0);
+        else if (drop_distance < 0.04) {
+            score += 92;
+            distance = drop_distance;
+            planned_drop = true;
+        }
         if (distance < nearest) nearest = distance;
-        if (distance < 0.20) score += 100;
     }
+    /* A planned Stone drop stops before the unused tail of the guide. */
+    if (outside && !planned_drop) score -= 500;
     /* Prefer closer approaches and modest power when predicted hits tie. */
     return score - sqrt(nearest) * 10 - s->power * 0.01;
 }
@@ -531,17 +569,105 @@ static void Think(void)
     else Decide();
 }
 
+/* Live feedback uses the game's current position/velocity, not the aiming
+ * preview (which cannot predict ability physics). Return ordinary host pad
+ * bits; the guest owns activation, consumption, collisions and steering. */
+static unsigned FlightPad(const uint8_t *r)
+{
+    if (!OwnTurn(r) || Word(r, 0x180b) != 2) return 0;
+    ++flight_frames;
+    if (ability_cooldown) { --ability_cooldown; return 0; }
+    if (!use_ability || Word(r, 0xda4a) || Word(r, 0xd9ee)) return 0;
+    unsigned ability = Word(r, 0xd9c4), active = Word(r, 0xd9c8);
+    if (!ability || ability > 10 || (!active && (Word(r, 0xd9d2) & 1))) return 0;
+    if (difficulty == KDC_CPU_EASY) {
+        if (flight_frames != random_activation || active || (Word(r, 0xd9ca) & 0x8000)) return 0;
+        ability_cooldown = 12;
+        return SNES_PAD_B;
+    }
+    CollectTargets(r); /* A hit can open the cup or change ownership mid-shot. */
+    double x = Fixed(r, 0xd9f0, 0xd9f2), y = Fixed(r, 0xd9f4, 0xd9f6);
+    double z = Fixed(r, 0xd9f8, 0xd9fa);
+    double vx = (int16_t)Word(r, 0xd9d4) / 65536.0;
+    double vy = (int16_t)Word(r, 0xd9d6) / 65536.0;
+    double speed = hypot(vx, vy), nearest = 1e20;
+    unsigned target = MAX_TARGETS;
+    for (unsigned t = 0; t < target_count; ++t) {
+        if (hole_open && !cups[t]) continue;
+        double d = hypot(targets[t].x - x, targets[t].y - y);
+        if (d < nearest) { nearest = d; target = t; }
+    }
+    if (target == MAX_TARGETS) return 0;
+    double dx = targets[target].x - x, dy = targets[target].y - y;
+    double forward = speed > 0.0001 ? (dx * vx + dy * vy) / speed : 0;
+    double side = speed > 0.0001 ? (vx * dy - vy * dx) / speed : 0;
+    bool aligned = forward > 0 && fabs(side) < (difficulty == KDC_CPU_HARD ? 0.25 : 0.45);
+    bool airborne = Word(r, 0xd9ec) != 0;
+    if (active) {
+        /* Wheel and parasol accept Left/Right. Hard reacts every frame;
+         * Medium corrects more slowly and tolerates a wider miss. */
+        if ((active == 6 || active == 2) &&
+            (difficulty == KDC_CPU_HARD || flight_frames % 4 == 0) &&
+            fabs(side) > (difficulty == KDC_CPU_HARD ? 0.12 : 0.4))
+            return side > 0 ? SNES_PAD_LEFT : SNES_PAD_RIGHT;
+        /* UFO's second B ends flight. Drop over the objective instead of
+         * flying until its timer expires. */
+        if (active == 10 && nearest < 0.3) {
+            ability_cooldown = 12;
+            return SNES_PAD_B;
+        }
+        return 0;
+    }
+    if (Word(r, 0xd9ca) & 0x8000) return 0;
+    bool activate = false;
+    double stopping = speed * speed / (2 * DEFAULT_DECEL);
+    switch (ability) {
+    case 1: /* Stone: drop vertically over the objective. */
+        activate = airborne && nearest < 0.2 && z > targets[target].z;
+        break;
+    case 4: /* Needle: stop a ground shot before it runs past. */
+        activate = !airborne && nearest < 0.25 && stopping > nearest + 0.2;
+        break;
+    case 2: /* Parasol: brake a descending overshoot, then steer the glide. */
+        activate = airborne && (int16_t)Word(r, 0xd9d8) < 0 && aligned &&
+                   forward < stopping && forward > 0.4;
+        break;
+    case 3: case 6: /* Fireball / Wheel: extend a short roll toward the target. */
+        activate = !airborne && aligned && forward > 1.5 && forward > stopping + 0.75;
+        break;
+    case 5: case 8: /* Tornado / Hi-Jump: reach a higher target or extend a roll. */
+        activate = !airborne && aligned && forward > 1 &&
+                   (targets[target].z > z + 0.25 ||
+                    (difficulty == KDC_CPU_HARD && forward > stopping + 1));
+        break;
+    case 7: case 9: /* Spark / Freeze: affect nearby collectibles, not the cup. */
+        activate = !cups[target] && nearest < 0.9 && fabs(z - targets[target].z) < 0.5;
+        break;
+    case 10: /* UFO: extend a shot that would otherwise stop short. */
+        activate = aligned && forward > 1.5 && forward > stopping + 0.75;
+        break;
+    }
+    if (!activate) return 0;
+    ability_cooldown = 12; /* Always release B between attempts. */
+    return SNES_PAD_B;
+}
+
 void KdcCpuFrame(uint32_t *inputs)
 {
     if (!difficulty) return;
     *inputs &= 0xfff; /* The physical second seat is CPU-owned. */
     if (phase == THINK && regs_ready) Think();
+    else if (phase == FLIGHT) *inputs |= FlightPad(g_cpu.ram) << 12;
 }
 
 static void StartTurn(void)
 {
     ++turn;
     phase = THINK;
+    /* Choose once, before planning, so Hard can plan around a usable ability. */
+    use_ability = difficulty == KDC_CPU_EASY ? NextRandom(&ability_rng) % 8 == 0 :
+                  difficulty == KDC_CPU_MEDIUM ? NextRandom(&ability_rng) % 4 != 0 : true;
+    random_activation = 12 + NextRandom(&ability_rng) % 90;
     regs_ready = image_ready = false;
     queued = evaluated = previews = think_frames = 0;
     prof_count = verify_checked = verify_matched = verify_mismatches = 0;
@@ -649,7 +775,10 @@ static void Observe(CpuState *cpu, uint32_t pc)
         Put(r, 0x6b, Word(r, 0x6b3a) >= (unsigned)target ? 0x80 : 0);
         break;
     }
-    case 0x01c04c: phase = FLIGHT; break;
+    case 0x01c04c:
+        phase = FLIGHT;
+        flight_frames = ability_cooldown = 0;
+        break;
     }
 }
 

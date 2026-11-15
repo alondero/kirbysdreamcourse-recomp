@@ -107,6 +107,51 @@ class CpuRuntimeTest(unittest.TestCase):
                     fallback, _ = PracticeRuntimeTest.run_case(self, script, bounce='0', frames=6500)
                     self.assertEqual(first['after.wram.bin'], fallback['after.wram.bin'])
 
+    def test_open_hole_match_progresses(self):
+        from test_practice import PracticeRuntimeTest
+        tap = PracticeRuntimeTest.tap
+        entry = ('wait 500\n' + tap('start') + 'wait 120\n' + tap('down') * 4 +
+                 tap('a') + 'wait 60\n' + (tap('down') + 'wait 12\n') * 2 + tap('a'))
+        setup = (('wait 90\n' + tap('a')) * 4 + 'wait 400\n' +
+                 (tap('down') + 'wait 20\n') * 3 + tap('a'))
+        shot = tap('a') + 'wait 30\n' + tap('a') + 'wait 18\n' + tap('a')
+        # Ordinary P1 confirms carry play through the open-cup second turn.
+        # No state pokes: the guest must advance the hole naturally.
+        script = (entry + setup + 'wait 1700\n' + shot + 'wait 450\ndump open\n' +
+                  (tap('a') + 'wait 90\n') * 12 + 'wait 800\ndump next\n')
+        files, log = PracticeRuntimeTest.run_case(self, script, frames=8500)
+        word = lambda data, a: int.from_bytes(data[a:a + 2], 'little')
+        opened, after = files['open.wram.bin'], files['next.wram.bin']
+        self.assertIn(8, [word(opened, 0xb4b8 + i) for i in range(0, 64, 2)])
+        self.assertIn('CPU HARD: turn 2 ', log)
+        self.assertNotEqual(word(opened, 0xabb2), word(after, 0xabb2),
+                            'play must advance past the open hole')
+
+    def test_cpu_activates_a_useful_ability_through_guest_controls(self):
+        from test_practice import PracticeRuntimeTest
+        tap = PracticeRuntimeTest.tap
+        entry = ('wait 500\n' + tap('start') + 'wait 120\n' + tap('down') * 4 +
+                 tap('a') + 'wait 60\n' + (tap('down') + 'wait 12\n') * 2 + tap('a'))
+        setup = (('wait 90\n' + tap('a')) * 4 + 'wait 400\n' +
+                 (tap('down') + 'wait 20\n') * 3 + tap('a'))
+        shot = tap('a') + 'wait 30\n' + tap('a') + 'wait 18\n' + tap('a')
+        # The CPU's first shot has naturally opened the cup and is about to
+        # bank toward it. Give Fireball to P2; do not patch activation,
+        # velocity, position, ownership or the hole. Its controller must B.
+        script = (entry + setup + 'wait 1700\n' + shot + 'wait 120\ndump before\n' +
+                  'poke d854 0300\npoke d9c4 0300\nwait 4\ndump activated\n')
+        first, _ = PracticeRuntimeTest.run_case(self, script, frames=6500)
+        word = lambda data, a: int.from_bytes(data[a:a + 2], 'little')
+        before, activated = first['before.wram.bin'], first['activated.wram.bin']
+        self.assertEqual(word(before, 0x1803), 2)
+        self.assertEqual(word(before, 0xd9c8), 0)
+        self.assertEqual(word(activated, 0xd9c8), 3, 'guest must activate Fireball')
+        self.assertEqual(word(activated, 0xd9ca), 0xffff, 'guest must consume activation')
+        repeated, _ = PracticeRuntimeTest.run_case(self, script, frames=6500)
+        fallback, _ = PracticeRuntimeTest.run_case(self, script, bounce='0', frames=6500)
+        self.assertEqual(activated, repeated['activated.wram.bin'])
+        self.assertEqual(activated, fallback['activated.wram.bin'])
+
     def test_preview_runner_matches_bridge_oracle_across_holes(self):
         import re
         from test_practice import PracticeRuntimeTest
