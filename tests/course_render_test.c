@@ -212,6 +212,12 @@ int main(void)
                 ClearBackdrop(p, &original);
                 PpuDrawBackground_2bpp(p, &original, 97, false, 2, 0xb100, 0x7100);
                 KdcPrepareCourseView(p, ram, extra);
+                assert(!KdcIsCourse(p));
+                assert(PpuWidescreenLayerExtra(p, 0, 97, extra) == 0);
+                if (scene < 3) {
+                    assert(WsShadowResolveTile8x8(0, 256, 96, 0, 0, 0x6789) == 0x6789);
+                    assert(WsShadowResolveTile8x8(1, 256, 96, 0, 0, 0x6789) == 0x6789);
+                }
                 ClearBackdrop(p, &actual);
                 PpuDrawBackground_2bpp(p, &actual, 97, false, 2, 0xb100, 0x7100);
                 int left = -scroll, span = scroll ? 264 : 256;

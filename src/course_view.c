@@ -44,8 +44,9 @@ bool KdcIsCourse(const Ppu *ppu)
 {
     /* The scorecard reuses the course maps and character base, but replaces
      * BG1 graphics and disables the second terrain plane. Map addresses
-     * alone cannot authorize terrain lookup or recovered gameplay sprites. */
-    return HasCourseLayout(ppu) &&
+     * alone cannot authorize terrain lookup or recovered gameplay sprites.
+     * The 2P finale keeps BG2 enabled while uploading replacement graphics. */
+    return HasCourseLayout(ppu) && !IsCourseFinale(ppu) &&
            ((ppu->screenEnabled[0] | ppu->screenEnabled[1]) & 2) != 0;
 }
 

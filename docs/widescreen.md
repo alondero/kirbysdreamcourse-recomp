@@ -819,6 +819,39 @@ two-player finales, high-refresh/orbit presentation, ranking/ending variants
 and Linux remain unqualified. The final 74-test suite passes with 11 optional
 tests skipped; both independent review axes found no blocking issues.
 
+### Two-player finale terrain guard (2026-11-15)
+
+The same finale wallpaper signature applies to two-player play. The missing
+condition was in `KdcIsCourse`: the 2P finish retains BG2 in `$212C = $17`
+while replacing the course graphics. Although the BG3 provider recognized the
+wallpaper, BG1/BG2 still recovered obsolete terrain into the margins, and the
+foreground remained unclamped. `KdcIsCourse` now excludes `IsCourseFinale`,
+sharing the existing raster-time upload guard with terrain, foreground clamping
+and recovered gameplay sprites. The results and dance policies above are reused.
+
+The supported ROM hash was verified before the Windows Release build with the
+existing pinned framework/profile. A local diagnostic started `multi:1:8` and,
+at `$80:F2B3`, invoked the original `$87:804C` script starter with `$D7F7`,
+returning to the original main loop. This exercises the original finale upload
+script without completing a match. Temporary hooks and logging were removed
+from the final source and executable; derived captures remain under `local/`.
+
+Across all 91 frames 340-430, before/after 342-column centers, WRAM, VRAM and
+CGRAM match byte for byte. The first changed margin is frame 349, when the
+initial complete star rows identify the finale. Visual inspection at frame
+400 confirms the recovered terrain is gone from both margins. Repeating the
+corrected run is identical; disabled widescreen and an 800-column run preserve
+all shared pixels and the same guest-state dumps. The regression fails before
+the fix and passes afterward, covering BG2-enabled finales, partial uploads,
+five widths, fine scrolling, mosaic fallback and return to gameplay.
+The final Windows Release build passes; the full suite runs 111 tests with 22
+optional checks skipped, and both review axes report no findings.
+
+This is a presentation diagnostic, not an end-to-end 2P completion qualification.
+No fresh reference-emulator replay was made; the existing baseline/reference
+divergence remains unresolved. Full match progression, actual results/dance
+entry, every versus course, HD, orbit and Linux remain unqualified by this check.
+
 ## Versus star counters (2026-11-14)
 
 The edge layout previously left both players' vertical star stacks at their

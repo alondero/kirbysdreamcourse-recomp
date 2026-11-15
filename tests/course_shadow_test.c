@@ -232,6 +232,12 @@ int main(void)
     p->vram[0x3c00 + 12 * 32 + 31] = 0xa567;
     word(0xdadc + 2 * (12 * 32 + 31), 0x1234);
     KdcPrepareCourseView(p, ram, 272);
+    /* The 2P finish retains BG2 while replacing the course graphics.
+     * The same live wallpaper guard must revoke terrain and sprite recovery. */
+    assert(!KdcIsCourse(p));
+    assert(p->wsLayerClamp == 1);
+    assert(WsShadowResolveTile8x8(0, 256, 96, 0, 0, 0x6789) == 0x6789);
+    assert(WsShadowResolveTile8x8(1, 256, 96, 0, 0, 0x6789) == 0x6789);
     assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
     /* Partial replacement: the first star rows arrive before the last.
      * Later the results art overwrites the top but leaves the bottom motif. */
@@ -243,6 +249,9 @@ int main(void)
     assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
     /* A near match cannot authorize the replacement; changes are live. */
     p->vram[0x3c00 + 30 * 32] = 0;
+    assert(KdcIsCourse(p));
+    KdcPrepareCourseView(p, ram, 272);
+    assert(p->wsLayerClamp == 0);
     assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0x1234 ^ 0x4000));
     p->vram[0x3c00 + 30 * 32] = 0x1941;
     assert(WsShadowResolveTile8x8(2, 256, 96, 0, 0, 0xffff) == (0xa567 ^ 0x4000));
