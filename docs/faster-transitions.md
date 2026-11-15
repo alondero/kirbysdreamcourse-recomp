@@ -3,7 +3,103 @@
 Investigation for #32, 2026-11-15, against project commit
 `18bd9ed6bbf3d8fb5f33411367c0d359d6135af5`.
 
-## Decision
+## Optional host pacing, 2026-11-15
+
+The launcher now offers **Faster hole transitions** on its **Mods** page,
+disabled by default. `kdc-transitions.cfg` stores `0` or `1` beside the
+executable. It accelerates complete guest frames at up to 3x wall-clock speed
+from `$80F48C` (end of hole) until `$80F256` (next-hole loader entry).
+Every guest instruction, frame, input tick, tally, fade and save operation still
+runs. The scorecard still needs the player's acknowledgement. No guest timers,
+input bits, ROM bytes or progression branches are changed.
+
+Eligibility requires observing ordinary new-game initialization at `$80F1DF`,
+no practice/developer/CPU session, solo mode (`$17FF == 0`), normal courses
+(`$EAB9 == 0`, `$6A5A < 8`) and holes 1–7 (`$6A5E < 7`). Title entry, reset
+and save-state loads clear eligibility. Unknown scenes and restored sessions
+stay at normal speed until another new game. A 1,800-guest-frame timeout
+stops acceleration even if the player leaves a scorecard open. Extra courses,
+multiplayer and course-end processing are excluded. Gameplay and the next
+hole's loader retain their original pacing.
+
+The framework patch adds a bounded `frame_speed` host callback. It changes
+the simulation deadline and limits presentation work while polling events and
+delivering input once per guest frame. It does not batch hidden guest frames.
+Manual turbo, unpaced diagnostics and netplay use their existing paths.
+The feature requires the guarded APU clock flags used by release defaults and
+`play_experimental.ps1`; explicit legacy timing overrides disable it.
+
+Accelerated output is muted under the APU mutex. The SPC and DSP continue
+running; `dsp_trimSamples` discards queued output without resetting their
+processing state. Audio backpressure is suspended during acceleration and
+the host output buffer/stream is cleared at both edges. Playback resumes
+from newly produced samples, avoiding a queue of transition audio over gameplay.
+Hardware execution stays in the framework; scene eligibility stays in
+[`transitions.c`](../src/transitions.c). The interpreter remains available.
+
+### Qualification
+
+Verified the exact ROM SHA-256 in [architecture](../architecture.md#input-identity)
+before all ROM-dependent work. Used the
+ordinary first-hole recording from the investigation, extended to 14,000
+frames with the original frame-12,301 ten-frame A acknowledgement. The local
+recording's SHA-256 is
+`2f082cc08927461eb2d3de96bd3be8eafafb718a7ecd4bde2a41c5c948196af8`.
+All runs start with zero SRAM. The script uses existing manual turbo for
+the identical first 11,000 frames, then ordinary pacing for the transition
+and next-hole gameplay. No memory pokes or forced hole completion are used.
+
+Same-build native off/on/off and interpreter-only off/on runs each completed
+14,000 guest frames. Every per-frame full-WRAM CRC, CPU trace and logged APU
+clock/SPC/port observation matched across all five runs: **no first divergence**.
+Full WRAM, SRAM, VRAM, OAM and CGRAM dumps matched byte-for-byte at guest
+frames 11,000, 11,500, 12,000, 12,500, 13,000 and 14,000. Thus this route
+preserves all WRAM score/RNG fields without needing to guess their addresses.
+This is not a complete machine-state or full-game proof. All final states
+have `$6A5E == 1`, `$ABB2 == 1` (hole 2); accelerated pacing started at
+frame 11,122 and ended at 12,318.
+
+An additional off/on pair collected `SNESRECOMP_FRAME_TIMING` CSVs. The
+presentation interval from frame 11,122 to 12,319 fell from **20.07 s to
+8.96 s**, a **55% reduction (2.24x)** on this Windows host with SDL dummy
+video/audio. The 3x setting is a ceiling; executing/rasterizing every guest
+frame limits the achieved rate. These timed runs also matched all per-frame
+CPU/APU/WRAM observations and final memory. This measurement covers the
+recorded acknowledgement time; a human may leave the scorecard open longer.
+
+The pinned Snes9x 1.63 core replayed the same 14,000-frame input. Its final
+SRAM matches all host runs, SHA-256
+`c00da21c076a025ddd7a1b5bad3a667de8e4769a222712e5b07950dad4ebb92e`.
+The first sampled host/reference WRAM mismatch is frame 11,000 at `$7E0022`
+(421 differing bytes); frames 12,000 and 14,000 differ in 426 and 449 bytes.
+These differences also occur with the option off. The previously established
+boot mismatch (host frame 15 versus reference frame 16) remains unresolved;
+this feature does not claim to fix it or establish reference equivalence.
+
+Windows Release build passed using the existing framework/UI pins and patch
+stack. The final suite passed 106 tests (22 opt-in/unavailable checks skipped).
+ROM-free tests cover eligibility, every course/hole gate, no guest
+writes, timeout, reset/load policy, unsupported audio clocks, launcher
+staging/persistence and developer-settings staging. The opt-in real-ROM
+test can reproduce the five-run comparison with a local recording:
+
+```powershell
+$env:KDC_TEST_TRANSITIONS = '1'
+$env:KDC_TRANSITIONS_RECORDING = (Resolve-Path local/transition-validation/route.json)
+$env:KDC_TRANSITIONS_EXECUTABLE = (Resolve-Path local/transition-build/KirbyDreamCourseRecomp.exe)
+python -m unittest discover -s tests -p test_transitions.py -v
+```
+
+The runtime test expects ordinary boot through first-hole completion and
+acknowledgement, a 14,000-frame or longer recording, and idle input around its
+checkpoints. Captures, recordings, generated source and the ROM remain local.
+Untested end to end: other normal course/hole transitions, physical audio
+devices, focus/pause/launcher changes
+during acceleration, held input across the boundary, and Linux. Synthetic
+tests cover excluded modes and fail-closed load/reset handling; those modes
+have not been qualified for acceleration.
+
+## PR #72 decision (historical)
 
 Do not ship a transition skip yet. Earlier scorecard acknowledgement reaches
 the same next hole and preserves SRAM in the reference experiment below, but
@@ -98,9 +194,10 @@ experiment without these private recordings, record natural first-hole
 completion, identify a visible scorecard and branch that same recording into
 two acknowledgement times; frame numbers and hashes will then differ.
 
-## Remaining gates
+## Remaining gates for guest skips and automatic acknowledgement
 
-No guest score-table or RNG addresses were established here. The visible
+At the close of the PR #72 investigation, no guest score-table or RNG
+addresses had been established. The visible
 score before acknowledgement and equal SRAM do not qualify either field
 after progression. No claim of safe skipping follows from this experiment.
 Untested: both multiplayer winners, extra courses, hole eight, ties, CPU

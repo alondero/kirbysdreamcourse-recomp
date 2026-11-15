@@ -28,6 +28,7 @@
 #include "host_main.h"
 #include "game_rtl.h"
 #include "launcher_settings.h"
+#include "transitions.h"
 #include "dev_start.h"
 #include "course_camera_host.h"
 #include "course_orbit.h"
@@ -149,6 +150,7 @@ static const SnesDesktopHostGame kGameHost = {
     .before_run_frame    = BeforePresentationFrame,
     .end_sim_frame       = CapturePresentation,
     .presentation_hz     = PresentationHz,
+    .frame_speed         = KdcTransitionsSpeed,
     .on_reset            = KdcOrbitReset,
     .draw_frame          = DrawFrame,
     .hd_scale            = KdcHdScale,

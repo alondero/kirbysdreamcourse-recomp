@@ -18,6 +18,7 @@ typedef struct {
     int pending_orbit;
     int pending_high_refresh, pending_rate;
     int pending_hd;
+    int pending_transitions;
     const char *expected_rom_hash;
     const char *last_error;
 } KdcLauncherSettingsState;
@@ -73,6 +74,24 @@ static int IsHighRefresh(const char *package, const char *feature)
 }
 
 static int hd = -1;
+static int transitions = -1;
+
+bool KdcFasterTransitionsEnabled(void)
+{
+    if (transitions < 0) {
+        FILE *file = fopen("kdc-transitions.cfg", "r");
+        int value = file ? fgetc(file) : '0';
+        if (file) fclose(file);
+        transitions = value == '1';
+    }
+    return transitions != 0;
+}
+
+static int IsTransitions(const char *package, const char *feature)
+{
+    return package && feature && !strcmp(package, "kdc.presentation") &&
+           !strcmp(feature, "faster-transitions");
+}
 
 bool KdcHdTexturesEnabled(void)
 {
@@ -136,7 +155,7 @@ static int Count(void *ctx)
 static int FeatureCount(void *ctx)
 {
     (void)ctx;
-    return 4;
+    return 5;
 }
 
 static int IsOrbit(const char *package, const char *feature)
@@ -161,14 +180,14 @@ static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
     snprintf(out->name, sizeof(out->name), "Kirby's Dream Course presentation");
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
     out->enabled = state->pending_widescreen || state->pending_orbit ||
-                   state->pending_high_refresh || state->pending_hd;
+                   state->pending_high_refresh || state->pending_hd || state->pending_transitions;
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
     const KdcLauncherSettingsState *state = ctx;
-    if (index < 0 || index >= 4 || !out) return 0;
+    if (index < 0 || index >= 5 || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
@@ -191,6 +210,16 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
                  "stick click restores the original view. Keyboard: keypad "
                  "4/6, 8/2 and 5. The camera starts in the original view.");
         out->enabled = state->pending_orbit;
+        out->option_count = 0;
+    } else if (index == 4) {
+        snprintf(out->id, sizeof(out->id), "faster-transitions");
+        snprintf(out->name, sizeof(out->name), "Faster hole transitions");
+        snprintf(out->group, sizeof(out->group), "Gameplay");
+        snprintf(out->description, sizeof(out->description),
+                 "Run solo between-hole results at up to 3x speed, muted. "
+                 "Confirm scorecards yourself. Normal courses, holes 1-7 only; "
+                 "new games only. Gameplay retains its original speed.");
+        out->enabled = state->pending_transitions;
         out->option_count = 0;
     } else if (index == 3) {
         snprintf(out->id, sizeof(out->id), "hd_textures");
@@ -219,6 +248,10 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 static int EnableFeature(void *ctx, const char *package, const char *feature, int enabled)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsTransitions(package, feature)) {
+        state->pending_transitions = enabled != 0;
+        return 1;
+    }
     if (IsHighRefresh(package, feature)) {
         state->pending_high_refresh = enabled != 0;
         return 1;
@@ -408,6 +441,13 @@ static int Commit(void *ctx, const char *rom)
         high_refresh = state->pending_high_refresh;
         rate = state->pending_rate;
     }
+    if (state->pending_transitions != KdcFasterTransitionsEnabled()) {
+        FILE *file = fopen("kdc-transitions.cfg", "w");
+        int ok = file && fprintf(file, "%d\n", state->pending_transitions) > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) { state->last_error = "Could not save transition settings."; return 0; }
+        transitions = state->pending_transitions;
+    }
     *state->widescreen = state->pending_widescreen != 0;
     return 1;
 }
@@ -447,6 +487,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .pending_high_refresh = KdcHighRefreshEnabled(),
         .pending_rate = rate,
         .pending_hd = KdcHdTexturesEnabled(),
+        .pending_transitions = KdcFasterTransitionsEnabled(),
         .expected_rom_hash = rom_sha256,
     };
     return &provider;

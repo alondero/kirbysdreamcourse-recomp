@@ -46,7 +46,7 @@ if ($DevHole) {
         }
         foreach ($name in @('config.ini', 'keybinds.ini', 'kdc-hd.cfg',
                            'kdc-presentation.cfg', 'kdc-hud.cfg',
-                           'kdc-widescreen.cfg', 'kdc-camera.cfg')) {
+                           'kdc-widescreen.cfg', 'kdc-camera.cfg', 'kdc-transitions.cfg')) {
             $source = Join-Path $sourceDirectory $name
             $destination = Join-Path $devDirectory $name
             if ((Test-Path -LiteralPath $source) -and -not (Test-Path -LiteralPath $destination)) {

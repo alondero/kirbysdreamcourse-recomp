@@ -90,12 +90,17 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.h" KDC_PRESENTATI
 if(NOT KDC_PRESENTATION_BUDGET_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-presentation-budget.patch after the HD composition patch")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_TRANSITION_PACING_API
+     REGEX "frame_speed" LIMIT_COUNT 1)
+if(NOT KDC_TRANSITION_PACING_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-transition-pacing.patch after the presentation patches")
+endif()
 add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/practice.c src/practice_draw.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c
     src/course_sprite_view.c src/cpu_opponent.c src/cpu_preview.c src/cpu_label.c
     src/hd_scaler.c src/hd_tile_source.c src/hd_textures.c src/course_checker.c
-    src/course_terrain.c src/hd_image.c src/host_parallel.c)
+    src/course_terrain.c src/hd_image.c src/host_parallel.c src/transitions.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")
 set(KDC_FUNCTIONS_DIR "${CMAKE_SOURCE_DIR}/recomp" CACHE PATH "Local generated function declarations")

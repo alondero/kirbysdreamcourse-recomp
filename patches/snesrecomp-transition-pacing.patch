@@ -1,0 +1,116 @@
+--- a/runner/src/desktop/host_main.h
++++ b/runner/src/desktop/host_main.h
+@@ -234,6 +234,10 @@
+    * ordinary draw_frame/PPU fallback. Guest state must remain unchanged. */
+   int (*draw_hd_frame)(uint8_t *dst, size_t pitch, const uint8_t *field,
+                        int width, int height, double alpha, unsigned scale);
++  /* Bounded host fast-forward: 1 (default) or 2..3. Every guest frame and
++   * input tick still executes. Accelerated output is muted and discarded;
++   * SPC/DSP processing continues. Netplay bypasses this local pacing hook. */
++  int (*frame_speed)(void);
+ } SnesDesktopHostGame;
+
+ /* The whole program. Returns the process exit code. */
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -2321,6 +2321,7 @@
+ static int g_frames_per_block;
+ static uint8 g_audio_channels;
+ static SDL_AudioDeviceID g_audio_device;
++static bool g_transition_audio_muted; /* Protected by the APU mutex. */
+ /* Only the thread executing guest work may wait for the audio consumer. */
+ static _Thread_local bool g_audio_producer_active;
+ static _Thread_local double g_audio_producer_wait_seconds;
+@@ -2362,6 +2363,15 @@
+     RtlAudioWaitForConsumer();
+ }
+
++static void SetTransitionAudioMuted(bool muted) {
++  RtlApuLock();
++  bool changed = g_transition_audio_muted != muted;
++  g_transition_audio_muted = muted;
++  if (changed) dsp_trimSamples(g_snes->apu->dsp, 0);
++  RtlApuUnlock();
++  if (changed) ResetAudioTimeline();
++}
++
+ static void HostWaitForAudioProducer(void) {
+   if (!g_audio_producer_active || !g_snes || !g_snes->apu) return;
+   uint32_t start = (uint32_t)SDL_GetTicks();
+@@ -2398,6 +2408,11 @@
+   if (SDL_AtomicCAS(&first_cb, 0, 1))
+     host_report_breadcrumb("first audio callback (len=%d)", len);
+   if (!snesrecomp_sdl_lock_mutex(g_audio_mutex)) Die("Mutex lock failed!");
++  if (g_transition_audio_muted) {
++    memset(stream, 0, len);
++    SDL_UnlockMutex(g_audio_mutex);
++    return;
++  }
+   while (len != 0) {
+     if (g_audiobuffer_end - g_audiobuffer_cur == 0) {
+       uint32_t available = dsp_available(g_snes->apu->dsp);
+@@ -4425,8 +4440,16 @@
+     /* Pacing. A title that decouples presentation (presentation_hz hook)
+      * gets re-presented between simulated frames from the captured field;
+      * everyone else presents once per simulated frame. */
++    int frame_speed = game->frame_speed ? game->frame_speed() : 1;
++    if (frame_speed < 1 || frame_speed > 3 || g_turbo || g_config.disable_frame_delay) frame_speed = 1;
++    double simulation_hz = g_simulation_hz * frame_speed;
++    if (video_clock.simulation_hz != simulation_hz) {
++      host_report_breadcrumb("transition pacing: frame=%u speed=%d", frameCtr, frame_speed);
++      snes_host_clock_reset(&video_clock, MonotonicSeconds(), simulation_hz, presentation_hz);
++    }
++    SetTransitionAudioMuted(frame_speed > 1);
+     bool paced_realtime = !g_turbo && !g_config.disable_frame_delay;
+-    bool paced_custom = PresentationDecoupled() && paced_realtime;
++    bool paced_custom = (PresentationDecoupled() || frame_speed > 1) && paced_realtime;
+     double video_now = MonotonicSeconds();
+     if (video_now >= next_display_check) {
+       double hz = WantedPresentationHz(DisplayRefresh());
+@@ -4438,14 +4461,14 @@
+       next_display_check = video_now + 0.25;
+     }
+     if (g_reset_clock) {
+-      snes_host_clock_reset(&video_clock, video_now, g_simulation_hz, presentation_hz);
++      snes_host_clock_reset(&video_clock, video_now, simulation_hz, presentation_hz);
+       g_reset_clock = false;
+     }
+     if (paced_realtime && !snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
+       if (snes_host_clock_presentation_allowed(&video_clock, MonotonicSeconds(), true, false)) {
+         if (paced_custom) {
+           double presented_at = MonotonicSeconds();
+-          g_present_alpha = presentation_hz != g_simulation_hz
++          g_present_alpha = frame_speed == 1 && presentation_hz != g_simulation_hz
+               ? snes_host_clock_alpha(&video_clock, presented_at) : 1;
+           DrawPpuFrameWithPerf();
+           ++presentations;
+@@ -4618,7 +4641,7 @@
+     PushExtraSeats();
+     if (game->before_run_frame) game->before_run_frame();
+     g_audio_producer_wait_seconds = 0;
+-    g_audio_producer_active = paced_realtime && g_audio_device != 0;
++    g_audio_producer_active = paced_realtime && frame_speed == 1 && g_audio_device != 0;
+     /* Run-ahead owns the whole frame when it is on: it advances the guest
+      * once and speculates N further, so calling RtlRunFrame as well would
+      * double-advance. It declines (returns 0) during netplay and whenever
+@@ -4675,6 +4698,11 @@
+       CaptureSimulationFrame(frameCtr);
+     NoteStateFrame();
+     g_audio_producer_active = false;
++    if (frame_speed > 1) {
++      RtlApuLock();
++      dsp_trimSamples(g_snes->apu->dsp, 0);
++      RtlApuUnlock();
++    }
+     ProfileEnd(kProfileRaster, profile_start);
+     profile_start = ProfileStart();
+     if (state_trace && frameCtr >= trace_first)
+@@ -4700,7 +4728,7 @@
+                                                                  g_audio_producer_wait_seconds > 0) ||
+          (run_frames && frameCtr >= run_frames))) {
+       double presented_at = MonotonicSeconds();
+-      g_present_alpha = paced_custom && presentation_hz != g_simulation_hz
++      g_present_alpha = paced_custom && frame_speed == 1 && presentation_hz != g_simulation_hz
+           ? snes_host_clock_alpha(&video_clock, presented_at) : 1;
+       DrawPpuFrameWithPerf();
+       ++presentations;

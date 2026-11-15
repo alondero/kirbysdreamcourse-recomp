@@ -34,7 +34,7 @@ PATCHES = (
     "ppu2-openbus-experiment", "apu-guest-read-experiment", "raster-live-restore-experiment",
     "manual-joypad-strobe-experiment", "autojoy-phase-experiment", "spc-indexed-write-state-experiment",
     "hud-presentation", "hd-tiles", "hd-tile-context", "hd-present", "hd-tile-perf", "hd-composition",
-    "presentation-budget", "hd-hitches", "bridge-diagnostic-cache",
+    "presentation-budget", "hd-hitches", "bridge-diagnostic-cache", "transition-pacing",
 )
 STATE_OPTIONS = (
     "STATE", "RASTER_STATE", "FIELD_STATE", "DSP_STATE", "BEAM_HDMA_STATE",

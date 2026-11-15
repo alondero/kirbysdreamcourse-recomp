@@ -42,6 +42,7 @@ class DeveloperSettingsTest(unittest.TestCase):
                 'kdc-hd.cfg': '1\n', 'kdc-presentation.cfg': '1 120\n',
                 'kdc-hud.cfg': 'edges\n', 'kdc-widescreen.cfg': '21:9\n',
                 'kdc-camera.cfg': '0\n',
+                'kdc-transitions.cfg': '1\n',
             }
             for name, value in settings.items():
                 (source / name).write_text(value)
