@@ -1,7 +1,9 @@
 """Measure HD raster cost on a deterministic course; keep captures in local/."""
 import argparse
+import csv
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +23,51 @@ SCENARIOS = {
 }
 
 
+def distribution(samples):
+    """Nearest-rank percentiles; each sample is (frame, milliseconds)."""
+    if not samples:
+        raise ValueError('No timing samples')
+    ordered = sorted(value for _, value in samples)
+    frame, peak = max(samples, key=lambda sample: sample[1])
+    return dict(count=len(samples), mean=sum(ordered) / len(ordered),
+                **{f'p{p}': ordered[math.ceil(len(ordered) * p / 100) - 1]
+                   for p in (50, 95, 99)}, max=peak, max_frame=frame,
+                over_budget={str(budget): sum(value > budget for value in ordered)
+                             for budget in (1000 / 60, 1000 / 30, 50, 100)})
+
+
+def frame_timings(path):
+    with path.open(newline='') as stream:
+        rows = list(csv.DictReader(stream))
+    if len(rows) < 2:
+        raise AssertionError(f'{path}: missing per-presentation timing samples')
+    stages = [key for key in rows[0] if key.endswith('_ms')]
+    samples = {key: [(int(row['frame']), float(row[key])) for row in rows]
+               for key in stages}
+    # The first presentation has no preceding timestamp in the trace. Drop
+    # that interval rather than treating the profile's start as a presentation.
+    samples['interval_ms'] = [(int(row['frame']), 1000 * (
+        float(row['present_seconds']) - float(previous['present_seconds'])))
+        for previous, row in zip(rows, rows[1:])]
+    samples['work_ms'] = [(int(row['frame']), sum(float(row[key]) for key in stages
+                                               if key != 'wait_ms')) for row in rows]
+    counters = [key for key in rows[0] if key.startswith('hd_')]
+    events = []
+    for index, (previous, row) in enumerate(zip(rows, rows[1:]), start=1):
+        delta = {key: int(row[key]) - int(previous[key]) for key in counters
+                 if key != 'hd_cached_tiles'}
+        if delta.get('hd_cache_clears', 0) or delta.get('hd_cache_trims', 0):
+            events.append(dict(frame=int(row['frame']),
+                               raster_ms=float(row['raster_ms']),
+                               interval_ms=1000 * (float(row['present_seconds']) -
+                                                  float(previous['present_seconds'])),
+                               following_raster_ms=(float(rows[index + 1]['raster_ms'])
+                                                    if index + 1 < len(rows) else None), **delta))
+    return dict(distributions={key: distribution(values) for key, values in samples.items()},
+                hd_counters={key: int(rows[-1][key]) - int(rows[0][key]) for key in counters
+                             if key != 'hd_cached_tiles'}, cache_pressure_events=events)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--executable', type=Path, required=True)
@@ -34,10 +81,18 @@ def main():
     parser.add_argument('--max-compose-ms', type=float, help='Fail if HD composition mean exceeds this budget')
     parser.add_argument('--threads', type=int, choices=range(1, 17), help='Fix the rendering worker count')
     parser.add_argument('--hole', default='normal:1:1', help='Developer course start, e.g. normal:8:8')
+    parser.add_argument('--frames', type=int, help='Override scenario length, e.g. 3600 for cache pressure')
+    parser.add_argument('--profile-start', type=int, default=350, help='Use 1 to include course loading')
+    parser.add_argument('--hd', type=int, choices=(0, 1), nargs='+', default=[0, 1])
+    parser.add_argument('--no-captures', action='store_true', help='Timing only; omit the separate image replay')
+    parser.add_argument('--max-p99-ms', type=float, help='Fail if HD presentation interval p99 exceeds this budget')
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error('--repeat must be positive')
     scenario = SCENARIOS[args.scenario]
+    frames = args.frames if args.frames is not None else scenario['frames']
+    if not 1 <= args.profile_start < frames or frames > 36000:
+        parser.error('Require 1 <= profile start < frames <= 36000 (host trace capacity)')
     rom = args.rom.resolve(strict=True)
     if hashlib.sha256(rom.read_bytes()).hexdigest() != '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b':
         parser.error('Unsupported ROM SHA-256')
@@ -52,7 +107,7 @@ def main():
     for repeat in range(args.repeat):
         captures = {}
         for name, executable in builds:
-            for hd in (0, 1):
+            for hd in args.hd:
                 case = output / f'{repeat}-{name}-hd{hd}'
                 case.mkdir()
                 host = case / executable.name
@@ -81,14 +136,14 @@ def main():
                     env['KDC_CAMERA_SCRIPT'] = str(case / 'camera.script')
                 if not args.display:
                     env['SDL_VIDEODRIVER'] = 'dummy'
-                # Encoding a 4x PPM takes hundreds of milliseconds, so it must
-                # not land inside the timed window: the still view captures
-                # before timing starts, the moving scenarios in a separate
-                # untimed run of the same deterministic script.
-                timed = dict(env, SNESRECOMP_RUN_FRAMES=str(scenario['frames']),
-                             SNESRECOMP_HOST_PROFILE='1', SNESRECOMP_HOST_PROFILE_START_FRAME='350')
-                if scenario['screenshot'] >= 350:
-                    del timed['SNESRECOMP_SCREENSHOT'], timed['SNESRECOMP_SCREENSHOT_FRAME']
+                # Encoding a 4x PPM takes hundreds of milliseconds. Capture
+                # in a separate replay, including when profiling from boot.
+                timed = dict(env, SNESRECOMP_RUN_FRAMES=str(frames),
+                             SNESRECOMP_HOST_PROFILE='1',
+                             SNESRECOMP_HOST_PROFILE_START_FRAME=str(args.profile_start),
+                             SNESRECOMP_FRAME_TIMING=str(case / 'timing.csv'))
+                del timed['SNESRECOMP_SCREENSHOT'], timed['SNESRECOMP_SCREENSHOT_FRAME']
+                if not args.no_captures:
                     capture = dict(env, SNESRECOMP_RUN_FRAMES=str(scenario['screenshot'] + 5))
                     with (case / 'capture.log').open('w') as log:
                         subprocess.run(command, cwd=case, env=capture,
@@ -104,10 +159,16 @@ def main():
                 fps = re.search(r'frame service: .* fps=([\d.]+)', log)
                 if 'raster-capture' not in stages or not fps:
                     raise AssertionError(f'{case}: missing host profile')
-                captures[name, hd] = hashlib.sha256((case / 'frame.ppm').read_bytes()).hexdigest()
+                captures[name, hd] = (None if args.no_captures else
+                    hashlib.sha256((case / 'frame.ppm').read_bytes()).hexdigest())
+                timing = frame_timings(case / 'timing.csv')
+                renderer = re.search(r'^Renderer: (.+)$', log, re.MULTILINE)
                 result = dict(repeat=repeat, build=name, hd=hd, scenario=args.scenario,
                               hole=args.hole, threads=args.threads,
+                              frames=frames, profile_start=args.profile_start, display=args.display,
+                              renderer=renderer[1] if renderer else None,
                               fps=float(fps[1]), mean_ms=stages, max_ms=maxima,
+                              **timing,
                               screenshot_sha256=captures[name, hd])
                 results.append(result)
                 (output / 'results.json').write_text(json.dumps(results, indent=2))
@@ -115,14 +176,21 @@ def main():
                       f'compose={stages["compose"]:.3f} ms (max {maxima["compose"][0]:.1f} ms '
                       f'at {maxima["compose"][1]}) present={stages["upload-present"]:.3f} ms '
                       f'fps={float(fps[1]):.1f}', flush=True)
+                intervals = timing['distributions']['interval_ms']
+                print(f'  interval p50/p95/p99/max: {intervals["p50"]:.3f}/'
+                      f'{intervals["p95"]:.3f}/{intervals["p99"]:.3f}/{intervals["max"]:.3f} ms; '
+                      f'cache clears/trims: {timing["hd_counters"].get("hd_cache_clears", "unavailable")}/'
+                      f'{timing["hd_counters"].get("hd_cache_trims", "unavailable")}', flush=True)
                 if name == 'candidate' and hd and args.max_raster_ms is not None:
                     assert stages['raster-capture'] <= args.max_raster_ms, 'HD raster budget exceeded'
                 if name == 'candidate' and hd and args.max_compose_ms is not None:
                     assert stages['compose'] <= args.max_compose_ms, 'HD composition budget exceeded'
-        if args.baseline:
-            for hd in (0, 1):
+                if name == 'candidate' and hd and args.max_p99_ms is not None:
+                    assert intervals['p99'] <= args.max_p99_ms, 'HD presentation p99 budget exceeded'
+        if args.baseline and not args.no_captures:
+            for hd in args.hd:
                 assert captures['baseline', hd] == captures['candidate', hd], f'HD={hd}: image changed'
-    print('Completed; baseline images match.' if args.baseline else 'Completed.')
+    print('Completed; baseline images match.' if args.baseline and not args.no_captures else 'Completed.')
 
 
 if __name__ == '__main__':

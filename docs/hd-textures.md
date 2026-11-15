@@ -40,7 +40,11 @@ The work is split between a generic framework patch and a small game policy.
    cell per frame, not once per
    scanline: `snesrecomp-hd-tile-perf.patch` remembers each cell's result,
    keyed by its position, character, palette, flips and layer registers, until
-   the frame, a counted VRAM write, CGRAM contents or the cache change.
+   the frame, a counted VRAM write, its query's palette colours or the cache
+   change. `snesrecomp-hd-hitches.patch` tracks palette generations separately
+   for 2bpp and 4bpp queries; changing a backdrop or an unrelated palette does
+   not invalidate every cell. At capacity, the content cache retains recent
+   images rather than making the visible scene cold again.
 2. **Scaling** (`src/course_checker.c`, `src/hd_scaler.c`). A cache miss asks
    the game for the HD image. For BG1/BG2, opaque two-colour characters are
    first tested against straight isometric edges (1:1 and 2:1, including
@@ -353,6 +357,11 @@ seeded, copied and uploaded by the CPU. Moving composition to the GPU, from an
 uploaded native frame, per-pixel tile records and an HD tile atlas, would
 remove the last two but is a larger change.
 
+These are the 2026-11-08 findings. The later orbit terrain texture and art-cache
+work below supersede the per-location border cost. Current hitch measurements
+and the PPU cache follow-up are recorded under
+[Hitch investigation](#hitch-investigation-2026-11-15).
+
 ### Orbit terrain texture, 2026-11-11
 
 With HD textures and the orbit view (and therefore high refresh), the course
@@ -524,6 +533,98 @@ No reference-emulator comparison is claimed for enhanced subpixels. Baseline
 image comparisons and synthetic guest-state preservation checks validate this
 presentation-only change; Linux and slower physical machines remain untested.
 
+### Hitch investigation, 2026-11-15
+
+Issue #44 originally described the 2026-11-08 renderer. The later whole-terrain
+texture and scenery/art caches have replaced its recurring orbit neighbour
+border reconstruction. Normal-view PPU composition, nearest seeding and 4x
+surface transfer still run on the CPU. GPU composition remains a separate
+renderer project: it must preserve priority, windows, colour math and the
+existing native-pixel exactness check.
+
+`tools/benchmark_hd.py` now saves the host's buffered presentation trace as
+`timing.csv`, reporting nearest-rank p50/p95/p99/max and counts over
+16.667/33.333/50/100 ms for each stage, measured presentation intervals and
+summed work excluding deadline waits. It also records cumulative HD lookups,
+misses, palette-changing lines, capacity clears, trims and evictions. JSON
+correlates pressure events with the affected frame and the following raster
+time. The first trace row has no preceding presentation or counter sample;
+intervals and counter deltas start with the second row. Older traces without
+HD counters remain readable. No per-frame file writes occur during timing;
+the trace is buffered until shutdown. Screenshots always use a separate replay.
+
+```powershell
+python tools/benchmark_hd.py --executable local/guarded-build/KirbyDreamCourseRecomp.exe --scenario shot --hole normal:5:1 --frames 3600 --profile-start 1 --hd 1 --repeat 1 --display
+python tools/benchmark_hd.py --executable local/guarded-build/KirbyDreamCourseRecomp.exe --scenario orbit --repeat 1 --display
+python tools/benchmark_hd_cache.py
+```
+
+Use `--no-captures` for timing-only course sweeps, `--max-p99-ms` for a local
+interval budget and `--baseline` to check corresponding screenshots. A
+presentation interval includes guest execution, rendering, driver work and
+host preemption; it is not GPU time or a guarantee of paced simulation speed.
+These runs disable VSync, audio and frame delay. The paced simulation follow-up
+in #69 addresses a separate scheduling failure under presentation load.
+
+On the development Ryzen 9 3900X / RTX 3080, Windows Release, Direct3D11,
+widescreen, the pre-fix shot replay at `normal:1:1` through `normal:8:1`
+(frames 350–1100) had interval p99s of 15.7–20.5 ms and worst intervals of
+19.7–42.4 ms. No capacity clears occurred. There were 449–511 palette-changing
+lines across each 750-interval sample, with no sustained per-scanline churn.
+The 3600-frame `normal:5:1` replay likewise did not clear the cache. These
+bounded starts do not reproduce the reported halt, whose original hole,
+view and machine remain unknown. Background load varied, and some sweep runs
+overlapped build/validation work; these ranges describe the observed samples,
+not a controlled speed comparison or proof that other holes lack HDMA effects.
+
+Two synthetic replays isolate mechanisms independently of that missing report:
+
+- Changing only CGRAM index 0 (the backdrop) and an unused palette every
+  scanline previously forced 7,392 content lookups for 957 visible cells.
+  A query always leaves its transparent index 0 colour empty; neither change
+  alters the image. Separate generations for each four-colour and
+  sixteen-colour palette now retain those cells, meeting the 957-lookup
+  budget for both 2bpp and 4bpp. A used colour still invalidates the affected
+  palette. In particular, colour 4 affects 4bpp palette 0, while it is the
+  transparent colour of 2bpp palette 1. Live CGRAM comparison also covers
+  uncounted snapshot restores. This guards a demonstrated synthetic pathology;
+  no claim is made that it speeds up the sampled courses.
+- Filling the actual PPU content cache to its 3/4 threshold with old synthetic
+  content made the next frame regenerate all 929 visible images through
+  `KdcHdSmoothTile`. Five initial pressure runs had a 39.6 ms median for that
+  frame, versus 9.5 ms warm and 9.7 ms on the following frame. The cache now
+  rehashes between scanlines, retaining entries used in the current/previous
+  recorded frame, capped at half the table to leave probe space. Cell and
+  sprite memos are invalidated when slots move. The updated fixture ages the
+  pressure content while refreshing the visible scene: five runs retained all
+  929 images with zero regeneration, a 12.7 ms pressure-frame median and
+  9.0 ms on the following frame. Pixels match the initial cold draw exactly.
+  These are synthetic wall times, not a full-game speed claim. A working set
+  larger than half the table may regenerate evicted images; allocation failure
+  falls back to the old full clear. Explicit invalidation and scale changes
+  still clear all content.
+
+The ROM-free checks are `test_hd_tiles` (unrelated and used palette changes,
+main/sub-screen output against forced per-line rebuilding, generation wrap,
+and existing PPU exactness fixtures), `test_hd_cache` (actual scaler, repeated
+pressure, retained-image counts, oversized working sets and pixel identity),
+and `test_benchmark_hd` (tails and event attribution). The cache benchmark
+compiles the same fixture at `-O2`; timings are informational and do not gate CI.
+All 60 framework patches apply cleanly at pin
+`147b55e252dcb3e7680a99c7c2f50e7183891844` and reproduce the tested source.
+
+The Windows Release build and targeted HD, checker, terrain and orbit tests
+pass, including both opt-in real-ROM tests. Deterministic 1100-frame replays
+of the native-width shot and widescreen orbit compare the pre-fix and final
+executables with HD off/on, plus a repeated final HD run. Every complete
+guest-state trace and corresponding frame-800 screenshot matches, with no
+first divergence; the repeated captures are byte-identical. This compares
+against the existing renderer, rather than introducing a new SNES oracle.
+
+Linux, slower physical machines, full playthroughs and the original halt
+scenario remain untested. No new reference-emulator fidelity claim is made
+for the enhanced subpixels.
+
 ## Known limits
 
 - Each character is scaled on its own, so the scaler cannot see across
@@ -547,7 +648,7 @@ presentation-only change; Linux and slower physical machines remain untested.
 - HD CPU cost depends on the renderer and animation state; measured scenarios
   are recorded above. It has not been measured on slower machines or Linux.
 - The per-cell memo trusts a cell for the rest of the frame unless VRAM is
-  written through counted paths, CGRAM changes, or the frame advances. A
+  written through counted paths, its query colours change, or the frame advances. A
   widescreen tile provider whose answer changes mid-frame without such a
   write could give one frame of stale neighbour context; the exactness check
   still keeps every native pixel centre.

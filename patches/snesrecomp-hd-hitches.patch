@@ -1,0 +1,215 @@
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1148,6 +1148,7 @@
+ } PpuHdImage;
+ typedef struct PpuHdTileEntry {
+   uint64_t hash;
++  uint32_t last_frame;      /* host cache generation, independent of guest time */
+   PpuHdTileQuery key;
+   PpuHdImage *image;        /* NULL: the source kept this character native */
+   bool used;
+@@ -1162,11 +1163,13 @@
+  * the same image: the query depends only on the character, its palette and
+  * flips, the cell's tilemap neighbourhood and the layer registers. A full
+  * lookup resolves nine neighbouring characters and hashes their 272-byte
+- * border key and the 144-byte query, so it runs once per cell per epoch. The epoch advances on every frame, counted VRAM write,
+- * CGRAM change, picture-memory switch or cache clear. */
++ * border key and the 144-byte query, so it runs once per cell per epoch. The
++ * epoch advances on every frame, counted VRAM write, picture-memory switch or
++ * cache clear. Palette epochs invalidate only queries using changed colours. */
+ enum { kPpuHdCells = 4 << 12 }; /* layer, 32 rows, 128 columns */
+ typedef struct PpuHdCellMemo {
+   uint32_t epoch;           /* valid only when equal to the current epoch */
++  uint32_t palette_epoch;
+   uint32_t x, y;            /* cell origin in raw layer coordinates */
+   uint16_t address, palette, hscroll, tileadr;
+   uint8_t flags, source, xsc;
+@@ -1184,6 +1187,7 @@
+   bool recording;
+   bool paused;              /* host will not present tiles: skip all tile work */
+   unsigned count;
++  uint32_t cache_frame;
+   PpuHdTileStats stats;
+   PpuHdTileMemo memo[kPpuHdSources];
+   /* Border decoding is shared by repeated scanlines and repeated characters.
+@@ -1199,6 +1203,7 @@
+   uint32_t seen_vram_writes;
+   const uint16_t *seen_vram;
+   uint16_t seen_cgram[256];
++  uint32_t palette_epoch2[64], palette_epoch4[16];
+   PpuHdCellMemo cells[kPpuHdCells];
+   PpuHdTileEntry *entries;
+   uint8_t any[kPpuBufWidth]; /* some recorded HD subpixel differs from native */
+@@ -1220,6 +1225,54 @@
+   memset(t->memo, 0, sizeof(t->memo));
+   PpuHdTilesForgetCells(t); /* cell entries name the slots just freed */
+   t->count = 0;
++}
++
++static void PpuHdTilesTrimCache(struct PpuHdTiles *t) {
++  /* Rehash between lines: records from the preceding line are no longer
++   * sampled and cell memos are invalidated below. Keep the current/previous
++   * frame's working set, up to half the table, leaving bounded probe space.
++   * A palette changing on every line can exceed that bound; discarded images
++   * are regenerated from their exact queries rather than reused stale. */
++  PpuHdTileEntry *entries = calloc(kPpuHdCacheSlots, sizeof(*entries));
++  if (!entries) {
++    ++t->stats.cache_clears;
++    PpuHdTilesClearCache(t);
++    return;
++  }
++  unsigned count = 0;
++  for (unsigned i = 0; i < kPpuHdCacheSlots; ++i) {
++    PpuHdTileEntry *e = &t->entries[i];
++    if (!e->used) continue;
++    if ((uint32_t)(t->cache_frame - e->last_frame) <= 1 && count < kPpuHdCacheSlots / 2) {
++      unsigned slot = (unsigned)e->hash & (kPpuHdCacheSlots - 1);
++      while (entries[slot].used) slot = (slot + 1) & (kPpuHdCacheSlots - 1);
++      entries[slot] = *e;
++      ++count;
++    } else {
++      free(e->image);
++      ++t->stats.cache_evictions;
++    }
++  }
++  free(t->entries);
++  t->entries = entries;
++  t->count = count;
++  memset(t->memo, 0, sizeof(t->memo));
++  PpuHdTilesForgetCells(t);
++  ++t->stats.cache_trims;
++}
++
++static void PpuHdTilesUpdatePalettes(struct PpuHdTiles *t, const uint16_t *cgram) {
++  /* Queries leave colour 0 transparent; backdrop changes never alter an
++   * image. 2bpp palettes are four colours, 4bpp palettes sixteen. A change
++   * to e.g. colour 4 invalidates 4bpp palette 0, but not 2bpp palette 0 or 1.
++   * Compare live contents: HDMA and snapshot restores need no write counter. */
++  for (unsigned i = 0; i < 64; ++i)
++    if (memcmp(t->seen_cgram + i * 4 + 1, cgram + i * 4 + 1, 3 * sizeof(*cgram)))
++      if (++t->palette_epoch2[i] == 0) PpuHdTilesForgetCells(t);
++  for (unsigned i = 0; i < 16; ++i)
++    if (memcmp(t->seen_cgram + i * 16 + 1, cgram + i * 16 + 1, 15 * sizeof(*cgram)))
++      if (++t->palette_epoch4[i] == 0) PpuHdTilesForgetCells(t);
++  memcpy(t->seen_cgram, cgram, sizeof(t->seen_cgram));
+ }
+ 
+ static void PpuHdTilesFree(struct PpuHdTiles *t) {
+@@ -1294,23 +1347,28 @@
+   t->recording = !t->paused && surface->pixels && surface->scale > 1 &&
+       surface->scale <= kPpuHdTileMaxScale && PPU_mode(ppu) == 1;
+   if (!t->recording) return;
++  if (t->seen_frame != snes_frame_counter) ++t->cache_frame;
+   /* Cached images are scale-specific. Clear only between lines so a pointer
+    * fetched for this line cannot be freed while it is being sampled. */
+-  if (t->scale != surface->scale || t->count >= kPpuHdCacheSlots * 3 / 4) {
++  if (t->scale != surface->scale) {
+     PpuHdTilesClearCache(t);
+     t->scale = surface->scale;
+-  }
++  } else if (t->count >= kPpuHdCacheSlots * 3 / 4) PpuHdTilesTrimCache(t);
+   /* No register or memory write happens inside a line's render, so checking
+    * here covers mid-frame DMA and HDMA as well as whole-frame replacement
+    * (state loads, resets) between frames. CGRAM is compared rather than
+    * counted: it is 512 bytes and has writers besides $2122. */
+   const uint16_t *vram = PpuRenderVram(ppu);
++  const bool palette_changed = memcmp(t->seen_cgram, ppu->cgram, sizeof(t->seen_cgram)) != 0;
++  if (palette_changed) {
++    ++t->stats.palette_changes;
++    PpuHdTilesUpdatePalettes(t, ppu->cgram);
++  }
+   if (t->seen_frame != snes_frame_counter || t->seen_vram_writes != ppu->vramWriteCount ||
+-      t->seen_vram != vram || memcmp(t->seen_cgram, ppu->cgram, sizeof(t->seen_cgram))) {
++      t->seen_vram != vram) {
+     t->seen_frame = snes_frame_counter;
+     t->seen_vram_writes = ppu->vramWriteCount;
+     t->seen_vram = vram;
+-    memcpy(t->seen_cgram, ppu->cgram, sizeof(t->seen_cgram));
+     PpuHdTilesForgetCells(t);
+   }
+   memset(t->memo, 0, sizeof(t->memo));
+@@ -1507,7 +1565,9 @@
+   PpuHdTileMemo *memo = NULL;
+   PpuHdCellMemo *cell = NULL, key;
+   if (source < kPpuHdObj) {
+-    key = (PpuHdCellMemo){t->epoch, raw_x & ~7u, raw_y & ~7u, rec->address, palette,
++    const uint32_t palette_epoch = bpp == 4 ? t->palette_epoch4[palette >> 4] :
++                                                        t->palette_epoch2[palette >> 2];
++    key = (PpuHdCellMemo){t->epoch, palette_epoch, raw_x & ~7u, raw_y & ~7u, rec->address, palette,
+         (uint16_t)ppu->hScroll[source], (uint16_t)PPU_bgTileAdr(ppu, source),
+         rec->flags, (uint8_t)source, ppu->bgXsc[source], 0};
+     /* With a steady scroll the visible cells form a window at most 101
+@@ -1515,7 +1575,8 @@
+      * does not collide. Raster scroll changes can; that only costs a full
+      * lookup, as every key field is compared. */
+     cell = &t->cells[source << 12 | (key.y >> 3 & 31) << 7 | (key.x >> 3 & 127)];
+-    if (cell->epoch == key.epoch && cell->x == key.x && cell->y == key.y &&
++    if (cell->epoch == key.epoch && cell->palette_epoch == key.palette_epoch &&
++        cell->x == key.x && cell->y == key.y &&
+         cell->address == key.address && cell->palette == key.palette &&
+         cell->hscroll == key.hscroll && cell->tileadr == key.tileadr &&
+         cell->flags == key.flags && cell->source == key.source && cell->xsc == key.xsc)
+@@ -1559,6 +1620,7 @@
+       }
+       if (image) PpuHdSummarise(&q, image);
+       e->used = true;
++      e->last_frame = t->cache_frame;
+       e->hash = hash;
+       e->key = q;
+       e->image = image;
+@@ -1567,6 +1629,7 @@
+       break;
+     }
+     if (e->hash == hash && !memcmp(&e->key, &q, key_bytes)) {
++      e->last_frame = t->cache_frame;
+       found = e->image ? (uint16_t)(slot + 1) : 0;
+       break;
+     }
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -61,6 +61,10 @@
+   uint32_t fallback_pixels; /* HD-backed pixels kept native by the check */
+   uint32_t lookups;         /* content-cache lookups (cell and OBJ memo misses) */
+   uint32_t misses;          /* lookups that asked the source for a new image */
++  uint32_t cache_clears;    /* capacity clears when trim allocation fails */
++  uint32_t cache_trims;     /* capacity-triggered compactions retaining hot tiles */
++  uint32_t cache_evictions; /* old entries discarded by compaction */
++  uint32_t palette_changes; /* recorded lines whose CGRAM differs from the last */
+   uint32_t cached_tiles;
+ } PpuHdTileStats;
+ struct PpuHdTiles;
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -321,6 +321,7 @@
+ typedef struct FrameTiming {
+   unsigned frame;
+   double at, periods, stages[kProfileCount];
++  PpuHdTileStats hd;
+ } FrameTiming;
+ static FrameTiming *g_frame_timings;
+ static unsigned g_frame_timing_count;
+@@ -332,6 +333,7 @@
+   t->frame = frame;
+   t->at = MonotonicSeconds();
+   t->periods = RtlLastFramePeriods();
++  PpuGetHdTileStats(g_snes->ppu, &t->hd);
+   for (unsigned i = 0; i < kProfileCount; ++i) {
+     t->stages[i] = g_timings[i].total - g_frame_timing_previous[i];
+     g_frame_timing_previous[i] = g_timings[i].total;
+@@ -4716,12 +4718,14 @@
+   if (g_frame_timings) {
+     FILE *f = fopen(frame_timing_path, "w");
+     if (f) {
+-      fprintf(f, "frame,present_seconds,guest_periods,guest_ms,raster_ms,acquire_ms,compose_ms,present_ms,trace_ms,hook_ms,events_ms,wait_ms\n");
++      fprintf(f, "frame,present_seconds,guest_periods,guest_ms,raster_ms,acquire_ms,compose_ms,present_ms,trace_ms,hook_ms,events_ms,wait_ms,hd_lookups,hd_misses,hd_cache_clears,hd_cache_trims,hd_cache_evictions,hd_palette_changes,hd_cached_tiles\n");
+       for (unsigned n = 0; n < g_frame_timing_count; ++n) {
+         const FrameTiming *t = &g_frame_timings[n];
+         fprintf(f, "%u,%.9f,%.6f", t->frame, t->at - profile_window_start, t->periods);
+         for (unsigned i = 0; i < kProfileCount; ++i) fprintf(f, ",%.6f", t->stages[i] * 1000);
+-        fputc('\n', f);
++        fprintf(f, ",%u,%u,%u,%u,%u,%u,%u\n", t->hd.lookups, t->hd.misses,
++                t->hd.cache_clears, t->hd.cache_trims, t->hd.cache_evictions,
++                t->hd.palette_changes, t->hd.cached_tiles);
+       }
+       fclose(f);
+     } else {
