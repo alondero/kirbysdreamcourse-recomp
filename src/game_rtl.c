@@ -49,6 +49,7 @@
 #include "course_sprites.h"
 #include "course_hud.h"
 #include "launcher_settings.h"
+#include "transitions.h"
 #include "dev_start.h"
 #include "practice.h"
 #include "cpu_opponent.h"
@@ -78,6 +79,7 @@ static void initialize_bounce_log(void)
     KdcDevInitialize();
     KdcPracticeInitialize();
     KdcCpuInitialize();
+    KdcTransitionsInitialize();
     const char *apu_path = getenv("KDC_APU_STATE_LOG");
     if (apu_path && *apu_path) {
         apu_state_log = fopen(apu_path, "w");
@@ -116,6 +118,7 @@ void GameRunOneFrame(void)
 {
     initialize_bounce_log();
     snes_beam_frame_driver_run_frame();
+    KdcTransitionsFrame();
     LabelCpuSeat();
     if (apu_state_log && g_snes && g_snes->apu) {
         RtlApuLock();
@@ -160,6 +163,7 @@ void GameSessionReset(void)
     KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     KdcDevReset();
     KdcPracticeReset();
+    KdcTransitionsReset();
 }
 
 #ifdef KDC_EXPERIMENTAL_STATE
@@ -392,6 +396,7 @@ static void GameStateLoaded(uint32_t version)
     if (!PlannerRollback()) {
         KdcDevStateLoaded();
         KdcPracticeStateLoaded();
+        KdcTransitionsReset();
         KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     }
     RtlApplyExecutionState();
@@ -438,6 +443,7 @@ static void GameStateLoaded(uint32_t version)
     if (!PlannerRollback()) {
         KdcDevStateLoaded();
         KdcPracticeStateLoaded();
+        KdcTransitionsReset();
         KdcResetSprites(g_snes ? g_snes->ppu : NULL);
     }
 }
