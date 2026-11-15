@@ -178,6 +178,42 @@ source is needed for that step, but the matching local executable and its
 symbols are required. The public report contains only aggregate timings,
 counts and function names.
 
+## Validation results
+
+- Project suite: 104 tests, 22 skipped (opt-in ROM/device/runtime suites).
+  The separate real-ROM replays below were actually run.
+- Framework suite: 89/89 interpreter checks and 449/449 bridge checks pass,
+  along with its tier-2 capture tests. The lookup-counter regression passes
+  all three diagnostic settings against the patched real bridge suite.
+- Three repetitions for each build and bounce policy: all 12 sampled runs
+  covered frames 350–1100, with no truncated stacks or sampler failures.
+- Eight separate validation processes (two repetitions × two builds × two
+  policies) and all 12 sampled runs match the original bounce-off reference:
+  per-frame WRAM CRC and CPU-register trace, CPU clocks/resume-PC frame log,
+  and final SRAM. There is no first divergence in these recorded fields.
+  These are frame checkpoints, not instruction-by-instruction traces or full
+  hardware snapshots.
+- `validate_high_refresh.py --baseline-bounce 0 --rates 120` passes on a fresh
+  repeat (`local/high-refresh-validation-vduoxpcq`). Default and repeated
+  120 Hz runs match CPU logs, CRCs, full WRAM dumps and SRAM against the
+  original interpreter executable; default frame images also match. The two
+  120 Hz runs have 56/57 camera frames and 45/33 object frames with distinct
+  intermediate images, plus 108/99 interpolated object draws.
+
+The first high-refresh attempt (`local/high-refresh-validation-5udfyvst`)
+passed state/SRAM/WRAM comparisons but failed the intermediate object-image
+assertion: zero frames in the checked interval had multiple distinct images.
+The original baseline then passed the same validator against itself, and the
+candidate repeat passed without a code change. These wall-scheduled image
+counts depend on capture/presentation headroom; they are not deterministic
+timing metrics. The initial failure remains recorded rather than being
+treated as a clean first-pass presentation qualification.
+
+Independent standards review found no findings. Spec review found no
+implementation blocker, but identified the on-CPU and Steam Deck evidence
+below as incomplete. This PR addresses the measured local overhead and
+leaves issue #63 open for that remaining qualification.
+
 ## Limits
 
 The parity reference for this change is the existing guarded interpreter,

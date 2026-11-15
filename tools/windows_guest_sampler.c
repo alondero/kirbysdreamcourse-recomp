@@ -123,6 +123,10 @@ int main(int argc, char **argv)
         }
         if (frame > last) break;
     }
+    if (GetTickCount64() >= deadline && WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
+        fprintf(stderr, "sampler timed out before target completed the frame window\n");
+        failures++;
+    }
     timeEndPeriod(1);
     fclose(out);
     SymCleanup(process);
