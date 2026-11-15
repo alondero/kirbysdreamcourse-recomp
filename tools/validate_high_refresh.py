@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--rom', required=True, type=Path)
     parser.add_argument('--executable', required=True, type=Path)
     parser.add_argument('--baseline', type=Path)
+    parser.add_argument('--baseline-bounce', type=int, choices=(0, 1), default=1,
+                        help='Baseline execution policy; use 0 to compare against interpreter fallback')
     parser.add_argument('--rates', nargs='+', type=int, default=[120, 144, 240])
     parser.add_argument('--pictures', action='store_true')
     parser.add_argument('--benchmark-only', action='store_true',
@@ -42,7 +44,7 @@ def main():
                 if not k.startswith(('SNESRECOMP_', 'KDC_', 'SDL_', 'LNG_'))}
     results = []
 
-    def run(name, executable, rate):
+    def run(name, executable, rate, bounce=1):
         case = output / name
         case.mkdir()
         host = case / executable.name
@@ -57,7 +59,7 @@ def main():
         (case / 'shot.script').write_text('wait 600\npress a 2\nwait 57\npress a 2\nwait 27\npress a 2\n')
         (case / 'camera.script').write_text('500 32767 0 0\n560 0 0 0\n800 0 0 1\n')
         env = dict(base_env, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy',
-                   SNESRECOMP_RUN_FRAMES='900', SNESRECOMP_LLE_BOUNCE='1',
+                   SNESRECOMP_RUN_FRAMES='900', SNESRECOMP_LLE_BOUNCE=str(bounce),
                    SNESRECOMP_APU_BEAM_ELAPSED='1', SNESRECOMP_APU_HANDOFF='1',
                    SNESRECOMP_APU_ABSOLUTE_PREANCHOR='1',
                    KDC_CAMERA_SCRIPT=str(case / 'camera.script'),
@@ -66,6 +68,7 @@ def main():
                    SNESRECOMP_PRESENT_LOG=str(case / 'presents.csv'),
                    SNESRECOMP_FRAME_TIMING=str(case / 'timing.csv'),
                    SNESRECOMP_HOST_PROFILE='1', SNESRECOMP_STATE_TRACE=str(case / 'state.csv'),
+                   KDC_FRAME_LOG=str(case / 'frame.log'),
                    SNESRECOMP_FRAMEDUMP_START='790', SNESRECOMP_FRAMEDUMP_END='899',
                    SNESRECOMP_FRAMEDUMP_PIXELS='1')
         if args.pictures:
@@ -74,7 +77,7 @@ def main():
                        SNESRECOMP_SCREENSHOT_FROM='850', SNESRECOMP_SCREENSHOT_TO='870')
         if args.benchmark_only:
             for key in ('KDC_PRESENTATION_LOG', 'KDC_PRESENTATION_DRAW_LOG',
-                        'SNESRECOMP_PRESENT_LOG', 'SNESRECOMP_STATE_TRACE',
+                        'SNESRECOMP_PRESENT_LOG', 'SNESRECOMP_STATE_TRACE', 'KDC_FRAME_LOG',
                         'SNESRECOMP_FRAMEDUMP_START', 'SNESRECOMP_FRAMEDUMP_END',
                         'SNESRECOMP_FRAMEDUMP_PIXELS'):
                 env.pop(key, None)
@@ -115,13 +118,14 @@ def main():
                                              f'preceding input: {path.parent / "shot.script"}')
             raise AssertionError(f'First comparison divergence: {path} versus {reference}')
 
-    baseline = run('baseline', args.baseline.resolve(strict=True), 0)
+    baseline = run('baseline', args.baseline.resolve(strict=True), 0, args.baseline_bounce)
     first_runs = {}
     cases = [('off', 0), ('off-repeat', 0)]
     cases += [(f'hz-{r}{suffix}', r) for r in args.rates for suffix in ('', '-repeat')]
     for name, rate in cases:
         case = run(name, args.executable.resolve(strict=True), rate)
         equal(case / 'state.csv', baseline / 'state.csv')
+        equal(case / 'frame.log', baseline / 'frame.log')
         equal(case / 'saves/save.srm', baseline / 'saves/save.srm')
         if rate in first_runs:
             equal(case / 'state.csv', first_runs[rate] / 'state.csv')

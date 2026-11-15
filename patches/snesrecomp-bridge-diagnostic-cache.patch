@@ -1,0 +1,27 @@
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -1589,3 +1589,14 @@
++/* Like the other bridge diagnostics, configure this once per process.
++ * Beam scheduling enters the bridge repeatedly within each frame; scanning
++ * the host environment at every entry is measurable even with logging off.
++ * Presence (including an empty value) still enables register synchronization.
++ * The bridge and its diagnostic configuration belong to the game thread. */
++static int bridge_wlog_state_sync(void) {
++    static int enabled = -1;
++    if (enabled < 0) enabled = getenv("SNESRECOMP_WLOG_STATE") != NULL;
++    return enabled;
++}
++
+ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                                  uint16_t s_exit, uint32_t *out_landing,
+                                  uint32_t *out_return_pc,
+@@ -1606,7 +1617,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+     in.read_word = bridge_bus_read_word;
+     in.write_word = bridge_bus_write_word;
+     in.brkHookEnabled = true;
+-    const int wlog_state_sync = getenv("SNESRECOMP_WLOG_STATE") != NULL;
++    const int wlog_state_sync = bridge_wlog_state_sync();
+
+     sync_cpu_to_interp(cpu, &in);
+     in.k  = (uint8)((entry_pc24 >> 16) & 0xFF);
