@@ -640,6 +640,83 @@ static void TestCellLookupsFollowWrites(void)
     ppu_free(p);
 }
 
+/* HDMA may animate a backdrop or another layer's palette every scanline.
+ * Only cells whose query colours changed should lose their memo. */
+static void TestUnrelatedScanlinePalettes(unsigned bpp)
+{
+    Ppu *p = SingleCharacterScene();
+    if (bpp == 2) {
+        p->screenEnabled[0] = 4;
+        p->hScroll[2] = 3; p->vScroll[2] = 5;
+        for (unsigned i = 0; i < 0x400; ++i) p->vram[0x800 + i] = 1;
+        for (unsigned i = 0; i < 8; ++i) p->vram[0x4008 + i] = (uint16_t)Next();
+    }
+    ppu_drawCapturedLine(p, 0, true);
+    for (int line = 1; line <= kHeight; ++line) {
+        p->cgram[0] = (uint16_t)Next();   /* transparent index / backdrop */
+        p->cgram[64] = (uint16_t)Next();  /* another 4bpp palette */
+        if (bpp == 2) p->cgram[4] = (uint16_t)Next(); /* adjacent 2bpp palette */
+        ppu_drawCapturedLine(p, line, true);
+    }
+    AssertNearest(4);
+    PpuHdTileStats stats;
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.lookups <= 33 * 29);
+    ppu_free(p);
+}
+
+static bool PaletteImage(const PpuHdTileQuery *q, uint8_t *indices, void *context)
+{
+    (void)context;
+    /* Make stale query colours visible, including 4bpp subgroup colour 4. */
+    memset(indices, 1 + ((q->colors[1] ^ q->colors[3] ^ q->colors[4]) %
+                         ((1u << q->bpp) - 1)), 64 * q->scale * q->scale);
+    return true;
+}
+
+static void TestScanlinePaletteIdentity(unsigned bpp)
+{
+    static uint32_t expected[sizeof(hd) / sizeof(*hd)];
+    Ppu *p = SingleCharacterScene();
+    p->screenEnabled[0] = bpp == 2 ? 4 : 1;
+    p->screenEnabled[1] = p->screenEnabled[0];
+    for (unsigned i = 0; i < 0x400; ++i) p->vram[0x800 + i] = 1;
+    for (unsigned i = 0; i < 8; ++i) p->vram[0x4008 + i] = (uint16_t)Next();
+    assert(PpuSetHdTiles(p, PaletteImage, NULL));
+    for (unsigned pass = 0; pass < 2; ++pass) {
+        PpuInvalidateHdTiles(p);
+        ppu_drawCapturedLine(p, 0, true);
+        for (unsigned line = 1; line <= kHeight; ++line) {
+            for (unsigned color = 0; color < 16; ++color)
+                p->cgram[color] = (uint16_t)((line * 13 + color * 71) & 0x7fff);
+            /* Second pass always rebuilds, serving as the live-query oracle. */
+            if (pass) PpuInvalidateHdTiles(p);
+            ppu_drawCapturedLine(p, (int)line, true);
+        }
+        if (!pass) memcpy(expected, hd, sizeof(hd));
+        else assert(memcmp(expected, hd, sizeof(hd)) == 0);
+    }
+    PpuHdTileStats stats;
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.replaced_pixels > 0 && stats.fallback_pixels == 0);
+    ppu_free(p);
+}
+
+static void TestPaletteEpochWrap(void)
+{
+    Ppu *p = SingleCharacterScene();
+    Render(p);
+    PpuHdTileStats before, after;
+    PpuGetHdTileStats(p, &before);
+    p->hdTiles->palette_epoch4[0] = UINT32_MAX;
+    p->cgram[1] ^= 0x1234;
+    Render(p);
+    AssertNearest(4);
+    PpuGetHdTileStats(p, &after);
+    assert(after.lookups > before.lookups && after.misses > before.misses);
+    ppu_free(p);
+}
+
 /* While the host will not present the tiles (the game composes its own
  * frame, or the policy would keep every line native), no recording, lookup
  * or composition runs and the surface is the nearest-scaled native frame. */
@@ -698,6 +775,11 @@ static void TestBackgroundSampleHdLines(void)
 
 int main(void)
 {
+    TestUnrelatedScanlinePalettes(4);
+    TestUnrelatedScanlinePalettes(2);
+    TestScanlinePaletteIdentity(4);
+    TestScanlinePaletteIdentity(2);
+    TestPaletteEpochWrap();
     TestPauseSkipsTileWork();
     TestOneLookupPerCell();
     TestCellLookupsFollowWrites();

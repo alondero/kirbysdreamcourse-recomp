@@ -80,6 +80,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_HD_COMPOSIT
 if(NOT KDC_HD_COMPOSITION_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-composition.patch after the HD performance patch")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_HITCH_STATS_API
+    REGEX "cache_clears" LIMIT_COUNT 1)
+if(NOT KDC_HD_HITCH_STATS_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-hd-hitches.patch after the presentation budget patch")
+endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.h" KDC_PRESENTATION_BUDGET_API
      REGEX "snes_host_clock_presentation_allowed" LIMIT_COUNT 1)
 if(NOT KDC_PRESENTATION_BUDGET_API)
