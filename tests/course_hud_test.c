@@ -313,12 +313,36 @@ int main(void)
             uint16_t tile = 0x4567; int px = 3, py = 4;
             KdcHudSample(p, 2, 128, 130, &tile, &px, &py, NULL);
             assert(tile == 0x4567 && px == 3 && py == 4);
-            p->vram[border] = multi ? 0x34e7 : 0x3519;
-        p->window1left = multi ? 48 : 56; p->window1right = multi ? 207 : 235;
-            p->inidisp = 14;
+            /* Hole entry fades in with the quiet portraits already visible.
+             * Every brightness must start at the same edge coordinates,
+             * including a fresh draw with no previously active HUD. */
+            for (unsigned full = 0; full < 2; ++full) {
+                p->vram[border] = full ? (multi ? 0x34e7 : 0x3519) : 0;
+                p->window1left = full ? (multi ? 48 : 56) : 128;
+                p->window1right = full ? (multi ? 207 : 235) : 127;
+                for (unsigned brightness = 0; brightness <= 15; ++brightness) {
+                    p->inidisp = brightness;
+                    KdcPrepareHud(p, ram, extra, true);
+                    p->presentationPrepare(p, 185, NULL);
+                    assert(KdcHudActive(p));
+                    assert(p->presentationObjShift[0] == expanded_shift);
+                    assert(KdcHudPortraitShift(p, multi ? 16 : 20,
+                                              multi ? 171 : 179, 0x33a0) == expanded_shift);
+                    if (multi) {
+                        int right = 256 + (extra > 96 ? 96 : extra) - 44;
+                        assert(p->presentationObjShift[4] == right - 208);
+                    }
+                    assert(!p->presentationObjShift[12]);
+                }
+            }
+            p->inidisp = 0x8f;
             p->presentationPrepare(p, 185, NULL);
             assert(!KdcHudActive(p) && !p->presentationObjShift[0]);
             p->inidisp = 15;
+            p->mosaic = 0x20;
+            p->presentationPrepare(p, 185, NULL);
+            assert(!KdcHudActive(p) && !p->presentationObjShift[0]);
+            p->mosaic = 0;
             p->windowsel ^= 2; /* unrelated terrain window must retain native rendering */
             p->presentationPrepare(p, 185, NULL);
             assert(!KdcHudActive(p) && !p->presentationObjShift[0]);
