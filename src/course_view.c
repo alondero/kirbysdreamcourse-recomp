@@ -65,6 +65,14 @@ static bool IsTitle(const Ppu *ppu)
            ppu->bgTileAdr == 0x500 && !(ppu->bgmode & 0x70);
 }
 
+static bool IsVersusSelect(const Ppu *ppu)
+{
+    /* USA 2P course cards (BG1/BG2), gradient and score panel (BG3). */
+    return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x20 &&
+           ppu->bgXsc[1] == 0x28 && ppu->bgXsc[2] == 0x50 &&
+           ppu->bgTileAdr == 0x400 && !(ppu->bgmode & 0x70);
+}
+
 static bool IsMembers(const Ppu *ppu)
 {
     /* The name editor changes the foreground character banks, retaining
@@ -142,6 +150,13 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
                             uint16_t scroll_x, uint16_t native_tile, void *context)
 {
     const CourseView *source = context;
+    if (layer == 2 && IsVersusSelect(source->ppu)) {
+        if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
+            return native_tile;
+        /* Column zero is the clean horizontal gradient. Other columns also
+         * contain the bounded score panel, which must stay centered. */
+        return PpuRenderVram(source->ppu)[0x5000 + ((scrolled_y >> 3) & 31) * 32];
+    }
     if (layer == 1 && (IsTitle(source->ppu) || IsCourseIntro(source->ppu))) {
         if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
             return native_tile;
@@ -203,7 +218,8 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
     bool world_scene = KdcIsCourse(ppu) || IsCourseSelect(ppu);
     /* Scorecards retain course scenery even though terrain is not live. */
     bool scenery = HasCourseLayout(ppu) || IsCourseFinale(ppu) ||
-                   IsCourseSelect(ppu) || IsMembers(ppu) || IsCourseDance(ppu);
+                   IsCourseSelect(ppu) || IsMembers(ppu) || IsCourseDance(ppu) ||
+                   IsVersusSelect(ppu);
     PpuSetWidescreenBg3Widen(ppu, extra && scenery ? 1 : 0);
     /* This ROM still emits ordinary signed 9-bit OAM coordinates. Do not
      * reinterpret left-edge sprites as right-margin objects, or include
@@ -214,7 +230,7 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
     /* Bounded foregrounds stay centered; decorative BG2/backdrop can fill
      * the sides. The provider checks the live raster signature itself. */
     PpuSetWidescreenLayerClamp(ppu, extra && !world_scene ?
-                              (IsMembers(ppu) ? 3 : 1) : 0);
+                              (IsMembers(ppu) || IsVersusSelect(ppu) ? 3 : 1) : 0);
 }
 
 /* Course-select sky beneath the label (docs/widescreen.md). BG3 vertical

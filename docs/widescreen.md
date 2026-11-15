@@ -4,6 +4,52 @@ Widescreen is an optional presentation enhancement. Enable `[Graphics] Widescree
 
 `src/main.c` supplies adaptive geometry. `src/course_view.c` supplies presentation-only terrain through a direct tile-provider callback. `src/course_sprites.c` recovers presentation draw requests before viewport rejection and supplies horizontal-margin sprites through the PPU's extra-object compositor. Guest sprite emission/culling, collision and camera simulation retain their original behavior. The PPU owns priority, windows, palettes and color math. Course BG3 scenery fills the sides from its clean source map; the tile-based HUD and its object elements default to centered. Mods > Widescreen > HUD placement offers an opt-in Edges layout; see the implementation and evidence below. Bounded menu foregrounds remain centered while BG2/backdrop can fill the sides. See [sprite implementation and validation](widescreen-sprites.md) for the additional hook configuration, runtime patch and remaining coverage limits.
 
+## Two-player course picker (2026-11-15)
+
+The USA 2P picker uses Mode 1, maps `$20/$28/$50` and character bases
+`$0400`. BG1 contains the card frames and decorations; BG2 contains the
+course artwork and lettering. The generic menu policy centered only BG1,
+so BG2 wrapped those labels and characters into the margins. BG3 remained
+centered, leaving its peach-to-cream gradient confined to the native field.
+BG3 also contains the score panel, so widening its whole map would repeat
+that panel. `course_view.c` now centers both foreground planes and extends
+BG3 from its clean first column. Decorative BG1 motifs remain centered.
+This is a game-specific presentation policy; no guest resources, generated
+code or generic hardware behavior change. Mosaic retains the native source.
+
+Verified the supported ROM SHA-256 before investigating. Deterministic
+zero-SRAM input enters 2P, opens the picker, moves right twice and confirms
+the course. The ROM-free real-PPU regression fails on the old source at
+the first repeated-artwork margin pixel, then passes with the correction.
+It covers margins 0/1/43/96/213/272, every horizontal fine-scroll phase,
+all 224 lines, unchanged center pixels, absence of foreground repeats,
+clean gradient pixels, scene exit and disabling widescreen.
+
+Windows Release compilation passed with native CMake/MinGW/Ninja, the
+existing patched framework pin and nine guarded state options:
+`cmake --build local/select-build -j 8`. With `SNESRECOMP_ROOT` pointing to
+that framework, `python -m unittest discover -s tests -v` passes 112 tests
+with 23 optional checks skipped. The focused fixture runs with
+`python -m unittest discover -s tests -p test_course_view.py -v`.
+
+Old 342-column, corrected 256/342-column, repeated 342-column and
+800-column interpreter-fallback replays preserve all 254 original-center
+images and WRAM dumps at frames 1048..1301. WRAM, VRAM, CGRAM and OAM also
+match at each of the three milestones (1050, 1170 and 1305). Repeated complete 342-column images
+and the common region of the 800-column images match at all 254 frames.
+No first divergence occurs in these comparisons. Visual inspection confirms
+the full-width gradient and absence of repeated course artwork.
+
+A fresh pinned Snes9x 1.63 replay with the same inputs and zero SRAM reaches
+the same picker, selected course and order screen. Reference frames
+1051/1171/1306 versus host 1050/1170/1305 differ by at most 2/2/3 channel
+levels in the center images. Full WRAM differs at 93/74/22 bytes, first
+addresses `$0015/$0014/$0029` respectively; these observations do not resolve
+the earlier baseline mismatch at host 15/reference 16. Snes9x supplies no
+widescreen oracle. Captures and recordings stay in ignored `local/`.
+Extra-mode variants, save/load, live resizing, HD presentation and Linux
+were not newly qualified by this replay.
+
 ## Source evidence
 
 The local USA ROM was verified against SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b` before investigation. The supported identity is maintained in `rom_identity.txt`.

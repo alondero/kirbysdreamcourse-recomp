@@ -7,6 +7,27 @@ from pathlib import Path
 
 
 class CourseViewTest(unittest.TestCase):
+    def test_versus_select_background_without_repeated_cards(self):
+        compiler = shutil.which('gcc')
+        root = Path(__file__).resolve().parents[1]
+        framework = Path(os.environ.get('SNESRECOMP_ROOT', root / 'local/guarded-framework'))
+        source = framework / 'runner/src'
+        api = source / 'snes/ws_shadow.h'
+        if compiler is None or not api.is_file() or 'WS_SHADOW_TILE_PROVIDER_LAYERS 3' not in api.read_text(encoding='utf-8', errors='replace'):
+            self.skipTest('Requires GCC and patched pinned framework (SNESRECOMP_ROOT)')
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'versus_select_render_test.exe'
+            build = subprocess.run([
+                compiler, '-std=c11', '-ffunction-sections', '-fdata-sections',
+                '-Wl,--gc-sections', '-I', str(root / 'src'), '-I', str(source),
+                str(root / 'tests/versus_select_render_test.c'),
+                str(root / 'src/course_view.c'), str(source / 'snes/ws_shadow.c'),
+                str(source / 'snes/ppu_legacy.c'), '-o', str(executable)],
+                capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(executable)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_packed_course_rows_and_bounds(self):
         compiler = shutil.which('gcc')
         if compiler is None:
