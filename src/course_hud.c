@@ -40,7 +40,9 @@ static bool Signature(const Ppu *ppu)
         (ppu->renderFlags & kPpuRenderFlags_NewRenderer) &&
         ppu->bgXsc[2] == 0x3c && PPU_bgTileAdr(ppu, 2) == 0x4000 &&
         !PPU_bigTiles(ppu, 2) && !PPU_forcedBlank(ppu) &&
-        PPU_brightness(ppu) == 15 && PPU_mosaicSize(ppu) <= 1 &&
+        /* Keep the same placement throughout hole-entry and exit fades.
+         * The PPU still applies brightness to the relocated artwork. */
+        PPU_mosaicSize(ppu) <= 1 &&
         !PPU_objInterlace(ppu) && PPU_objSize(ppu) == 0 &&
         ppu->hScroll[2] == 0 && ppu->vScroll[2] == 0 &&
         !(ppu->screenWindowed[0] & 4) && !(ppu->cgadsub & 4);

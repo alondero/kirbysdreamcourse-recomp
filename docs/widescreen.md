@@ -574,7 +574,7 @@ stack; CMake checks for its API.
 The white panel backing is a raster HDMA window/color-math effect, not part of
 the tile artwork. The implementation qualifies its complete known selector,
 logic, color policy and per-line edge profile before moving it. Unknown window
-effects, fades, mosaic, unsupported scroll/layout/OBJ modes, missing portraits,
+effects, forced blank, mosaic, unsupported scroll/layout/OBJ modes, missing portraits,
 and non-course screens retain native presentation. Solo window 1 covers
 x=56..235 on zero-based lines 179..210. Versus uses its measured rounded profile
 on lines 171..212. Other lines use the disabled 128..127 range. Window 2 is
@@ -582,6 +582,31 @@ unused; its bounds do not qualify the layout because the checked selector
 never enables it. Normal menu entry leaves those bounds at 255..0, while
 developer starts leave 0..0. These are title-specific observations, not new
 hardware rules.
+
+The edge layout also applies during brightness fades. Waiting for full
+brightness made the quiet portraits appear centered on hole entry, then snap
+outward. Brightness remains the PPU's responsibility; the same live layout,
+portrait and window checks qualify relocation throughout the fade.
+
+Validated on Windows (2026-11-15) with the supported USA ROM hash above,
+the existing guarded framework pin/state profile, and native CMake/MinGW/Ninja:
+`cmake --build local/hud-build -j 6`. Two identical-input `multi:1:1` developer
+starts reproduced the issue deterministically. At 448 columns, portraits were
+centered on frames 304..317 (brightness 1..14), then relocated at frame 318.
+After correction both portraits start at the edges on frame 304. All 300
+captured checkpoints (300..599) retain identical WRAM, VRAM, CGRAM and PPU
+registers; complete images differ only on 304..317. Interpreter fallback
+matches the fixed native run's complete images and guest resources throughout.
+A 4x HD replay of frames 300..319 likewise changes only the fade-in frames,
+with both edge portraits correctly placed and identical guest resources.
+The real-PPU regression fails with the old brightness guard and passes without
+it, covering all brightness levels, fresh draws, quiet/full panels, both player
+modes and supported widths. Forced blank, mosaic and unknown-window rejection
+remain covered. The full suite passes 111 tests with 23 optional checks skipped.
+No new reference-emulator comparison was made: the reference has no edge-HUD
+layout, and guest resources match the baseline. The earlier baseline/reference
+divergence remains unresolved. Ordinary menu entry, later hole transitions,
+orbit/high-refresh presentation and Linux were not replayed for this change.
 
 Versus also restores an energy-only panel during a shot, before the score/name
 rows return. Its live signature is the pair of energy corners at `(6,24)` and
