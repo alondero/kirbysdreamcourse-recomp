@@ -93,7 +93,7 @@
 +      if (++t->palette_epoch4[i] == 0) PpuHdTilesForgetCells(t);
 +  memcpy(t->seen_cgram, cgram, sizeof(t->seen_cgram));
  }
- 
+
  static void PpuHdTilesFree(struct PpuHdTiles *t) {
 @@ -1294,23 +1347,28 @@
    t->recording = !t->paused && surface->pixels && surface->scale > 1 &&

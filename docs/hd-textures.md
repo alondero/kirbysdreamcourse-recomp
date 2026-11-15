@@ -607,7 +607,8 @@ Two synthetic replays isolate mechanisms independently of that missing report:
 The ROM-free checks are `test_hd_tiles` (unrelated and used palette changes,
 main/sub-screen output against forced per-line rebuilding, generation wrap,
 and existing PPU exactness fixtures), `test_hd_cache` (actual scaler, repeated
-pressure, retained-image counts, oversized working sets and pixel identity),
+pressure, retained-image counts, oversized working sets, forced compaction
+allocation failure and pixel identity),
 and `test_benchmark_hd` (tails and event attribution). The cache benchmark
 compiles the same fixture at `-O2`; timings are informational and do not gate CI.
 All 60 framework patches apply cleanly at pin
@@ -620,6 +621,14 @@ executables with HD off/on, plus a repeated final HD run. Every complete
 guest-state trace and corresponding frame-800 screenshot matches, with no
 first divergence; the repeated captures are byte-identical. This compares
 against the existing renderer, rather than introducing a new SNES oracle.
+
+A final paired display check at `normal:1:1` found similar steady-state costs:
+HD shot raster 5.53 → 5.68 ms and interval p99 18.83 → 19.55 ms; HD orbit
+composition 2.55 → 2.54 ms and interval p99 17.57 → 17.24 ms. No capacity
+events occurred in those windows. First orbit composition remained the peak,
+at frame 501: 15.4 → 13.4 ms. These small timing changes do not establish a
+steady-state speedup or a cold-entry fix. Both HD settings' shot captures and
+the HD orbit capture matched their baselines exactly.
 
 Linux, slower physical machines, full playthroughs and the original halt
 scenario remain untested. No new reference-emulator fidelity claim is made
