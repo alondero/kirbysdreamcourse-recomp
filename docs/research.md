@@ -2,6 +2,10 @@
 
 Research snapshot: 2026-10-28. Project descriptions are self-reported; status and dependency revisions change. Links are primary project sources.
 
+Optional pacing investigation, 2026-11-15: [score and hole transitions](faster-transitions.md)
+records candidate boundaries, deterministic reference acknowledgement experiments,
+and unresolved score/RNG safety gates. No pacing option is enabled or shipped.
+
 Higher-refresh follow-up, 2026-11-07: [presentation investigation](high-refresh-presentation.md)
 records the pinned clock/renderer assessment, optional camera/object
 interpolation, the ROM-free rate probe and deterministic real-game validation.
