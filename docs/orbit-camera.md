@@ -385,6 +385,33 @@ ignored `local/`. The hole-completion recording SHA-256 is
 its initial zero-filled 8192-byte SRAM SHA-256 is
 `9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47`.
 
+Spin-HUD follow-up on 2026-11-15: holding B hides the conditions portraits,
+which disables HUD relocation. The native-layout fallback restored the
+complete horizontal span between changed BG3 tiles. In versus mode, the
+star counters at opposite edges therefore copied the native course between
+them over the orbit view. Above the status panel, that fallback now restores
+only opaque pixels in changed BG3 tiles. The lower panel retains its native
+backing and portrait composition. This cause requires the versus counters;
+the one-player spin replay did not exhibit it.
+
+A synthetic regression through the actual compositor fails before the fix
+and passes afterward. It covers both counters, the course between them,
+transparent glyph pixels, 256/342-column views, 1x/4x output, HUD relocation
+on/off, nonzero scroll and lower-panel backing. The three strict-warning
+orbit fixtures, HUD fixture and four course-view tests pass, as does the
+Windows Release build. The 900-frame camera/shot replay also passes its
+110-frame native/interpreter RAM and image comparison and exact camera-reset
+checks; first sampled RAM divergence: none.
+One-player and versus held-B captures at frame 650
+retain identical guest RAM and pixels against the previous executable;
+these runtime captures do not contain earned star counters, so the specific
+strip is verified by the synthetic regression. No new reference-emulator
+comparison was performed for this host-only view. A CPU-match replay with
+earned counters, other maps and Linux remain untested.
+
+Run the focused regression with the patched framework available:
+`python -m unittest discover -s tests -p test_course_orbit_render.py -k original -v`.
+
 ## Limits
 
 The renderer is experimental. The original game provides only projected

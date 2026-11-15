@@ -797,6 +797,22 @@ static void RestoreRows(const Render *render, int row0, int row1)
      * math and object portraits. */
     for (int row = row0; row < row1; ++row) {
         const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+        /* Versus star counters occupy opposite edges above the status panel.
+         * Holding B removes its portraits, disabling HUD relocation. Joining
+         * both counters into one span then restores a strip of native course
+         * between them. These rows have no panel backing: keep only live BG3
+         * ink, including when the HUD option is off or the view is narrow. */
+        if (KdcReadWord(g_ram, 0x17ff) == 1 && v >= 8 && v < 168) {
+            for (int x = 0; x < 256; ++x) {
+                unsigned u = (x + render->ppu->hScroll[2]) & 255;
+                unsigned index = (v / 8) * 32 + u / 8;
+                unsigned tile = render->vram[0x3c00 + index];
+                if (tile != KdcReadWord(g_ram, 0xdadc + 2 * index) &&
+                    TilePixel(render->vram, tile, 0x4000, u & 7, v & 7, 2))
+                    CopyField(render, row, x + extra, x + extra);
+            }
+            continue;
+        }
         int left, right;
         if (!KdcHudSpan(render->vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2],
                         &left, &right)) continue;
