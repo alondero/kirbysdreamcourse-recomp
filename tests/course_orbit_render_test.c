@@ -546,6 +546,67 @@ static int Scenarios(void)
     return failures != 0;
 }
 
+static void NativeVersusStars(void)
+{
+    /* Holding B hides the conditions portraits, so the relocated HUD is
+     * inactive. The two remaining star columns must not restore the native
+     * course between them. Drawn row 7 samples BG3 row 8. */
+    static Ppu before;
+    before = ppu;
+    ppu.renderFlags = kPpuRenderFlags_NewRenderer;
+    ppu.windowsel = 0x220000; ppu.cgwsel = 0x10; ppu.cgadsub = 0x33;
+    ppu.fixedColor = 0x7fff; ppu.screenWindowed[0] = 0x13;
+    ppu.window1left = 128; ppu.window1right = 127;
+    memset(ppu.oam, 0, sizeof(ppu.oam));
+    memset(ppu.highOam, 0, sizeof(ppu.highOam));
+    Word(0x17ff, 1);
+    ppu.vram[0x3c00 + 32 + 1] = 0x0802;
+    ppu.vram[0x3c00 + 32 + 29] = 0x0802;
+    /* The next glyph row has transparent pixels, which must also keep
+     * the orbit course rather than a tiny native-camera rectangle. */
+    ppu.vram[0x4000 + 16 + 1] = 0x0080;
+    use_custom = true; custom_count = 0;
+    NativeAngle(); QuarterTurn();
+    const unsigned widths[] = {256, 342};
+    const unsigned scales[] = {1, 4};
+    enum { max_width = 342 * 4, max_height = height * 4 };
+    static uint32_t output[max_width * max_height];
+    for (unsigned wi = 0; wi < sizeof(widths) / sizeof(*widths); ++wi) {
+        unsigned w = widths[wi], extra = (w - 256) / 2;
+        for (unsigned si = 0; si < sizeof(scales) / sizeof(*scales); ++si)
+        for (unsigned scenario = 0; scenario < 4; ++scenario) {
+            unsigned scale = scales[si];
+            unsigned scroll = scenario >= 2 ? 3 : 0;
+            ppu.hScroll[2] = scroll;
+            ppu.vScroll[2] = scroll;
+            hd_enabled = scale > 1;
+            KdcPrepareHud(&ppu, g_ram, (int)extra, (scenario & 1) != 0);
+            /* Missing portraits leave the native-layout fallback active. */
+            if (ppu.presentationPrepare) ppu.presentationPrepare(&ppu, 7, NULL);
+            assert(!KdcHudActive(&ppu));
+            for (unsigned i = 0; i < w * height; ++i) native_field[i] = 0xff123456;
+            assert(KdcOrbitDrawHd((uint8_t *)output, w * scale * 4,
+                                 (uint8_t *)native_field, w, height, 1, scale));
+            unsigned row = (7 - scroll) * scale * w * scale;
+            assert(output[row + (extra + 8 - scroll) * scale] == 0xff123456);
+            assert(output[row + (extra + 232 - scroll) * scale] == 0xff123456);
+            assert(output[row + (extra + 128) * scale] != 0xff123456);
+            row += w * scale * scale;
+            assert(output[row + (extra + 8 - scroll) * scale] == 0xff123456);
+            assert(output[row + (extra + 9 - scroll) * scale] != 0xff123456);
+            assert(output[row + (extra + 232 - scroll) * scale] == 0xff123456);
+            assert(output[row + (extra + 233 - scroll) * scale] != 0xff123456);
+            /* The lower native panel still keeps its transparent backing. */
+            row = (191 - scroll) * scale * w * scale;
+            assert(output[row + (extra + 24 - scroll) * scale] == 0xff123456);
+        }
+    }
+    Word(0x17ff, 0);
+    hd_enabled = false; use_custom = false;
+    KdcPrepareHud(&ppu, g_ram, 0, false);
+    ppu = before;
+}
+
 static void HdEdgeHud(void)
 {
     static Ppu before;
@@ -754,6 +815,7 @@ int main(void)
     for (unsigned x = 16 + 43; x <= 39 + 43; ++x)
         assert(wide_pixels[191 * (342 + padding) + x] == native_field[191 * 342 + x]);
     CheckPadding(wide_pixels, 342);
+    NativeVersusStars();
     HdEdgeHud();
 
     Fill(pixels, sizeof(pixels) / sizeof(*pixels));
