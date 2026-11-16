@@ -74,6 +74,14 @@ static bool IsVersusSelect(const Ppu *ppu)
            ppu->bgTileAdr == 0x400 && !(ppu->bgmode & 0x70);
 }
 
+static bool IsGameOver(const Ppu *ppu)
+{
+    /* USA Game Over: BG1 combines star wallpaper and centered lettering. */
+    return PPU_mode(ppu) == 1 && ppu->bgXsc[0] == 0x52 &&
+           ppu->bgXsc[1] == 0x58 && ppu->bgXsc[2] == 0x3c &&
+           ppu->bgTileAdr == 0x400 && !(ppu->bgmode & 0x70);
+}
+
 static bool IsMembers(const Ppu *ppu)
 {
     /* The name editor changes the foreground character banks, retaining
@@ -151,6 +159,16 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
                             uint16_t scroll_x, uint16_t native_tile, void *context)
 {
     const CourseView *source = context;
+    if (layer == 0 && IsGameOver(source->ppu)) {
+        if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
+            return native_tile;
+        /* Wallpaper repeats every 16 columns. Columns 0..7 and 24..31
+         * retain both halves of that pattern without the central lettering.
+         * Use live VRAM so the game's animated stars keep their phase. */
+        unsigned column = ((unsigned)(screen_x + scroll_x) >> 3) & 15;
+        if (column >= 8) column += 16;
+        return PpuRenderVram(source->ppu)[0x5000 + ((scrolled_y >> 3) & 31) * 32 + column];
+    }
     if (layer == 2 && IsVersusSelect(source->ppu)) {
         if (PPU_mosaicEnabled(source->ppu, layer) && PPU_mosaicSize(source->ppu) > 1)
             return native_tile;
@@ -230,7 +248,7 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
     ppu->wsOamMotionGraceOn = extra ? 0 : 1;
     /* Bounded foregrounds stay centered; decorative BG2/backdrop can fill
      * the sides. The provider checks the live raster signature itself. */
-    PpuSetWidescreenLayerClamp(ppu, extra && !world_scene ?
+    PpuSetWidescreenLayerClamp(ppu, extra && !world_scene && !IsGameOver(ppu) ?
                               (IsMembers(ppu) || IsVersusSelect(ppu) ? 3 : 1) : 0);
 }
 

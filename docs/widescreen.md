@@ -4,6 +4,56 @@ Widescreen is an optional presentation enhancement. Enable `[Graphics] Widescree
 
 `src/main.c` supplies adaptive geometry. `src/course_view.c` supplies presentation-only terrain through a direct tile-provider callback. `src/course_sprites.c` recovers presentation draw requests before viewport rejection and supplies horizontal-margin sprites through the PPU's extra-object compositor. Guest sprite emission/culling, collision and camera simulation retain their original behavior. The PPU owns priority, windows, palettes and color math. Course BG3 scenery fills the sides from its clean source map; the tile-based HUD and its object elements default to centered. Mods > Widescreen > HUD placement offers an opt-in Edges layout; see the implementation and evidence below. Bounded menu foregrounds remain centered while BG2/backdrop can fill the sides. See [sprite implementation and validation](widescreen-sprites.md) for the additional hook configuration, runtime patch and remaining coverage limits.
 
+## Game Over wallpaper (2026-11-16)
+
+The USA Game Over screen uses Mode 1, maps `$52/$58/$3C` and character
+bases `$0400`. BG1 contains both the star wallpaper and the Game Over
+lettering. The generic menu policy clamped that entire plane to the native
+field. `course_view.c` now widens BG1 for this layout and supplies only clean
+wallpaper to its margins. The pattern repeats every 16 tile columns; live
+VRAM columns 0..7 and 24..31 contain both halves without the central text.
+The original field retains the real display map. Palette animation, tile
+attributes and raster scroll remain under the PPU's control. Mosaic keeps
+its native tile source. This is a game-specific presentation rule; no guest
+resources, generated code or generic hardware behavior change.
+
+The ROM-free real-PPU regression fails against the old policy and passes
+with the extension. It compares every margin pixel to an unobstructed
+wallpaper plane, with distinct synthetic lettering in the center. It covers
+margin widths 0/1/43/96/213/272, all eight fine-scroll phases, all 224 lines,
+main/sub-screen drawing, unchanged center pixels, mosaic fallback, other
+layers, disabling widescreen and leaving the scene. Run it with
+`SNESRECOMP_ROOT` pointing to the existing patched framework:
+`python -m unittest discover -s tests -p test_course_view.py -v`.
+
+Verified the supported ROM SHA-256 before investigation. A deterministic
+14,000-frame input replay reaches Game Over using initial SRAM SHA-256
+`76d8e2632bc089894097fe06ce75426dc2a01c6221bfcbd063a47952437e8a59`
+and recording SHA-256
+`3bc6942fc266236b100ff65a28bdb749854d0af77a19f13326e7d31c654f72e4`.
+Compared the pre-change 342-column host with corrected 342/800-column
+interpreter-fallback runs and a repeated 342-column native-dispatch run.
+All ten sampled original-center images and WRAM/VRAM/CGRAM dumps at frames
+13990..13999 match. Complete repeated 342-column images and their shared
+region at 800 columns also match. Every margin pixel matches the appropriate
+clean wallpaper column; visual inspection confirms full-width stars and one
+centered label. No first divergence occurs in these sampled comparisons.
+
+A fresh pinned Snes9x 1.63 replay with identical input and SRAM reaches the
+same screen. Host 13990/reference 13991 differ by at most one channel level;
+full WRAM differs at 80 bytes, first address `$06D8`. This does not resolve
+the documented first baseline mismatch at host 15/reference 16. Snes9x
+supplies no widescreen oracle.
+
+Windows Release compilation passed with native CMake/MinGW/Ninja, the
+existing patched framework pin and nine guarded state options:
+`cmake --build local/game-over-native -j 8`. With `SNESRECOMP_ROOT` pointing
+to that framework, `python -m unittest discover -s tests -v` runs 113 tests
+with 23 optional checks skipped. Both review axes found no actionable issues.
+Captures, recordings and builds remain ignored under `local/`. Entrance/exit
+animation, other loss routes, save/load, live resizing, HD and Linux were not
+newly qualified by the final-screen replay.
+
 ## Two-player course picker (2026-11-15)
 
 The USA 2P picker uses Mode 1, maps `$20/$28/$50` and character bases
