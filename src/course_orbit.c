@@ -1120,6 +1120,26 @@ static KdcCourseCamera ViewCamera(Render *render)
     /* The native view center, on the plane beneath the player. */
     double center_x = (horizontal + vertical + focus_height) / 2;
     double center_y = (horizontal - vertical - focus_height) / 2;
+    /* $81:A6E7 uses $6AAE to mark manual course view. It stays set
+     * during the return to the saved follow target ($6AAA/$6AAC), until
+     * $81:A760 finishes recentering. Separate this displacement from the
+     * automatic look-ahead: fading the entire native offset with yaw made
+     * the original Y + D-pad pan stop working after a quarter turn.
+     * $81:BA8A follows (target_x - 128, target_y + 112) in $38AC/$38AE;
+     * the latter's vertical axis is opposite to PPU scroll. Include the
+     * live raster phase, since WRAM can already describe the next frame. */
+    bool panning = KdcReadWord(g_ram, 0x6aae) != 0;
+    double pan_x = 0, pan_y = 0;
+    if (panning) {
+        double dx = cx - (int16_t)KdcReadWord(g_ram, 0x6aaa);
+        double dy = cy - 113 - (int16_t)KdcReadWord(g_ram, 0x88) +
+            (int16_t)KdcReadWord(g_ram, 0x6aac) + 112 -
+            (int16_t)KdcReadWord(g_ram, 0x38ae);
+        pan_x = dx / 64 + dy / 32;
+        pan_y = dx / 64 - dy / 32;
+        center_x -= pan_x;
+        center_y -= pan_y;
+    }
     /* Pivot on the player's ground point. The original look-ahead from it
      * to the view center is not magnified when zooming in, so the player
      * stays in view; zoomed out it shrinks with the course, which stays
@@ -1130,8 +1150,8 @@ static KdcCourseCamera ViewCamera(Render *render)
     double ball_x = BallCoordinate(focus_player, 0xd8aa);
     double ball_y = BallCoordinate(focus_player, 0xd8b2);
     double lead = fmax(0, cos(view.yaw)) * fmin(1, view.zoom);
-    view.target_x = ball_x;
-    view.target_y = ball_y;
+    view.target_x = ball_x + pan_x;
+    view.target_y = ball_y + pan_y;
     view.target_z = focus_height;
     view.lead_x = (center_x - ball_x) * lead;
     view.lead_y = (center_y - ball_y) * lead;
@@ -1142,9 +1162,9 @@ static KdcCourseCamera ViewCamera(Render *render)
     KdcCameraPoint ball = KdcCameraProject(&view, ball_x, ball_y,
         BallHeight(focus_player), width, height);
     double top = 8 + 16 * view.zoom, bottom = height - 8.0;
-    if (ball.y < top)
+    if (!panning && ball.y < top)
         view.target_z += (top - ball.y) / (16 * view.zoom);
-    else if (ball.y > bottom)
+    else if (!panning && ball.y > bottom)
         view.target_z -= (ball.y - bottom) / (16 * view.zoom);
     return view;
 }

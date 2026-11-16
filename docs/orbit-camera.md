@@ -41,6 +41,12 @@ original angle the framing is exactly the native view. Reset, timeline restorati
 leaving a hole and changing maps clear the camera. Fades and mosaic transitions
 temporarily use the native renderer.
 
+The original **Y + D-pad/left stick** course pan remains available at every
+orbit angle and zoom level, including with high refresh presentation enabled
+and no orbit input. Manual pan is separate from automatic look-ahead and may
+move Kirby off screen to inspect the rest of the hole. Releasing Y follows
+the game's normal return to the aiming view.
+
 ## Implementation and evidence
 
 The supported headerless 1 MiB USA ROM has SHA-256
@@ -57,6 +63,17 @@ right-stick state for the configured seat without changing guest buttons.
 terrain and billboards with a depth buffer. `course_sprites.c` observes original
 draw producers and retains their world anchors through the OAM frame latch.
 These modules do not write guest RAM or replace collision/physics.
+
+The original pan is handled at `$81:A6E7–A768` and `$81:B9A2`. `$6AAE`
+marks manual view and its return until recentering finishes. `$6AAA/$6AAC`
+retain the follow target; `$81:BA8A` moves `$38AC/$38AE` towards
+`(target_x - 128, target_y + 112)`. The vertical coordinate there runs
+opposite to PPU scroll. `course_orbit.c` separates the displacement from
+that target, preserving live raster scroll when WRAM stages the next frame.
+Only automatic look-ahead fades with yaw, and keeping Kirby on screen is
+suspended until manual view has returned. Previously, that constraint
+limited vertical pan even at the original angle, and fading the whole offset
+removed pan after a quarter turn.
 
 The collision loader at `$82:B1CA` fills planes with capacity `$800` cells:
 
@@ -412,6 +429,40 @@ earned counters, other maps and Linux remain untested.
 Run the focused regression with the patched framework available:
 `python -m unittest discover -s tests -p test_course_orbit_render.py -k original -v`.
 
+### Original course pan, 2026-11-16
+
+The renderer regression fails against the unchanged renderer and passes with
+the fix. It covers four cardinal pan directions at four quarter turns,
+0.5x/1x/2x zoom, pending WRAM ahead of live raster scroll, and vertical pan
+far enough to leave Kirby off screen. The high refresh fixture also checks
+intermediate pan and return frames, including HD output. Run both with
+`python -m unittest discover -s tests -p test_course_orbit_render.py -v`.
+
+Real-ROM Windows replays start normal holes 4-7 and 4-8 directly, wait 700
+frames, then hold Y+right for 40 frames, Y+left for 80, Y+up for 80, and
+Y+down for 160, with one idle frame between holds. They run through frame
+1219 with high refresh composition enabled. Before/after full WRAM matches
+on all 521 sampled frames per hole (699–1219); first gameplay-state
+divergence: none in that interval. The first changed presentation is frame
+825 on 4-7 and 840 on 4-8. After recentering, images match again. A rotated,
+zoomed 4-7 replay has identical WRAM; a 4-8 interpreter-fallback replay has
+identical WRAM and images to native dispatch. The two existing shot/enemy
+camera runtime tests also pass.
+
+The pinned Snes9x 1.63 core identified above was run twice per hole from
+zero SRAM/WRAM, using the existing menu recording through course selection.
+A local diagnostic sets the course/hole selection words at reference frame
+1900 before loading the hole; it does not patch the ROM. The same pan inputs
+begin at reference frame 3201. Aligning that first input with host frame 700,
+all 520 corresponding samples match for camera scroll `$86/$88`, follow
+target `$6AAA/$6AAC`, manual/return flag `$6AAE`, and return-complete flag
+`$6AB0`. Both reference runs reproduce full frame hashes and WRAM captures.
+First divergence in those selected camera observations: none. Full host vs
+reference WRAM/image equality is not claimed; the existing startup and
+gameplay differences remain. Captures and diagnostic scripts stay in ignored
+`local/`. Physical controllers, two-player panning and Linux/Steam Deck
+remain untested for this fix.
+
 ## Limits
 
 The renderer is experimental. The original game provides only projected
@@ -435,7 +486,7 @@ sprite was observed in the sampled aiming frames of the 64 normal holes.
 Every power, moving object, two-player turn and map combination has not been
 played through. Save/load anchor recovery has fixture coverage, not a full
 runtime save/load replay of every effect. Physical controller feel and this
-renderer on Linux/Steam Deck remain untested. No new reference-emulator
-comparison was performed: camera-specific checks use the unchanged host as
+renderer on Linux/Steam Deck remain untested. Except for the selected native
+pan observations above, camera-specific checks use the unchanged host as
 the baseline. Existing host/reference differences remain documented in
 [compatibility](compatibility.md); camera-on parity does not resolve them.
