@@ -259,6 +259,75 @@ static int Scenarios(void)
     EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
     EXPECT(fabs(cx - 127.5) < 1 && fabs(cy - 107.5) < 1);
 
+    /* The original course pan still moves the view after a quarter turn.
+     * Keep the player stationary and move only the guest camera. */
+    first_x = cx;
+    first_y = cy;
+    Word(0x6aae, 1);
+    Word(0x6aaa, 112 + 128);
+    Word(0x6aac, 0);
+    Word(0x38ae, 112);
+    Scroll(144, 40);
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) > 0);
+    EXPECT(fabs(cx - first_x) + fabs(cy - first_y) > 8);
+    Word(0x6aae, 0);
+
+    /* Cardinal pans retain their full world displacement at every quarter
+     * turn, zoomed in and out. Use the guest's saved follow target and its
+     * inverted vertical camera coordinates, including a wrapped scroll. */
+    static const int pans[][2] = {{16, 0}, {-16, 0}, {0, 8}, {0, -8}};
+    for (unsigned turn = 0; turn < 4; ++turn) {
+        for (int zoom = -1; zoom <= 1; ++zoom) {
+            Scroll(0, -1);
+            Word(0x6aae, 0);
+            Snapshot();
+            NativeAngle();
+            for (unsigned t = 0; t < turn; ++t) QuarterTurn();
+            if (zoom) Zoom(zoom < 0 ? 32767 : -32768, 60);
+            Draw();
+            EXPECT(CountColor(pixels, red, &first_x, &first_y) > 0);
+            const double angle = turn * 60 * (3.141592653589793 / 2) *
+                ((32767.0 / 32768 - 0.2) / 0.8) / 60.0988;
+            const double scale = exp2(zoom * 60 / 60.0988);
+            for (unsigned p = 0; p < 4; ++p) {
+                int dx = pans[p][0], dy = pans[p][1];
+                Word(0x6aae, 1);
+                Word(0x6aaa, 128);
+                Word(0x6aac, 0);
+                Word(0x38ae, 112 - dy - 7);
+                Scroll(dx, -1 + dy);
+                /* Pending WRAM is ahead of the displayed raster. */
+                Word(0x86, dx + 5);
+                Word(0x88, -1 + dy + 7);
+                Snapshot();
+                Draw();
+                EXPECT(CountColor(pixels, red, &cx, &cy) > 0);
+                EXPECT(fabs(cx - first_x + scale *
+                    (cos(angle) * dx - sin(angle) * 2 * dy)) < 1.2);
+                EXPECT(fabs(cy - first_y + scale *
+                    (sin(angle) * dx / 2 + cos(angle) * dy)) < 1.2);
+            }
+        }
+    }
+    /* Manual view may leave Kirby behind in either vertical direction.
+     * Keeping the ball in frame here prevents inspecting distant terrain. */
+    Scroll(0, -1);
+    Word(0x6aae, 0);
+    NativeAngle();
+    for (int dy = -160; dy <= 160; dy += 320) {
+        Word(0x6aae, 1);
+        Word(0x6aaa, 128);
+        Word(0x6aac, 0);
+        Word(0x38ae, 112 - dy);
+        Scroll(0, -1 + dy);
+        Snapshot();
+        Draw();
+        EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
+    }
+    Word(0x6aae, 0);
+
     /* After the ball reaches another elevation, the orbit pivot follows the
      * ground beneath it rather than the tee's height. */
     Ball(3, 2, 1);

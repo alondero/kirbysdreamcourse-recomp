@@ -145,5 +145,35 @@ int main(void)
     assert(!KdcOrbitDraw((uint8_t *)pixels, stride * 4, NULL, width, height, 0.5));
     KdcOrbitConfigure(false, true);
     assert(!KdcOrbitDraw((uint8_t *)pixels, stride * 4, NULL, width, height, 0.5));
+
+    /* Manual pan and the guest's return interpolate through the captured
+     * camera, including after rotating past the automatic look-ahead. */
+    Word(0x1803, 0);
+    Word(0x6aae, 0);
+    Scroll(0, 0);
+    KdcOrbitConfigure(true, true);
+    NativeAngle();
+    QuarterTurn(); QuarterTurn();
+    Snapshot();
+    KdcOrbitCapture(100, width, height);
+    start = RedAt(1);
+    Word(0x6aae, 1);
+    Word(0x6aaa, 128);
+    Word(0x6aac, 0);
+    Word(0x38ae, 112);
+    Scroll(16, 0); Snapshot();
+    KdcOrbitCapture(101, width, height);
+    assert(fabs(RedAt(1) - start - 16) < 1);
+    assert(fabs(RedAt(0.5) - start - 8) < 1);
+    assert(fabs(HdRedAt(0.5) - RedAt(0.5)) < 0.5);
+    Scroll(8, 0); Snapshot(); /* Y released; return flag remains set. */
+    KdcOrbitCapture(102, width, height);
+    assert(fabs(RedAt(1) - start - 8) < 1);
+    assert(fabs(RedAt(0.5) - start - 12) < 1);
+    Word(0x6aae, 0);
+    Scroll(0, 0); Snapshot();
+    KdcOrbitCapture(103, width, height);
+    assert(RedAt(1) == start);
+    assert(fabs(RedAt(0.5) - start - 4) < 1);
     return 0;
 }
