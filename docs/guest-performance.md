@@ -1,5 +1,9 @@
 # Guest runtime profiling
 
+The [issue #89 follow-up](#remaining-overhead-issue-89) measures the remaining
+observer, bus and policy costs after the diagnostic cache. The older results
+below remain historical observations.
+
 Issue [#63](https://github.com/alondero/kirbysdreamcourse-recomp/issues/63),
 2026-11-15. Source baseline: `18bd9ed`. Framework:
 `147b55e252dcb3e7680a99c7c2f50e7183891844` with the guarded patch stack.
@@ -226,3 +230,251 @@ is not part of a release build or package.
 
 API references: Microsoft's [thread context requirements](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadcontext)
 and [StackWalk64 contract](https://learn.microsoft.com/windows/win32/api/dbghelp/nf-dbghelp-stackwalk64).
+
+## Remaining overhead: issue #89
+
+Investigation date: 2026-11-17. Source is the issue's audit baseline
+`e18a4f753f54ed8bedf015f7bd634d26f6fc4241`, freshly built in the issue worktree.
+Production game source, generated code, bus behavior and policy settings were
+unchanged during discovery. The framework pin and guarded patch order are those
+in `tools/setup.py`; this includes the diagnostic cache and transition patch.
+The supplied USA ROM was rehashed and matched the SHA-256 above.
+
+### Build and measurement identities
+
+The control executable SHA-256 is
+`4f89b91ef6677503b88e66528fca54602ef96340dda3c065f11b68883cf59c1a`.
+The discarded observer-filter executable is
+`588c50d0ad5b57dab3e0516928b3bd3f607fe93d41ab70e12dbfb2d3ed1ac6f7`.
+Both use GCC 15.2.0 MinGW x64, C Release flags `-O3 -DNDEBUG -g`, C++ Release
+flags `-O3 -DNDEBUG`, static SDL 3.4.10 and the pinned launcher UI
+`3f1d6f122a58823614abce14f5b86f4d165a629c`. `KDC_RELEASE_DEFAULTS=ON`;
+the guarded experimental state options are enabled, APU-boundary-sync is off.
+The control was preserved before changing the local framework. The candidate
+recompiled only its bridge and relinked the same build. Local build sidecars
+record executable, game source, patch, framework diff, CMake cache and Ninja
+file hashes. Harness revision metadata is explicitly separate from binary
+provenance; a retained executable without a sidecar is marked unknown.
+
+Hardware is the Ryzen 9 3900X, 12 cores/24 logical processors, on Windows
+build 28120 (`platform.platform(): Windows-10-10.0.28120-SP0`). No affinity was
+imposed. The shot script, zero initial SRAM, developer start, HD/widescreen,
+worker count, audio and dummy SDL settings match the method above. Guest APU
+execution remains enabled. All campaigns use host frames 350–1100, including
+the APU tail in `RtlRunFrame`, and separate fresh processes. No instruction
+tracing, sampling, captures or concurrent benchmarks run during timings.
+
+WPR again failed with `0xc5585011`; these are not ETW/on-CPU measurements.
+The available Ubuntu WSL kernel is `6.6.87.2-microsoft-standard-WSL2`, has no
+`perf` executable, and a direct userspace `perf_event_open` task-clock probe
+returned `EINVAL`. Native Linux and Steam Deck on-CPU evidence remains open.
+The Windows sampler was built with `gcc -O2 -Wall -Wextra -Werror` and the
+libraries in the reproduction command above. It retains the wall-occupancy
+limitation described there.
+
+### Attribution after the diagnostic cache
+
+Three separate sampled processes per bounce policy produced these exclusive
+subsystem groups. These percentages partition the guest stacks, not CPU time.
+
+| Policy | Guest samples | 65816/bridge | APU/SPC/DSP | Beam/bus/other | DMA/HDMA | Generated |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Bounce off | 4,467 | 77.48% | 16.12% | 5.44% | 0.96% | 0% |
+| Bounce on | 4,736 | 79.01% | 14.63% | 5.66% | 0.51% | 0.19% |
+
+No stacks reached the 96-frame truncation limit. All six processes sampled the
+requested window. Optimized DWARF attribution resolves the suspended leaf
+instruction as-is, and external-leaf callers at their return address minus one.
+Inline chains remain visible. Source lines in optimized code are approximate;
+the observer loop was also checked against the matching disassembly.
+
+| Leaf or source region | Bounce off | Bounce on |
+| --- | ---: | ---: |
+| `_interp_run_core`, including its inline helpers and observer scan | 29.57% | 29.54% |
+| Observer scan within that core (lines 2252–2256) | 4.45% | 3.95% |
+| `bridge_bus_read` | 8.84% | 8.61% |
+| `cpu_read8` | 7.75% | 7.69% |
+| `cart_getRomPtr` | 6.81% | 6.14% |
+| `RomPtr` | 3.83% | 3.61% |
+| `cpu_sram_offset` | 2.31% | 2.07% |
+| `interp816_doOpcode` + `interp816_runOpcode` leaves | 5.48% | 5.47% |
+| CRT `getenv` leaves | 0.31% | 3.25% |
+
+The observer row is a subset of the core row. The five mapped-read rows total
+29.53%/28.12% in disjoint leaves, including inlined checks. They do not measure
+removable memory-map overhead: the bridge charges bus timing and read epochs,
+handles APU-port synchronization, and preserves cartridge/open-bus behavior.
+Writes did not rank among these leading leaves. No bus fast path was promoted
+from this evidence.
+
+Inclusive counts overlap: `interp816_runOpcode` is 32.62%/30.45%, `cpu_read8`
+18.18%/17.53%, and `bridge_bus_read` 15.31%/14.93%. These include callees and
+must not be summed with each other or with their leaf counts. Beam, DMA and
+APU samples nested under the interpreter belong to their innermost recognized
+subsystem. Twenty/eight guest samples were outside the beam driver; the frame
+boundary APU synchronization and its inlined diagnostic/policy calls remain
+in the denominator. Inlining can leave that boundary work in the “other” group.
+
+The bounce-on `getenv` samples split into 75 at `SNESRECOMP_APU_HANDOFF`
+(1.58% of guest samples), 74 at `SNESRECOMP_YIELD_STACK_DIAG` (1.56%), and five
+in frame-boundary APU configuration. Bounce-off has 14 frame-boundary samples.
+There are no remaining sampled `SNESRECOMP_WLOG_STATE` lookups. Thus the
+remaining CRT cost is not solely the handoff setting. The yield diagnostic
+is queried before its frame-5390 gate even in this frame-1100 replay; moving
+that condition first is a possible separately measured follow-up. Handoff
+still changes within one process in the real bridge suite, so static caching
+would change its contract and was not attempted.
+
+Synchronization appears in source-attributed SDL/APU lock/unlock leaves;
+these are nested work, not an additional subsystem percentage. The samples
+do not establish contention or a synchronization bottleneck with audio output
+off. Generated entries remain too sparse to infer translated-instruction
+coverage. There is no justification here for recovering or promoting guest roots.
+
+### Observer candidate and retention decision
+
+Before implementation, the target was declared as at least 5% lower mean guest
+time with consistent paired results. The local candidate adds an 8 KiB bitmap
+indexed by the low 16 bits of the guest PC. Negative lookups skip the scan;
+possible matches still use the original ordered 256-slot table and full
+normalized key. Bank collisions produce extra scans, never skipped callbacks.
+Registration, replacement and clearing maintain the bitmap. All existing
+observers and CPU synchronization/redirect handling remain in place.
+
+Two discarded warmups per build/policy preceded six AB/BA pairs per policy.
+Each number below is an individual unsampled process mean, in ms/update.
+
+| Policy/build | Individual means | Mean | Sample SD |
+| --- | --- | ---: | ---: |
+| Off/control | 6.926, 6.220, 6.232, 6.859, 8.081, 7.748 | 7.011 | 0.768 |
+| Off/filter | 7.326, 5.229, 6.464, 6.620, 5.499, 6.950 | 6.348 | 0.822 |
+| On/control | 7.398, 6.051, 5.575, 7.189, 6.292, 8.243 | 6.791 | 0.991 |
+| On/filter | 6.866, 5.399, 6.634, 6.587, 7.154, 7.452 | 6.682 | 0.708 |
+
+The ratio of means suggests 9.46% off and 1.61% on, but both policies lose two
+of six pairs. Paired changes range from a 5.78% regression to a 31.95% reduction
+off, and a 19.00% regression to a 10.78% reduction on. Run-mean coefficients of
+variation are 10.6–14.6%. This fails the retention gate: the observer bitmap is
+**not retained**, and no production runtime patch or native-promotion change
+is part of this work.
+
+An earlier six-run control-only campaign measured 5.113–5.677 ms off and
+5.525–6.042 ms on (means 5.408/5.678). Its lower values, despite the identical
+executable and settings, further rule out a historical-regression claim.
+Separate sampler-only control runs measured 6.051–6.156/6.394–6.694 ms;
+their aggregate means are approximately 13.1%/15.6% above that earlier timing
+campaign. This is a sampler-perturbation check confounded by between-campaign
+variation, not a calibrated overhead correction. Sampled times are never used
+to accept the candidate.
+
+`process.json` records Windows `GetProcessTimes` CPU seconds separately from
+elapsed process seconds. Those cover startup and all host stages through exit,
+not just the guest window. They are not substitutes for on-CPU sampling or
+guest-stage CPU time. The paired campaign's whole-process means are:
+
+| Policy/build | CPU seconds | Elapsed seconds |
+| --- | ---: | ---: |
+| Off/control | 10.635 | 12.818 |
+| Off/filter | 9.846 | 11.830 |
+| On/control | 10.482 | 12.496 |
+| On/filter | 10.234 | 12.447 |
+
+Deadline-wait counts were zero. SDL dummy, HD off and one
+worker control the renderer for these guest-stage measurements; no display,
+GPU, audio-output or end-to-end speedup is claimed.
+
+### Repeating the follow-up
+
+Build a fresh guarded executable using `tools/setup.py --release-defaults`
+with a native Windows CMake and, optionally, `--sdl-source` pointing at an
+existing SDL 3.4.10 source tree. Reconfigure C Release flags to
+`-O3 -DNDEBUG -g`, rebuild, then preserve the control executable before a
+candidate rebuild. Do not label old binaries with the harness checkout's revision.
+An optional `<executable-stem>.build.json` alongside each executable records
+build provenance and must include a matching `sha256`; mismatches fail.
+Without it the report labels build provenance unknown.
+
+```powershell
+# Unsampled acceptance campaign: two warmups, six AB/BA pairs per policy.
+python tools/profile_guest.py --executable <candidate.exe> --baseline <control.exe> --repeat 6 --modes timing
+# Separate occupancy/source attribution; use matching MinGW tools.
+python tools/profile_guest.py --executable <control.exe> --repeat 3 --modes sample --sampler local/guest-sampler.exe --nm <mingw-nm.exe> --objdump <mingw-objdump.exe> --addr2line <mingw-addr2line.exe>
+# Separate regression campaign, optionally including sampled state checks.
+python tools/profile_guest.py --executable <candidate.exe> --baseline <control.exe> --modes sample validate --sampler local/guest-sampler.exe --nm <mingw-nm.exe> --objdump <mingw-objdump.exe> --repeat 1 --validate --full-state
+python tools/profile_guest.py --executable <candidate.exe> --baseline <control.exe> --scenario orbit --modes validate --validate --full-state
+```
+
+`--bounce 0` or `--bounce 1` restricts a campaign. `--warmup` changes the
+discarded count. Full-state validation adds one save command in the existing
+idle tail, compares its serialized state byte-for-byte against the same bounce
+policy, and compares every full WRAM dump in the timed frame interval across
+all policies separately from CPU/CRC/SRAM traces.
+Framedump indices are one lower than host timer indices. This validates the
+serialized state format, not every unsaved internal runtime field. No snapshots
+or frame dumps are produced by timing or attribution-only processes.
+
+Local evidence directories: control timing `local/guest-profile-wuzyhgm_`,
+control attribution `local/guest-profile-gdwdc30x`, paired candidate timing
+`local/guest-profile-qspwndux`. Local experiment scripts, binaries and raw
+captures remain ignored. The public changes improve reproducibility and
+attribution; they do not claim a runtime performance improvement.
+
+### Follow-up validation and limits
+
+- Nine profiling-tool tests pass, including incomplete evidence, source/inline
+  attribution, CPU accounting after process exit, executable provenance and
+  policy-specific snapshot comparisons. The project suite ran 118 tests with
+  47 optional checks skipped (including checks requiring the default local
+  framework path or opt-in ROM/device settings). The real framework checks
+  below were run separately with an explicit framework path.
+- Framework interpreter: 89/89; bridge: 449/449; tier-2 capture: disabled,
+  lifecycle and normal modes pass. The local observer-contract wrapper passes
+  723 total checks before and after the filter: the existing bridge checks
+  plus null/duplicate/mirrored registration, distinct-bank collisions,
+  replacement, clearing and capacity checks. Existing bridge cases cover
+  composed observers, CPU synchronization, redirects, nested AOT/LLE,
+  interrupts and mutable handoff/APU accounting. The diagnostic-cache probe
+  also passes for absent, empty and enabled `SNESRECOMP_WLOG_STATE`.
+  Redirecting the upstream PowerShell runner's output caused that shell to
+  stop on its expected BRK diagnostic; equivalent GCC commands were run via
+  Python subprocesses with exit codes checked instead.
+- Shot and orbit each pass eight separate validation processes: two builds,
+  two policies and two repetitions. Per-frame CPU/WRAM CRC traces, CPU-clock
+  frame logs, all 751 full WRAM dumps and final SRAM agree across policies.
+  Each complete serialized checkpoint matches the control for its own policy.
+  Four additional sampled shot processes match the unsampled CPU/WRAM/SRAM
+  reference, establishing sampler determinism in these recorded fields.
+- The first attempt to compare entire snapshots **across** policies failed
+  for the unchanged control in both shot and orbit at byte 305947. In the
+  shot checkpoint that is `RtlRollbackResidue.cpu.host_return_valid` (0 vs 2).
+  All other differing payload bytes are also within the execution residue;
+  the hardware-state bytes before it match. The trailing checksum differs as
+  expected. The tool now keeps per-policy snapshot references while retaining
+  cross-policy CPU/WRAM/SRAM comparisons; it does not normalize away differences
+  within a policy or claim raw cross-policy snapshot equality.
+- `validate_high_refresh.py --baseline-bounce 0 --rates 120` passes against
+  the preserved control: CPU/CRC/frame logs, SRAM and full WRAM agree;
+  default images match. The two 120 Hz runs produced 54/55 camera frames and
+  29/25 object frames with distinct intermediate images, with 95/98
+  interpolated object draws. These wall-scheduled image counts qualify the
+  path exercised, not its performance. A later repeat in
+  `local/high-refresh-validation-dhfvmlxt` passed state/SRAM/full-WRAM
+  comparisons through `hz-120`, but failed that case's intermediate
+  object-image assertion (zero distinct intermediate object-motion frames).
+  It did not reach the second 120 Hz case. This is the same class of
+  wall-scheduled presentation failure recorded in the earlier investigation;
+  the passing run does not establish a consistently passing image gate.
+
+Passing shot and orbit full-state evidence is in `local/guest-profile-cgxyyv82`
+and `local/guest-profile-120wzokr`; the initial snapshot-comparison failures are
+preserved in `local/guest-profile-tqb_9b13` and `local/guest-profile-hjgvi92y`.
+The high-refresh result is `local/high-refresh-validation-unayjfj7`.
+There is no candidate-induced first divergence in the compared fields.
+This remains host-to-host regression evidence. The existing host-15/reference-16
+compatibility mismatch is separate; no new independent emulator equivalence,
+audio fidelity, all-hole/CPU-preview coverage, native Linux or Steam Deck
+performance is established. Those paths and on-CPU qualification remain open.
+The rejected candidate is preserved only under ignored `local/observer-filter`
+with its local patch and contract probe. The local framework was restored by
+reapplying the guarded bridge patches at the pin; its complete diff SHA-256
+matches the pre-experiment control, and its build was restored as well.
