@@ -12,6 +12,35 @@ spec.loader.exec_module(benchmark)
 
 
 class HdBenchmarkTest(unittest.TestCase):
+    def test_cases_alternate_ab_ba_without_changing_pair_members(self):
+        builds = [('baseline', Path('a')), ('candidate', Path('b'))]
+        forward = benchmark.run_order(builds, [0, 1], 0)
+        self.assertEqual(forward, [('baseline', Path('a'), 0), ('baseline', Path('a'), 1),
+                                   ('candidate', Path('b'), 0), ('candidate', Path('b'), 1)])
+        self.assertEqual(benchmark.run_order(builds, [0, 1], 1), forward[::-1])
+        self.assertEqual(benchmark.run_order(builds, [0, 1], 2), forward)
+
+    def test_summary_excludes_warmups_and_keeps_run_variation(self):
+        results = [dict(warmup=warmup, build='candidate', hd=1, mean_ms={'compose': cost})
+                   for warmup, cost in [(True, 100), (False, 2), (False, 4), (False, 6)]]
+        summary, = benchmark.summarize_runs(results)
+        self.assertEqual(summary['runs'], 3)
+        stats = summary['mean_ms']['compose']
+        self.assertEqual(stats['median'], 4)
+        self.assertEqual((stats['minimum'], stats['maximum']), (2, 6))
+        self.assertEqual((stats['p25'], stats['p75']), (2, 6))
+
+    def test_diagnostic_windows_separate_entry_from_warm_draws(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cost.csv'
+            path.write_text('frame,orbit_prepare_ms,orbit_parallel_ms\n'
+                            '500,0,0\n501,20,3\n502,0.1,2\n503,0.2,2\n')
+            entry = benchmark.cost_timings(path, 501, 501)
+            warm = benchmark.cost_timings(path, 502, 503)
+        self.assertEqual(entry['orbit_prepare_ms']['mean'], 20)
+        self.assertAlmostEqual(warm['orbit_prepare_ms']['mean'], .15)
+        self.assertEqual(warm['orbit_parallel_ms']['count'], 2)
+
     def test_tail_and_cache_clear_are_attributed_to_the_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'timing.csv'
@@ -31,6 +60,7 @@ class HdBenchmarkTest(unittest.TestCase):
         self.assertEqual(interval['max_frame'], 352)
         self.assertEqual(interval['over_budget']['50'], 1)
         self.assertEqual(result['distributions']['work_ms']['max'], 55)
+        self.assertEqual(result['distributions']['renderer_ms']['max'], 53)
         self.assertEqual(result['hd_counters']['hd_cache_clears'], 1)
         self.assertEqual(result['cache_pressure_events'][0]['frame'], 352)
         self.assertEqual(result['cache_pressure_events'][0]['raster_ms'], 53)

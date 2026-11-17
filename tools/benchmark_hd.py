@@ -6,8 +6,10 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
+import statistics
 import subprocess
 import tempfile
 
@@ -21,6 +23,10 @@ SCENARIOS = {
     'orbit': dict(frames=1100, screenshot=800, script=SHOT,
                   camera='500 32767 0 0\n700 0 32767 0\n900 -32767 0 0\n'),
 }
+# Match direct-launch guarded releases, including for development executables.
+# Do not inherit timing/bounce policy from the invoking shell.
+RUNTIME_ENV = dict(SNESRECOMP_APU_BEAM_ELAPSED='1', SNESRECOMP_APU_HANDOFF='1',
+                   SNESRECOMP_APU_ABSOLUTE_PREANCHOR='1', SNESRECOMP_LLE_BOUNCE='1')
 
 
 def distribution(samples):
@@ -31,9 +37,31 @@ def distribution(samples):
     frame, peak = max(samples, key=lambda sample: sample[1])
     return dict(count=len(samples), mean=sum(ordered) / len(ordered),
                 **{f'p{p}': ordered[math.ceil(len(ordered) * p / 100) - 1]
-                   for p in (50, 95, 99)}, max=peak, max_frame=frame,
+                   for p in (25, 50, 75, 95, 99)}, max=peak, max_frame=frame,
                 over_budget={str(budget): sum(value > budget for value in ordered)
                              for budget in (1000 / 60, 1000 / 30, 50, 100)})
+
+
+def run_order(builds, hd_modes, repeat):
+    """Alternate AB/BA (or reverse the full matrix) without concurrent runs."""
+    cases = [(name, executable, hd) for name, executable in builds for hd in hd_modes]
+    return cases if repeat % 2 == 0 else cases[::-1]
+
+
+def summarize_runs(results):
+    """Run variation, distinct from the per-frame tails in each result."""
+    groups = {}
+    for result in results:
+        if result['warmup']:
+            continue
+        groups.setdefault((result['build'], result['hd']), []).append(result)
+    return [dict(build=name, hd=hd, runs=len(runs),
+                 mean_ms={stage: dict(median=statistics.median(values),
+                                     minimum=min(values), maximum=max(values),
+                                     **distribution(list(enumerate(values))))
+                          for stage in runs[0]['mean_ms']
+                          for values in [[run['mean_ms'][stage] for run in runs]]})
+            for (name, hd), runs in groups.items()]
 
 
 def frame_timings(path):
@@ -51,6 +79,9 @@ def frame_timings(path):
         for previous, row in zip(rows, rows[1:])]
     samples['work_ms'] = [(int(row['frame']), sum(float(row[key]) for key in stages
                                                if key != 'wait_ms')) for row in rows]
+    samples['renderer_ms'] = [(int(row['frame']), sum(float(row[key]) for key in
+                              ('raster_ms', 'acquire_ms', 'compose_ms', 'present_ms')
+                              if key in row)) for row in rows]
     counters = [key for key in rows[0] if key.startswith('hd_')]
     events = []
     for index, (previous, row) in enumerate(zip(rows, rows[1:]), start=1):
@@ -68,6 +99,16 @@ def frame_timings(path):
                              if key != 'hd_cached_tiles'}, cache_pressure_events=events)
 
 
+def cost_timings(path, first, last):
+    """Diagnostic stages overlap; never add them to work_ms or each other."""
+    with path.open(newline='') as stream:
+        rows = [row for row in csv.DictReader(stream) if first <= int(row['frame']) <= last]
+    if not rows:
+        raise AssertionError(f'{path}: no diagnostic samples in {first}..{last}')
+    return {key: distribution([(int(row['frame']), float(row[key])) for row in rows])
+            for key in rows[0] if key.endswith('_ms')}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--executable', type=Path, required=True)
@@ -77,6 +118,15 @@ def main():
     parser.add_argument('--native-width', action='store_true', help='Disable widescreen')
     parser.add_argument('--scenario', choices=SCENARIOS, default='still')
     parser.add_argument('--repeat', type=int, default=3)
+    parser.add_argument('--warmup', type=int, default=0,
+                        help='Discard this many full replays of every case before measuring')
+    parser.add_argument('--backend', choices=['auto', 'software', 'direct3d11', 'opengl'],
+                        default='auto', help='Pin [Graphics] Renderer; unavailable drivers fail')
+    parser.add_argument('--window-size', default='1536x896', help='Fixed output window size')
+    parser.add_argument('--orbit-profile', action='store_true',
+                        help='Diagnostic replay with KDC_ORBIT_PROFILE=1; keep separate from timings')
+    parser.add_argument('--diagnostic-costs', action='store_true',
+                        help='Use the isolated tools/diagnostics/hd-costs patches; buffered cost/GPU traces')
     parser.add_argument('--max-raster-ms', type=float, help='Fail if any HD raster mean exceeds this budget')
     parser.add_argument('--max-compose-ms', type=float, help='Fail if HD composition mean exceeds this budget')
     parser.add_argument('--threads', type=int, choices=range(1, 17), help='Fix the rendering worker count')
@@ -87,8 +137,12 @@ def main():
     parser.add_argument('--no-captures', action='store_true', help='Timing only; omit the separate image replay')
     parser.add_argument('--max-p99-ms', type=float, help='Fail if HD presentation interval p99 exceeds this budget')
     args = parser.parse_args()
-    if args.repeat < 1:
-        parser.error('--repeat must be positive')
+    if args.repeat < 1 or args.warmup < 0:
+        parser.error('--repeat must be positive and --warmup nonnegative')
+    if not re.fullmatch(r'[1-9][0-9]*x[1-9][0-9]*', args.window_size):
+        parser.error('--window-size must be WIDTHxHEIGHT with positive dimensions')
+    if args.backend in ('direct3d11', 'opengl') and not args.display:
+        parser.error('Accelerated backends require --display')
     scenario = SCENARIOS[args.scenario]
     frames = args.frames if args.frames is not None else scenario['frames']
     if not 1 <= args.profile_start < frames or frames > 36000:
@@ -103,91 +157,154 @@ def main():
     builds = [('candidate', args.executable.resolve(strict=True))]
     if args.baseline:
         builds.insert(0, ('baseline', args.baseline.resolve(strict=True)))
+    metadata = dict(arguments={key: str(value) if isinstance(value, Path) else value
+                               for key, value in vars(args).items()},
+                    source_revision=subprocess.check_output(
+                        ['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
+                    platform=platform.platform(), processor=platform.processor(),
+                    rom_sha256=hashlib.sha256(rom.read_bytes()).hexdigest(),
+                    builds={name: dict(executable=str(executable),
+                                sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+                                dll_sha256={dll.name: hashlib.sha256(dll.read_bytes()).hexdigest()
+                                            for dll in executable.parent.glob('*.dll')})
+                            for name, executable in builds},
+                    order='forward/reverse on alternating repeats',
+                    runtime_environment=RUNTIME_ENV,
+                    harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                    timing_kind='main-thread elapsed wall time',
+                    gpu_timing=('separate OpenGL timestamp trace' if args.diagnostic_costs and
+                                args.backend == 'opengl' else 'unmeasured'))
+    (output / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     results = []
-    for repeat in range(args.repeat):
+    for iteration in range(args.warmup + args.repeat):
+        warmup = iteration < args.warmup
+        repeat = iteration - args.warmup
         captures = {}
-        for name, executable in builds:
-            for hd in args.hd:
-                case = output / f'{repeat}-{name}-hd{hd}'
-                case.mkdir()
-                host = case / executable.name
-                shutil.copy2(executable, host)
-                for dll in executable.parent.glob('*.dll'):
-                    shutil.copy2(dll, case / dll.name)
-                (case / 'config.ini').write_text(
-                    '[General]\nAutosave=0\nDisableFrameDelay=1\n'
-                    '[Graphics]\nNewRenderer=1\nNoSpriteLimits=0\n'
-                    f'Widescreen={int(not args.native_width)}\nWindowSize=1536x896\nVSync=0\n'
-                    '[Sound]\nEnableAudio=0\n[Controller]\nSourceP1=0\nSourceP2=0\n'
-                    '[GamepadMap]\nEnableGamepad1=false\nEnableGamepad2=false\n')
-                env = {k: v for k, v in os.environ.items()
-                       if not k.startswith(('SNESRECOMP_', 'KDC_', 'SDL_', 'LNG_'))}
-                env.update(SDL_AUDIODRIVER='dummy', KDC_HD=str(hd),
-                           SNESRECOMP_SCREENSHOT=str(case / 'frame.ppm'),
-                           SNESRECOMP_SCREENSHOT_FRAME=str(scenario['screenshot']))
-                if args.threads is not None:
-                    env['KDC_THREADS'] = str(args.threads)
-                command = [str(host), '--no-launcher', '--rom', str(rom), '--dev-hole', args.hole]
-                if scenario['script']:
-                    (case / 'shot.script').write_text(scenario['script'])
-                    command += ['--script', str(case / 'shot.script')]
-                if scenario['camera']:
-                    (case / 'camera.script').write_text(scenario['camera'])
-                    env['KDC_CAMERA_SCRIPT'] = str(case / 'camera.script')
-                if not args.display:
-                    env['SDL_VIDEODRIVER'] = 'dummy'
-                # Encoding a 4x PPM takes hundreds of milliseconds. Capture
-                # in a separate replay, including when profiling from boot.
-                timed = dict(env, SNESRECOMP_RUN_FRAMES=str(frames),
-                             SNESRECOMP_HOST_PROFILE='1',
-                             SNESRECOMP_HOST_PROFILE_START_FRAME=str(args.profile_start),
-                             SNESRECOMP_FRAME_TIMING=str(case / 'timing.csv'))
-                del timed['SNESRECOMP_SCREENSHOT'], timed['SNESRECOMP_SCREENSHOT_FRAME']
-                if not args.no_captures:
-                    capture = dict(env, SNESRECOMP_RUN_FRAMES=str(scenario['screenshot'] + 5))
-                    with (case / 'capture.log').open('w') as log:
-                        subprocess.run(command, cwd=case, env=capture,
-                                       stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
-                with (case / 'run.log').open('w') as log:
-                    subprocess.run(command, cwd=case, env=timed,
+        for name, executable, hd in run_order(builds, args.hd, iteration):
+            case = output / f'{repeat}-{name}-hd{hd}'
+            case.mkdir()
+            host = case / executable.name
+            shutil.copy2(executable, host)
+            for dll in executable.parent.glob('*.dll'):
+                shutil.copy2(dll, case / dll.name)
+            (case / 'config.ini').write_text(
+                '[General]\nAutosave=0\nDisableFrameDelay=1\n'
+                '[Graphics]\nNewRenderer=1\nNoSpriteLimits=0\n'
+                f'Widescreen={int(not args.native_width)}\nWindowSize={args.window_size}\n'
+                f'Renderer={args.backend}\nVSync=0\n'
+                '[Sound]\nEnableAudio=0\n[Controller]\nSourceP1=0\nSourceP2=0\n'
+                '[GamepadMap]\nEnableGamepad1=false\nEnableGamepad2=false\n')
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('SNESRECOMP_', 'KDC_', 'SDL_', 'LNG_'))}
+            env.update(SDL_AUDIODRIVER='dummy', KDC_HD=str(hd),
+                       SNESRECOMP_SCREENSHOT=str(case / 'frame.ppm'),
+                       SNESRECOMP_SCREENSHOT_FRAME=str(scenario['screenshot']))
+            env.update(RUNTIME_ENV)
+            if args.threads is not None:
+                env['KDC_THREADS'] = str(args.threads)
+            if args.orbit_profile:
+                env['KDC_ORBIT_PROFILE'] = '1'
+            command = [str(host), '--no-launcher', '--rom', str(rom), '--dev-hole', args.hole]
+            if scenario['script']:
+                (case / 'shot.script').write_text(scenario['script'])
+                command += ['--script', str(case / 'shot.script')]
+            if scenario['camera']:
+                (case / 'camera.script').write_text(scenario['camera'])
+                env['KDC_CAMERA_SCRIPT'] = str(case / 'camera.script')
+            if not args.display:
+                env['SDL_VIDEODRIVER'] = 'dummy'
+            # Encoding a 4x PPM takes hundreds of milliseconds. Capture
+            # in a separate replay, including when profiling from boot.
+            timed = dict(env, SNESRECOMP_RUN_FRAMES=str(frames),
+                         SNESRECOMP_HOST_PROFILE='1',
+                         SNESRECOMP_HOST_PROFILE_START_FRAME=str(args.profile_start),
+                         SNESRECOMP_FRAME_TIMING=str(case / 'timing.csv'))
+            if args.diagnostic_costs:
+                timed['KDC_COST_TRACE'] = str(case / 'cost.csv')
+                if args.backend == 'opengl':
+                    timed['KDC_GPU_TRACE'] = str(case / 'gpu.csv')
+            del timed['SNESRECOMP_SCREENSHOT'], timed['SNESRECOMP_SCREENSHOT_FRAME']
+            if not args.no_captures and not warmup:
+                capture = dict(env, SNESRECOMP_RUN_FRAMES=str(scenario['screenshot'] + 5))
+                with (case / 'capture.log').open('w') as log:
+                    subprocess.run(command, cwd=case, env=capture,
                                    stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
-                log = (case / 'run.log').read_text()
-                profile = re.findall(r'video profile: stage=(\S+) count=\d+ total_ms=[\d.]+ '
-                                     r'mean_ms=([\d.]+) max_ms=([\d.]+) max_frame=(\d+)', log)
-                stages = {stage: float(mean) for stage, mean, _, _ in profile}
-                maxima = {stage: (float(peak), int(frame)) for stage, _, peak, frame in profile}
-                fps = re.search(r'frame service: .* fps=([\d.]+)', log)
-                if 'raster-capture' not in stages or not fps:
-                    raise AssertionError(f'{case}: missing host profile')
-                captures[name, hd] = (None if args.no_captures else
-                    hashlib.sha256((case / 'frame.ppm').read_bytes()).hexdigest())
-                timing = frame_timings(case / 'timing.csv')
-                renderer = re.search(r'^Renderer: (.+)$', log, re.MULTILINE)
-                result = dict(repeat=repeat, build=name, hd=hd, scenario=args.scenario,
-                              hole=args.hole, threads=args.threads,
-                              frames=frames, profile_start=args.profile_start, display=args.display,
-                              renderer=renderer[1] if renderer else None,
-                              fps=float(fps[1]), mean_ms=stages, max_ms=maxima,
-                              **timing,
-                              screenshot_sha256=captures[name, hd])
-                results.append(result)
-                (output / 'results.json').write_text(json.dumps(results, indent=2))
-                print(f'{repeat} {name} HD={hd}: raster={stages["raster-capture"]:.3f} ms '
-                      f'compose={stages["compose"]:.3f} ms (max {maxima["compose"][0]:.1f} ms '
-                      f'at {maxima["compose"][1]}) present={stages["upload-present"]:.3f} ms '
-                      f'fps={float(fps[1]):.1f}', flush=True)
-                intervals = timing['distributions']['interval_ms']
-                print(f'  interval p50/p95/p99/max: {intervals["p50"]:.3f}/'
-                      f'{intervals["p95"]:.3f}/{intervals["p99"]:.3f}/{intervals["max"]:.3f} ms; '
-                      f'cache clears/trims: {timing["hd_counters"].get("hd_cache_clears", "unavailable")}/'
-                      f'{timing["hd_counters"].get("hd_cache_trims", "unavailable")}', flush=True)
-                if name == 'candidate' and hd and args.max_raster_ms is not None:
-                    assert stages['raster-capture'] <= args.max_raster_ms, 'HD raster budget exceeded'
-                if name == 'candidate' and hd and args.max_compose_ms is not None:
-                    assert stages['compose'] <= args.max_compose_ms, 'HD composition budget exceeded'
-                if name == 'candidate' and hd and args.max_p99_ms is not None:
-                    assert intervals['p99'] <= args.max_p99_ms, 'HD presentation p99 budget exceeded'
-        if args.baseline and not args.no_captures:
+            with (case / 'run.log').open('w') as log:
+                subprocess.run(command, cwd=case, env=timed,
+                               stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+            log = (case / 'run.log').read_text()
+            if args.diagnostic_costs:
+                assert (case / 'cost.csv').is_file(), 'Missing diagnostic costs; use the diagnostic build'
+                if args.backend == 'opengl':
+                    assert (case / 'gpu.csv').is_file(), 'Missing GPU timestamp capture'
+            profile = re.findall(r'video profile: stage=(\S+) count=\d+ total_ms=[\d.]+ '
+                                 r'mean_ms=([\d.]+) max_ms=([\d.]+) max_frame=(\d+)', log)
+            stages = {stage: float(mean) for stage, mean, _, _ in profile}
+            maxima = {stage: (float(peak), int(frame)) for stage, _, peak, frame in profile}
+            fps = re.search(r'frame service: .* fps=([\d.]+)', log)
+            if 'raster-capture' not in stages or not fps:
+                raise AssertionError(f'{case}: missing host profile')
+            if "is not available in this build" in log:
+                raise AssertionError(f'{case}: requested renderer unavailable')
+            window = re.search(r'video profile window: first=(\d+) last=(\d+) '
+                               r'seconds=([\d.]+) presentations=(\d+)', log)
+            if not window or (int(window[1]), int(window[2])) != (args.profile_start, frames):
+                raise AssertionError(f'{case}: missing or incomplete profile window')
+            captures[name, hd] = (None if args.no_captures or warmup else
+                hashlib.sha256((case / 'frame.ppm').read_bytes()).hexdigest())
+            timing = frame_timings(case / 'timing.csv')
+            if timing['distributions']['work_ms']['count'] != int(window[4]):
+                raise AssertionError(f'{case}: presentation trace is incomplete')
+            renderer = re.search(r'^Renderer: (.+)$', log, re.MULTILINE)
+            if not renderer:
+                renderer = re.search(r'renderer initialized: (.+)', log)
+            result = dict(repeat=repeat, warmup=warmup, build=name, hd=hd, scenario=args.scenario,
+                          hole=args.hole, threads=args.threads,
+                          frames=frames, profile_start=args.profile_start, display=args.display,
+                          backend=args.backend, window_size=args.window_size,
+                          orbit_profile=args.orbit_profile,
+                          diagnostic_costs=args.diagnostic_costs,
+                          updates=frames - args.profile_start + 1,
+                          presentations=int(window[4]),
+                          profile_seconds=float(window[3]),
+                          simulation_fps=(frames - args.profile_start + 1) / float(window[3]),
+                          presentation_fps=int(window[4]) / float(window[3]),
+                          renderer_ms_per_presentation=timing['distributions']['renderer_ms']['mean'],
+                          renderer_ms_per_update=(timing['distributions']['renderer_ms']['mean'] *
+                                                 int(window[4]) / (frames - args.profile_start + 1)),
+                          renderer=renderer[1] if renderer else None,
+                          fps=float(fps[1]), mean_ms=stages, max_ms=maxima,
+                          **timing,
+                          screenshot_sha256=captures[name, hd])
+            if args.diagnostic_costs:
+                # Orbit enters at 501 in the pinned script. Keep that cold
+                # present distinct from both the full window and warm orbit.
+                windows = {'profile': (args.profile_start, frames)}
+                if args.scenario == 'orbit' and args.profile_start <= 501 < frames:
+                    windows.update(entry=(501, 501), warm=(502, frames))
+                result['diagnostics'] = {
+                    trace: {label: cost_timings(case / f'{trace}.csv', first, last)
+                            for label, (first, last) in windows.items()}
+                    for trace in ('cost', 'gpu') if (case / f'{trace}.csv').is_file()}
+            results.append(result)
+            (output / 'results.json').write_text(json.dumps(results, indent=2))
+            (output / 'summary.json').write_text(json.dumps(summarize_runs(results), indent=2))
+            print(f'{repeat} {name} HD={hd}: raster={stages["raster-capture"]:.3f} ms '
+                  f'compose={stages["compose"]:.3f} ms (max {maxima["compose"][0]:.1f} ms '
+                  f'at {maxima["compose"][1]}) present={stages["upload-present"]:.3f} ms '
+                  f'fps={float(fps[1]):.1f}', flush=True)
+            intervals = timing['distributions']['interval_ms']
+            print(f'  interval p50/p95/p99/max: {intervals["p50"]:.3f}/'
+                  f'{intervals["p95"]:.3f}/{intervals["p99"]:.3f}/{intervals["max"]:.3f} ms; '
+                  f'cache clears/trims: {timing["hd_counters"].get("hd_cache_clears", "unavailable")}/'
+                  f'{timing["hd_counters"].get("hd_cache_trims", "unavailable")}', flush=True)
+            if not warmup and name == 'candidate' and hd and args.max_raster_ms is not None:
+                assert stages['raster-capture'] <= args.max_raster_ms, 'HD raster budget exceeded'
+            if not warmup and name == 'candidate' and hd and args.max_compose_ms is not None:
+                assert stages['compose'] <= args.max_compose_ms, 'HD composition budget exceeded'
+            if not warmup and name == 'candidate' and hd and args.max_p99_ms is not None:
+                assert intervals['p99'] <= args.max_p99_ms, 'HD presentation p99 budget exceeded'
+        if args.baseline and not args.no_captures and not warmup:
             for hd in args.hd:
                 assert captures['baseline', hd] == captures['candidate', hd], f'HD={hd}: image changed'
     print('Completed; baseline images match.' if args.baseline and not args.no_captures else 'Completed.')

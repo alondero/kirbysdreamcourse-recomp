@@ -515,6 +515,10 @@ respectively, matched exactly with both HD settings. Windows Release builds
 and six targeted tests passed (`test_course_terrain`, `test_course_orbit_render`,
 `test_hd_image`, `test_hd_tiles`; the orbit module runs three fixtures).
 
+Follow-up measurement of these residual costs is recorded in
+[Residual HD renderer costs](hd-performance.md) (issue #88), including isolated
+CPU probes, actual OpenGL GPU timestamps and the decision gate for further work.
+
 The remaining improvement routes are distinct:
 
 - Normal-view PPU tile recording and subpixel composition are unchanged by

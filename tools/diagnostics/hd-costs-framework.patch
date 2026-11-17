@@ -1,0 +1,334 @@
+diff --git a/runner/src/hd_cost_profile.h b/runner/src/hd_cost_profile.h
+new file mode 100644
+--- /dev/null
++++ b/runner/src/hd_cost_profile.h
+@@ -0,0 +1,34 @@
++/* Diagnostic only: not part of the guarded patch stack. */
++#ifndef KDC_HD_COST_PROFILE_H
++#define KDC_HD_COST_PROFILE_H
++enum {
++  kCost_ppu_hd_line,
++  kCost_ppu_hd_seed,
++  kCost_orbit_prepare,
++  kCost_terrain_update,
++  kCost_scenery_update,
++  kCost_orbit_parallel,
++  kCost_previous_workers,
++  kCost_main_tasks,
++  kCost_completion_wait,
++  kCost_hd_callback,
++  kCost_hd_downsample,
++  kCost_hd_surface_copy,
++  kCost_native_callback,
++  kCost_native_present,
++  kCost_freeze_copy,
++  kCost_stage_copy,
++  kCost_sdl_unlock,
++  kCost_sdl_submit,
++  kCost_sdl_present,
++  kCost_gl_upload,
++  kCost_gl_submit,
++  kCost_gl_swap,
++  kCostCount
++};
++double KdcCostNow(void);
++void KdcCostEnd(unsigned stage, double start);
++void KdcCostFrame(unsigned frame);
++void KdcCostDump(void);
++void KdcCostGpuDump(void);
++#endif
+diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -1,3 +1,4 @@
++#include "../hd_cost_profile.h"
+ /*
+  * host_main.c — the framework's desktop host. See host_main.h.
+  *
+@@ -338,6 +339,38 @@
+     t->stages[i] = g_timings[i].total - g_frame_timing_previous[i];
+     g_frame_timing_previous[i] = g_timings[i].total;
+   }
++}
++
++/* Diagnostic only. All counters are owned by the main thread; workers never
++ * write them. Retain samples in memory and flush after the replay. */
++static double kdc_cost_total[kCostCount], kdc_cost_previous[kCostCount];
++static struct { unsigned frame; double ms[kCostCount]; } kdc_cost_rows[36000];
++static unsigned kdc_cost_count;
++double KdcCostNow(void) { return MonotonicSeconds(); }
++void KdcCostEnd(unsigned stage, double start) {
++  kdc_cost_total[stage] += (MonotonicSeconds() - start) * 1000;
++}
++void KdcCostFrame(unsigned frame) {
++  if (kdc_cost_count == 36000) return;
++  kdc_cost_rows[kdc_cost_count].frame = frame;
++  for (unsigned i = 0; i < kCostCount; ++i) {
++    kdc_cost_rows[kdc_cost_count].ms[i] = kdc_cost_total[i] - kdc_cost_previous[i];
++    kdc_cost_previous[i] = kdc_cost_total[i];
++  }
++  ++kdc_cost_count;
++}
++void KdcCostDump(void) {
++  const char *path = getenv("KDC_COST_TRACE");
++  if (!path) return;
++  FILE *f = fopen(path, "w");
++  if (!f) return;
++  fprintf(f, "frame,ppu_hd_line_ms,ppu_hd_seed_ms,orbit_prepare_ms,terrain_update_ms,scenery_update_ms,orbit_parallel_ms,previous_workers_ms,main_tasks_ms,completion_wait_ms,hd_callback_ms,hd_downsample_ms,hd_surface_copy_ms,native_callback_ms,native_present_ms,freeze_copy_ms,stage_copy_ms,sdl_unlock_ms,sdl_submit_ms,sdl_present_ms,gl_upload_ms,gl_submit_ms,gl_swap_ms\n");
++  for (unsigned n = 0; n < kdc_cost_count; ++n) {
++    fprintf(f, "%u", kdc_cost_rows[n].frame);
++    for (unsigned i = 0; i < kCostCount; ++i) fprintf(f, ",%.6f", kdc_cost_rows[n].ms[i]);
++    fputc('\n', f);
++  }
++  fclose(f);
+ }
+ static double ProfileStart(void) {
+   return g_profile ? MonotonicSeconds() : 0;
+@@ -1501,30 +1534,40 @@
+ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+   const int w = g_snes_width, h = g_snes_height;
+   const size_t native_pitch = (size_t)w * 4u;
++  double cost = KdcCostNow();
+   bool hd_composed = g_game->draw_hd_frame &&
+       g_game->draw_hd_frame((uint8_t *)g_hd_surface, (size_t)w * scale * 4u, g_my_pixels, w, h,
+                             g_present_alpha, (unsigned)scale);
++  KdcCostEnd(kCost_hd_callback, cost);
+   if (hd_composed) {
++    cost = KdcCostNow();
+     /* Retain a native-size backdrop for debug captures and the overlay. */
+     for (int y = 0; y < h; ++y)
+       for (int x = 0; x < w; ++x)
+         memcpy(g_hd_native + (size_t)y * native_pitch + x * 4,
+                (uint8_t *)g_hd_surface + ((size_t)y * scale * w * scale + x * scale) * 4, 4);
++    KdcCostEnd(kCost_hd_downsample, cost);
++    cost = KdcCostNow();
+     /* Write the texture mapping sequentially; never read it back. */
+     for (int y = 0; y < h * scale; ++y)
+       memcpy(dst + (size_t)y * pitch, g_hd_surface + (size_t)y * w * scale,
+              (size_t)w * scale * 4u);
++    KdcCostEnd(kCost_hd_surface_copy, cost);
+     debug_server_note_composed_frame(g_hd_native, (unsigned)native_pitch, w, h);
+     return;
+   }
++  cost = KdcCostNow();
+   bool composed = g_game->draw_frame &&
+       g_game->draw_frame(g_hd_native, native_pitch, g_my_pixels, w, h,
+                          g_present_alpha);
++  KdcCostEnd(kCost_native_callback, cost);
+   debug_server_note_composed_frame(composed ? g_hd_native : NULL,
+                                    composed ? (unsigned)native_pitch : 0,
+                                    composed ? w : 0, composed ? h : 0);
++  cost = KdcCostNow();
+   if (!composed)
+     RtlWidescreenPresent(g_hd_native, native_pitch, g_my_pixels, w, h);
++  KdcCostEnd(kCost_native_present, cost);
+   const size_t row_bytes = (size_t)w * (size_t)scale * 4u;
+   if (composed) {
+     /* Expand each native row once into ordinary memory, then write it to
+@@ -1545,9 +1588,11 @@
+     }
+     return;
+   }
++  cost = KdcCostNow();
+   for (int y = 0; y < h * scale; y++)
+     memcpy(dst + (size_t)y * pitch, (const uint8_t *)g_hd_surface + (size_t)y * row_bytes,
+            row_bytes);
++  KdcCostEnd(kCost_hd_surface_copy, cost);
+ }
+ 
+ static void DrawPpuFrameWithPerf(void) {
+@@ -1637,6 +1682,7 @@
+   {
+     /* An HD present keeps its native composition as the overlay backdrop;
+      * the overlay scales it to the window either way. */
++    double cost = KdcCostNow();
+     const bool hd = render_scale > 1;
+     const uint8 *source = hd ? g_hd_native : pixel_buffer;
+     const size_t source_pitch = hd ? (size_t)g_snes_width * 4u : (size_t)pitch;
+@@ -1650,6 +1696,7 @@
+       g_frozen_w = row_bytes / 4;
+       g_frozen_h = rows;
+     }
++    KdcCostEnd(kCost_freeze_copy, cost);
+   }
+   /* The OSD is rasterized for a ~3x window: half size on a native frame,
+    * full size on an HD frame of similar pixel density. */
+@@ -1752,11 +1799,13 @@
+   /* One linear, write-only copy into the presenter's buffer -- the access
+    * pattern write-combined memory is good at. */
+   if (staged) {
++    double cost = KdcCostNow();
+     const int rows = g_snes_height * render_scale;
+     const int row_bytes = g_snes_width * render_scale * 4;
+     for (int y = 0; y < rows; y++)
+       memcpy(present_buffer + (size_t)y * (size_t)present_pitch,
+              pixel_buffer + (size_t)y * (size_t)pitch, (size_t)row_bytes);
++    KdcCostEnd(kCost_stage_copy, cost);
+   }
+ #endif
+ 
+@@ -1765,6 +1814,7 @@
+   g_renderer_funcs.EndDraw();
+   ProfileEnd(kProfilePresent, profile_start);
+   RecordFrameTiming(g_present_frame);
++  KdcCostFrame(g_present_frame);
+ }
+ 
+ /* Seat-0 input word the overlays navigate with — the same sources the guest
+@@ -2582,12 +2632,18 @@
+ }
+ 
+ static void SdlRenderer_EndDraw(void) {
++  double cost = KdcCostNow();
+   SDL_UnlockTexture(g_texture);
++  KdcCostEnd(kCost_sdl_unlock, cost);
++  cost = KdcCostNow();
+   SDL_RenderClear(g_renderer);
+   /* SDL3's SDL_RenderTexture takes SDL_FRect, not SDL_Rect. */
+   snesrecomp_sdl_render_texture(g_renderer, g_texture, &g_sdl_renderer_rect,
+                                 &g_sdl_present_rect);
++  KdcCostEnd(kCost_sdl_submit, cost);
++  cost = KdcCostNow();
+   SDL_RenderPresent(g_renderer);
++  KdcCostEnd(kCost_sdl_present, cost);
+ }
+ 
+ /* SDL_Renderer re-activates its own context on every call, so only the
+@@ -4742,6 +4798,8 @@
+ 
+   const double run_end = MonotonicSeconds();
+   const double run_cpu_end = ProcessCpuSeconds();
++  KdcCostDump();
++  KdcCostGpuDump();
+   if (state_trace) fclose(state_trace);
+   if (g_frame_timings) {
+     FILE *f = fopen(frame_timing_path, "w");
+diff --git a/runner/src/desktop/opengl.c b/runner/src/desktop/opengl.c
+--- a/runner/src/desktop/opengl.c
++++ b/runner/src/desktop/opengl.c
+@@ -1,3 +1,4 @@
++#include "../hd_cost_profile.h"
+ /*
+  * opengl.c — the shared desktop OpenGL presenter.
+  *
+@@ -42,6 +43,32 @@
+ 
+ #define CODE(...) #__VA_ARGS__
+ 
++
++/* Deferred GL timestamp retrieval: no query-result waits during play. Times
++ * cover the queued upload and draw interval, excluding SwapWindow/compositor. */
++typedef void (CODEGEN_FUNCPTR *KdcQueryCounter)(GLuint, GLenum);
++typedef void (CODEGEN_FUNCPTR *KdcGetQuery64)(GLuint, GLenum, unsigned long long *);
++static KdcQueryCounter kdc_query_counter;
++static KdcGetQuery64 kdc_query_result;
++static struct { GLuint q[3]; unsigned frame; } kdc_gpu[36000];
++static unsigned kdc_gpu_count;
++extern int snes_frame_counter;
++void KdcCostGpuDump(void) {
++  const char *path = getenv("KDC_GPU_TRACE");
++  if (!path || !kdc_gpu_count) return;
++  FILE *f = fopen(path, "w");
++  if (!f) return;
++  fprintf(f, "present,frame,upload_gpu_ms,draw_gpu_ms,total_gpu_ms\n");
++  for (unsigned i = 0; i < kdc_gpu_count; ++i) {
++    unsigned long long t[3];
++    for (unsigned j = 0; j < 3; ++j) kdc_query_result(kdc_gpu[i].q[j], GL_QUERY_RESULT, &t[j]);
++    fprintf(f, "%u,%u,%.6f,%.6f,%.6f\n", i, kdc_gpu[i].frame,
++            (t[1]-t[0])/1e6, (t[2]-t[1])/1e6, (t[2]-t[0])/1e6);
++    glDeleteQueries(3, kdc_gpu[i].q);
++  }
++  fclose(f);
++  kdc_gpu_count = 0;
++}
+ static SDL_Window *g_window;
+ static uint8 *g_screen_buffer;
+ static size_t g_screen_buffer_size;
+@@ -134,6 +161,13 @@
+ 
+   ApplySwapInterval();
+   ogl_LoadFunctions();
++  if (getenv("KDC_GPU_TRACE")) {
++    kdc_query_counter = (KdcQueryCounter)SDL_GL_GetProcAddress("glQueryCounter");
++    kdc_query_result = (KdcGetQuery64)SDL_GL_GetProcAddress("glGetQueryObjectui64v");
++    if (!kdc_query_counter || !kdc_query_result) Die("GPU timestamps unavailable");
++    fprintf(stderr, "[cost-gpu] vendor=%s renderer=%s version=%s\n",
++            glGetString(GL_VENDOR), glGetString(GL_RENDERER), glGetString(GL_VERSION));
++  }
+ 
+   if (!ogl_IsVersionGEQ(3, 3))
+     Die("You need OpenGL 3.3");
+@@ -390,6 +424,13 @@
+   if (g_compute_viewport)
+     g_compute_viewport(g_draw_width, g_draw_height, drawable_width, drawable_height, &viewport);
+ 
++  bool query = kdc_query_counter && kdc_gpu_count < 36000;
++  if (query) {
++    glGenQueries(3, kdc_gpu[kdc_gpu_count].q);
++    kdc_gpu[kdc_gpu_count].frame = (unsigned)snes_frame_counter;
++    kdc_query_counter(kdc_gpu[kdc_gpu_count].q[0], 0x8E28 /* GL_TIMESTAMP */);
++  }
++  double cost = KdcCostNow();
+   glBindTexture(GL_TEXTURE_2D, g_texture.gl_texture);
+   if (g_draw_width == g_texture.width && g_draw_height == g_texture.height) {
+     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_draw_width, g_draw_height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, g_screen_buffer);
+@@ -399,6 +440,9 @@
+     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_draw_width, g_draw_height, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, g_screen_buffer);
+   }
+ 
++  KdcCostEnd(kCost_gl_upload, cost);
++  if (query) kdc_query_counter(kdc_gpu[kdc_gpu_count].q[1], 0x8E28);
++  cost = KdcCostNow();
+   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
+ 
+@@ -426,7 +470,14 @@
+       g_screenshot_flash_start_time = -1.0;
+   }
+ 
++  KdcCostEnd(kCost_gl_submit, cost);
++  if (query) {
++    kdc_query_counter(kdc_gpu[kdc_gpu_count].q[2], 0x8E28);
++    ++kdc_gpu_count;
++  }
++  cost = KdcCostNow();
+   SDL_GL_SwapWindow(g_window);
++  KdcCostEnd(kCost_gl_swap, cost);
+ }
+ 
+ static const struct RendererFuncs kOpenGLRendererFuncs = {
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1,3 +1,4 @@
++#include "../hd_cost_profile.h"
+ #include "ppu.h"
+ #include "mode7_hd.h"
+ 
+@@ -880,8 +881,10 @@
+       if (live) debug_server_on_ppu_line_drawn(line, 0, ppu->bgmode);
+       ppu_draw_whole_line_legacy(ppu, line);
+     }
++    double cost = KdcCostNow();
+     if (ppu->mode7Hd.pixels && !PpuDrawTileHdLine(ppu, (unsigned)line))
+       PpuDrawMode7HdLine(ppu, (unsigned)line);
++    KdcCostEnd(kCost_ppu_hd_line, cost);
+   }
+ }
+ 
+@@ -3437,6 +3440,7 @@
+   /* Seed a contiguous nearest-scaled row, then copy it vertically. Most
+    * native pixels are unchanged; avoid four interleaved row writes for each
+    * of them in the candidate loop below. */
++  double cost = KdcCostNow();
+   uint32_t *base = (uint32_t *)first;
+   if (scale == 4) {
+     for (unsigned j = 0; j < width; ++j) {
+@@ -3449,6 +3453,7 @@
+   }
+   for (unsigned sy = 1; sy < scale; ++sy)
+     memcpy(first + sy * surface->pitch, first, width * scale * sizeof(uint32_t));
++  KdcCostEnd(kCost_ppu_hd_seed, cost);
+   const uint16_t stamp = t->stamp;
+   for (unsigned j = 0; j < width; ++j) {
+     const int x = (int)j - (int)ppu->extraLeftRight;
