@@ -1,8 +1,8 @@
 diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/imgui/launcher_imgui.cpp
-index 6600d1c..eb2510a 100644
+index 6600d1c..6b95427 100644
 --- a/src/common/backends/imgui/launcher_imgui.cpp
 +++ b/src/common/backends/imgui/launcher_imgui.cpp
-@@ -243,6 +243,49 @@ void scale_mouse_event(SDL_Event& e, float coords) {
+@@ -243,6 +243,58 @@ void scale_mouse_event(SDL_Event& e, float coords) {
      }
  }
  
@@ -14,6 +14,15 @@ index 6600d1c..eb2510a 100644
 +    float last_y = 0.0f;
 +    bool scrolling = false;
 +
++    void press() const {
++        // SDL can omit motion when a tap repeats at the same screen position.
++        // A newly opened launcher still needs that position for hit-testing.
++        ImGuiIO& io = ImGui::GetIO();
++        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
++        io.AddMousePosEvent(down.button.x, down.button.y);
++        LNG_ImplSDL_ProcessEvent(&down);
++    }
++
 +    bool process(const SDL_Event& ev) {
 +        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.which == SDL_TOUCH_MOUSEID) {
 +            down = ev;
@@ -21,7 +30,7 @@ index 6600d1c..eb2510a 100644
 +            return true;
 +        }
 +        if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.which == SDL_TOUCH_MOUSEID) {
-+            if (down.type) LNG_ImplSDL_ProcessEvent(&down);
++            if (down.type) press();
 +            down.type = 0;
 +            const bool consumed = scrolling;
 +            scrolling = false;
@@ -35,7 +44,7 @@ index 6600d1c..eb2510a 100644
 +            if (dx < 8.0f && dy < 8.0f) return false;
 +            scrolling = dy > dx;
 +            last_y = down.button.y;
-+            if (!scrolling) LNG_ImplSDL_ProcessEvent(&down);
++            if (!scrolling) press();
 +            down.type = 0;
 +        }
 +        if (scrolling) {
@@ -52,7 +61,7 @@ index 6600d1c..eb2510a 100644
  /* True where the SDL backend re-asserts the cursor from the global mouse
   * state every frame (the same driver whitelist it uses). Elsewhere — Wayland —
   * there is no global cursor and motion events are the only source, so asking
-@@ -2530,7 +2573,13 @@ void draw_game_panel(LauncherModel* m, const LauncherTheme& th, bool fill_h = fa
+@@ -2530,7 +2582,13 @@ void draw_game_panel(LauncherModel* m, const LauncherTheme& th, bool fill_h = fa
          }
      }
  
@@ -67,7 +76,7 @@ index 6600d1c..eb2510a 100644
  
      // A required system file the host could not find (GameInfo.bios_name):
      // say so where the player is looking and point at Settings, which owns the
-@@ -5158,7 +5207,8 @@ void panel_hotkeys_draw(LauncherModel* m, const LauncherTheme* th) {
+@@ -5158,7 +5216,8 @@ void panel_hotkeys_draw(LauncherModel* m, const LauncherTheme* th) {
  // registry's available() gate.
  void draw_settings(LauncherModel* m, const LauncherTheme& th) {
      if (m->settings_saved_on_exit) {
@@ -77,7 +86,7 @@ index 6600d1c..eb2510a 100644
          ImGui::Spacing();
      }
      // Row 1: DISPLAY | AUDIO share the top band. For the legacy minimal
-@@ -14187,9 +14237,14 @@ void draw_skip_modal(LauncherModel* m) {
+@@ -14187,9 +14246,14 @@ void draw_skip_modal(LauncherModel* m) {
      ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
      if (ImGui::BeginPopupModal("Skip the launcher on boot?", nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -92,7 +101,7 @@ index 6600d1c..eb2510a 100644
          ImGui::Spacing();
          if (ImGui::Button("Cancel", ImVec2(px(120), 0))) {
              launcher_model_skip_cancel(m); ImGui::CloseCurrentPopup();
-@@ -15020,6 +15075,9 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
+@@ -15020,6 +15084,9 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
      // that scale so the path can be exercised on a 100% display; nothing here
      // reads the env var any more.
      bool first_present_marked = false;
@@ -102,7 +111,7 @@ index 6600d1c..eb2510a 100644
  
      while ((m->action == LNG_ACTION_NONE && !p->should_quit) ||
             launch_commit.job.pending()) {
-@@ -15052,6 +15110,15 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
+@@ -15052,6 +15119,15 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
              /* Window coordinates -> logical units, before anything reads the
               * event. No-op unless the platform layer synthesized the split. */
              scale_mouse_event(ev, p->input_scale);
@@ -118,7 +127,7 @@ index 6600d1c..eb2510a 100644
              if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                  if (launch_commit.job.pending()) launch_commit.close_requested = true;
                  else p->should_quit = true;
-@@ -15061,6 +15128,15 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
+@@ -15061,6 +15137,15 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
                  continue;
              }
              if (try_capture(m, ev)) continue;
