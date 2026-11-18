@@ -1,0 +1,16 @@
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -249,7 +249,13 @@
+   return NULL;
+ }
+ 
++#ifdef __ANDROID__
++/* Match SDL's GLES renderer at window creation. Reconfiguring the native
++ * window during boot can race Android's surface teardown on a quick Home. */
++static uint32 g_win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL;
++#else
+ static uint32 g_win_flags = SDL_WINDOW_RESIZABLE;
++#endif
+ SDL_Window *g_window;
+ 
+ static uint8 g_paused, g_turbo, g_cursor = true;

@@ -359,9 +359,9 @@ class WorkflowPublishTests(unittest.TestCase):
 
     def test_publish_title_matches_the_documented_title(self):
         script = "\n".join(self.release_script())
-        self.assertIn("Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows & Linux x64)", script)
+        self.assertIn("Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows, Linux & Android)", script)
         skill = self.SKILL.read_text(encoding="utf-8")
-        self.assertIn("Kirby's Dream Course Recompiled <version> (Windows & Linux x64)", skill)
+        self.assertIn("Kirby's Dream Course Recompiled <version> (Windows, Linux & Android)", skill)
 
 
 class LinuxReleaseTests(unittest.TestCase):

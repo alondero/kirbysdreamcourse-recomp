@@ -1,6 +1,6 @@
 ﻿# Kirby's Dream Course recompilation experiment
 
-Experimental Windows and Linux builds of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled executable, runtime dependencies and notices; they require your matching ROM at runtime.
+Experimental Windows, Linux and Android builds of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled executable, runtime dependencies and notices; they require your matching ROM at runtime.
 
 The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`. The build and launcher verify its hash. Do not share the ROM, extracted game assets or generated source.
 
@@ -20,10 +20,14 @@ Ubuntu 24.04 or newer and SteamOS; SDL3 is included in the executable. System
 OpenGL and C++ runtime libraries are required. See [Linux support](docs/linux.md)
 for build commands and Steam Deck verification limits.
 
+On Android 9 or newer (arm64), install `kirbysdreamcourse-recomp-android-arm64.apk`,
+open **Choose ROM**, and select the supported image. Play in landscape using the
+touch controls or a controller. See [Android support](docs/android.md).
+
 Maintainers use the `Build & Release` workflow and the repository's release
 skill. The workflow fetches build inputs from a private companion repository
 via `ROM_ASSETS_REPO` and `ROM_ASSETS_PAT`, verifies the ROM hash, generates and
-compiles on each platform's runner, and uploads only the reviewed binary ZIPs. See
+compiles on each platform's runner, and uploads the desktop ZIPs and Android APK. See
 [release setup](docs/release.md) for configuration, dry runs and validation.
 
 ## Build and play on Windows

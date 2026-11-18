@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
+    <application android:label="Kirby's Dream Course Recompiled" android:allowBackup="false"
+        android:theme="@android:style/Theme.Material.NoActionBar" android:enableOnBackInvokedCallback="false">
+        <activity android:name=".ImportActivity" android:exported="true"
+            android:configChanges="orientation|keyboardHidden|screenLayout|screenSize|smallestScreenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".GameActivity" android:exported="false" android:process=":game"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|keyboard|keyboardHidden|navigation|screenLayout|screenSize|smallestScreenSize|uiMode|locale|layoutDirection|fontScale|density"/>
+    </application>
+</manifest>

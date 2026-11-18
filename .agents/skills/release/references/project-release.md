@@ -1,7 +1,8 @@
 # Project release baseline
 
 Linux support was added on 2026-11-05. The current workflow builds Windows and
-Linux x64 ZIPs, requires both jobs before publication and verifies both assets.
+Linux x64 ZIPs plus an Android arm64 APK. It requires both jobs before publication
+and verifies all three assets. See [Android signing and packaging](../../../../docs/android.md).
 Use [Linux support](../../../../docs/linux.md) for commands and platform limits;
 the historical Windows baseline and evidence below remain useful provenance.
 

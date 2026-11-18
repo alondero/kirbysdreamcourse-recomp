@@ -1,3 +1,4 @@
 * text=auto
 *.patch -text
 *.sh text eol=lf
+android/gradlew text eol=lf

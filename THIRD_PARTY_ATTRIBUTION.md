@@ -592,3 +592,11 @@ Vendored here for the same reason as the GL loader above: eight repositories
 in this workspace carried byte-identical copies, because the include in
 glsl_shader.c was spelled relative to a game repo's layout and so compiled
 nowhere else.
+
+## Android
+
+The Android package builds SDLActivity from the same SDL 3.4.10 sources as
+the native library. Its SDL notice and the Android NDK r28c runtime and
+toolchain notices are included under `assets/licenses/` in the APK.
+The Gradle 8.12 wrapper is a development dependency distributed under the
+Apache License 2.0. Its license and notices are under `android/gradle/`.

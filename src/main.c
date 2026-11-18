@@ -37,6 +37,7 @@
 #include "hd_textures.h"
 #include "practice.h"
 #include "widescreen.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
@@ -183,6 +184,10 @@ static const SnesDesktopHostGame kGameHost = {
 #endif
 int main(int argc, char **argv)
 {
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 #ifdef KDC_RELEASE_DEFAULTS
     /* Match play_experimental.ps1 for direct release launches. Explicit
      * environment settings, including interpreter fallback, still win. */
@@ -200,5 +205,10 @@ int main(int argc, char **argv)
 #endif
     int dev = KdcDevParseArgs(&argc, argv);
     if (dev) return dev < 0 ? 2 : 0;
-    return snesrecomp_desktop_main(&kGameHost, argc, argv);
+    int result = snesrecomp_desktop_main(&kGameHost, argc, argv);
+#ifdef __ANDROID__
+    /* SDL_main returns to Java rather than exiting through the C runtime. */
+    fflush(NULL);
+#endif
+    return result;
 }

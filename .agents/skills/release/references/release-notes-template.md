@@ -1,12 +1,12 @@
 # Release notes template
 
 Save the filled body as UTF-8 under ignored `local/releases/`. Replace all
-angle-bracket placeholders. This template is for the default Windows/Linux binary
+angle-bracket placeholders. This template is for the default Windows/Linux/Android binary
 distribution. Every claim must hold for the tagged commit and actual archive.
 Write separate notes only if the user explicitly requests a source release.
 
 ```markdown
-> Experimental Windows and Linux x64 release for testing and feedback.
+> Experimental Windows x64, Linux x64 and Android arm64 release for testing and feedback.
 > <State the observed quality and the most relevant remaining limits.>
 
 ## You must supply your own ROM
@@ -47,6 +47,9 @@ On Linux, extract `kirbysdreamcourse-recomp-linux-x64.zip`, place the ROM beside
 `KirbyDreamCourseRecomp`, and run `./start.sh`. If needed, restore executable
 permissions with `chmod +x start.sh KirbyDreamCourseRecomp`.
 
+On arm64 Android 9 or newer, install the APK, open **Choose ROM**, and select
+your supported image. Use the landscape touch controls or connect a controller.
+
 Keep the bundled DLLs, `assets/` and `licenses/` in place. No compiler or local
 generation step is required. <Confirm these steps from the extracted ZIP;
 name any verified Windows/runtime prerequisites.>
@@ -59,7 +62,8 @@ location. Link README.md at this tag for the full control/settings guide.>
 - Commit: `<full-sha>`
 - Package: `kirbysdreamcourse-recomp-windows-x64.zip` (Windows x64 binary)
 - Package: `kirbysdreamcourse-recomp-linux-x64.zip` (Linux x64 binary)
-- SHA-256: `<archive-sha256>`
+- Package: `kirbysdreamcourse-recomp-android-arm64.apk` (Android arm64)
+- SHA-256 for each download: `<checksums>`
 - Build/package command: `<exact-command>`
 - Validation: <checks run on this commit and package; disclose skipped checks>
 - Dependencies: <exact framework/UI pins and relevant build flags>

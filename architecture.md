@@ -50,7 +50,7 @@ Establish a reference emulator and exact version, identical ROM, initial SRAM/re
 Release distribution uses the private-input pattern from the Lamborghini and
 AeroGauge projects: a private companion repository supplies the verified ROM
 to an explicitly dispatched CI build, generated game source stays on the
-runner, and the compiled Windows/Linux executables, dependencies and notices form the public
+runner, and the compiled Windows/Linux executables, Android arm64 APK, dependencies and notices form the public
 package. ROMs, extracted game assets and generated source are excluded from
 public commits and artifacts. Players supply their own matching runtime ROM.
 This packaging model does not establish full-game compatibility or change the
