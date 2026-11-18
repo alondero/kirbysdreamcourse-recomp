@@ -1,0 +1,223 @@
+diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/imgui/launcher_imgui.cpp
+index 6600d1c..6b95427 100644
+--- a/src/common/backends/imgui/launcher_imgui.cpp
++++ b/src/common/backends/imgui/launcher_imgui.cpp
+@@ -243,6 +243,58 @@ void scale_mouse_event(SDL_Event& e, float coords) {
+     }
+ }
+ 
++#ifdef __ANDROID__
++// Keep taps and horizontal control drags, and let vertical swipes scroll the
++// settings cards. Delay touch clicks until the gesture's direction is known.
++struct LauncherTouch {
++    SDL_Event down{};
++    float last_y = 0.0f;
++    bool scrolling = false;
++
++    void press() const {
++        // SDL can omit motion when a tap repeats at the same screen position.
++        // A newly opened launcher still needs that position for hit-testing.
++        ImGuiIO& io = ImGui::GetIO();
++        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
++        io.AddMousePosEvent(down.button.x, down.button.y);
++        LNG_ImplSDL_ProcessEvent(&down);
++    }
++
++    bool process(const SDL_Event& ev) {
++        if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.which == SDL_TOUCH_MOUSEID) {
++            down = ev;
++            scrolling = false;
++            return true;
++        }
++        if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.which == SDL_TOUCH_MOUSEID) {
++            if (down.type) press();
++            down.type = 0;
++            const bool consumed = scrolling;
++            scrolling = false;
++            return consumed;
++        }
++        if (ev.type != SDL_EVENT_MOUSE_MOTION || ev.motion.which != SDL_TOUCH_MOUSEID)
++            return false;
++        if (down.type) {
++            const float dx = std::abs(ev.motion.x - down.button.x);
++            const float dy = std::abs(ev.motion.y - down.button.y);
++            if (dx < 8.0f && dy < 8.0f) return false;
++            scrolling = dy > dx;
++            last_y = down.button.y;
++            if (!scrolling) press();
++            down.type = 0;
++        }
++        if (scrolling) {
++            ImGuiIO& io = ImGui::GetIO();
++            io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
++            io.AddMouseWheelEvent(0.0f, (ev.motion.y - last_y) / 80.0f);
++            last_y = ev.motion.y;
++        }
++        return false;
++    }
++};
++#endif
++
+ /* True where the SDL backend re-asserts the cursor from the global mouse
+  * state every frame (the same driver whitelist it uses). Elsewhere — Wayland —
+  * there is no global cursor and motion events are the only source, so asking
+@@ -2530,7 +2582,13 @@ void draw_game_panel(LauncherModel* m, const LauncherTheme& th, bool fill_h = fa
+         }
+     }
+ 
+-    } else ImGui::TextDisabled("%s", ui_text("This disc was chosen before the game started. To change it, quit and start again."));
++    } else {
++#ifdef __ANDROID__
++        ImGui::TextWrapped("%s", ui_text("To change the ROM, return to Choose ROM."));
++#else
++        ImGui::TextDisabled("%s", ui_text("This disc was chosen before the game started. To change it, quit and start again."));
++#endif
++    }
+ 
+     // A required system file the host could not find (GameInfo.bios_name):
+     // say so where the player is looking and point at Settings, which owns the
+@@ -5158,7 +5216,8 @@ void panel_hotkeys_draw(LauncherModel* m, const LauncherTheme* th) {
+ // registry's available() gate.
+ void draw_settings(LauncherModel* m, const LauncherTheme& th) {
+     if (m->settings_saved_on_exit) {
+-        ImGui::TextDisabled("Changes are saved when you press Play or close the launcher.");
++        ImGui::TextDisabled("Changes are saved when you press %s or close the launcher.",
++                            m->in_session ? ui_text("RESUME") : ui_text("PLAY"));
+         ImGui::Spacing();
+     }
+     // Row 1: DISPLAY | AUDIO share the top band. For the legacy minimal
+@@ -14187,9 +14246,14 @@ void draw_skip_modal(LauncherModel* m) {
+     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+     if (ImGui::BeginPopupModal("Skip the launcher on boot?", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
++#ifdef __ANDROID__
++        ImGui::TextWrapped("Play will start the game directly. "
++                           "Choose Settings on the ROM screen to open the launcher.");
++#else
+         ImGui::TextWrapped("The launcher will no longer appear - the game boots straight in. "
+                            "Run with \"--launcher\" or set \"SkipLauncher = 0\" in config.ini "
+                            "to bring it back.");
++#endif
+         ImGui::Spacing();
+         if (ImGui::Button("Cancel", ImVec2(px(120), 0))) {
+             launcher_model_skip_cancel(m); ImGui::CloseCurrentPopup();
+@@ -15020,6 +15084,9 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
+     // that scale so the path can be exercised on a 100% display; nothing here
+     // reads the env var any more.
+     bool first_present_marked = false;
++#ifdef __ANDROID__
++    LauncherTouch touch;
++#endif
+ 
+     while ((m->action == LNG_ACTION_NONE && !p->should_quit) ||
+            launch_commit.job.pending()) {
+@@ -15052,6 +15119,15 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
+             /* Window coordinates -> logical units, before anything reads the
+              * event. No-op unless the platform layer synthesized the split. */
+             scale_mouse_event(ev, p->input_scale);
++#ifdef __ANDROID__
++            // Activity teardown must exit the guest even during a modal menu.
++            if (ev.type == SDL_EVENT_QUIT) {
++                m->action = LNG_ACTION_QUIT;
++                p->should_quit = true;
++                launch_commit.close_requested = true;
++                continue;
++            }
++#endif
+             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                 if (launch_commit.job.pending()) launch_commit.close_requested = true;
+                 else p->should_quit = true;
+@@ -15061,6 +15137,15 @@ extern "C" LngAction launcher_backend_run(LauncherPlatform* p,
+                 continue;
+             }
+             if (try_capture(m, ev)) continue;
++#ifdef __ANDROID__
++            // Android Back resumes gameplay or closes the startup launcher.
++            if ((ev.type == SDL_EVENT_KEY_DOWN && LNG_EVKEY(ev) == SDLK_ESCAPE) ||
++                (ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && LNG_EVGBTN(ev) == SDL_GAMEPAD_BUTTON_GUIDE)) {
++                p->should_quit = true;
++                continue;
++            }
++            if (touch.process(ev)) continue;
++#endif
+             /* Arm gamepad navigation on the first REAL pad input.
+              *
+              * A control that is already asserted when the launcher opens
+diff --git a/src/common/launcher_platform.h b/src/common/launcher_platform.h
+index 524f73c..7db1786 100644
+--- a/src/common/launcher_platform.h
++++ b/src/common/launcher_platform.h
+@@ -30,6 +30,11 @@ extern "C" {
+ typedef struct LauncherPlatform {
+     SDL_Window*   window;
+     SDL_GLContext gl;
++#if defined(__ANDROID__) && defined(LNG_SDL3)
++    SDL_GLContext previous_gl;
++    int previous_swap_interval;
++    bool restore_swap_interval;
++#endif
+ 
+     // Logical (DPI-independent) UI size — what layout & hit-testing use.
+     int   logical_w, logical_h;
+diff --git a/src/common/launcher_platform_sdl3.c b/src/common/launcher_platform_sdl3.c
+index 3ccb150..a9af510 100644
+--- a/src/common/launcher_platform_sdl3.c
++++ b/src/common/launcher_platform_sdl3.c
+@@ -153,6 +153,31 @@ bool launcher_platform_open(LauncherPlatform* p, const char* title,
+     SDL_zerop(p);
+     launcher_boot_timing_mark("rui:platform_open:begin");
+ 
++#ifdef __ANDROID__
++    (void)title;
++    (void)logical_w;
++    (void)logical_h;
++    // SDLActivity already owns the only available window. Use a separate GL
++    // context so the launcher cannot overwrite the game renderer's state.
++    int count = 0;
++    SDL_Window** windows = SDL_GetWindows(&count);
++    p->window = count ? windows[0] : NULL;
++    SDL_free(windows);
++    if (!p->window) return false;
++
++    p->previous_gl = SDL_GL_GetCurrentContext();
++    p->restore_swap_interval = p->previous_gl && SDL_GL_GetSwapInterval(&p->previous_swap_interval);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
++    p->gl = SDL_GL_CreateContext(p->window);
++    if (!p->gl) {
++        fprintf(stderr, "[launcher] SDL_GL_CreateContext failed: %s\n", SDL_GetError());
++        return false;
++    }
++    SDL_GL_SetSwapInterval(1);
++    launcher_platform_refresh_metrics(p);
++#else
+     SDL_SetMainReady();   // we built with SDL_MAIN_HANDLED (real main() is entry)
+     SDL_SetHint("SDL_JOYSTICK_HIDAPI_PS5", "1");
+     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR)) {
+@@ -215,6 +240,7 @@ bool launcher_platform_open(LauncherPlatform* p, const char* title,
+     // pixels the requested logical size really needs, and keeps the result
+     // reachable on displays that cannot show them all.
+     fit_window_to_display(p, logical_w, logical_h);
++#endif
+     launcher_boot_timing_mark("rui:platform_open:window+gl_ready");
+     return true;
+ }
+@@ -285,6 +311,11 @@ void launcher_platform_present(LauncherPlatform* p) {
+ void launcher_platform_close(LauncherPlatform* p) {
+     if (!p) return;
+     if (p->gl)     { SDL_GL_DestroyContext(p->gl); p->gl = NULL; }
++#ifdef __ANDROID__
++    if (p->previous_gl && SDL_GL_MakeCurrent(p->window, p->previous_gl) && p->restore_swap_interval)
++        SDL_GL_SetSwapInterval(p->previous_swap_interval);
++    p->window = NULL;
++#else
+     if (p->window) { SDL_DestroyWindow(p->window); p->window = NULL; }
+     /* Soft-return rematch hosts that skip SDL_Quit (s_quit_sdl=false) keep the
+      * subsystem alive across launcher↔game transitions. When we do quit, hosts
+@@ -292,4 +323,5 @@ void launcher_platform_close(LauncherPlatform* p) {
+      * window — see docs/HOST_NETPLAY.md. */
+     if (s_quit_sdl)
+         SDL_Quit();
++#endif
+ }

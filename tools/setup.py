@@ -100,7 +100,7 @@ def build(args):
         run("git", "-C", framework, "checkout", "--detach", FRAMEWORK_REV)
     patches = list(PATCHES)
     if args.android_ndk:
-        patches.append("android-window")
+        patches.extend(("android-window", "android-launcher"))
     if args.apu_boundary_sync:
         patches.append("apu-boundary-sync")
     for name in patches:

@@ -138,6 +138,10 @@ void KdcConfigureLauncher(struct RecompLauncherCGameInfo *info)
     info->has_renderer = !info->in_session;
     info->audio_frequency_locked = info->in_session;
     info->disc_selection_locked = info->in_session;
+#ifdef __ANDROID__
+    /* ROM selection belongs to the Android system document picker. */
+    info->disc_selection_locked = 1;
+#endif
 }
 
 static int IsFeature(const char *package, const char *feature)
