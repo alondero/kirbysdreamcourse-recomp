@@ -2,7 +2,9 @@
 
 Install `kirbysdreamcourse-recomp-android-arm64.apk` on an ARM64 device running Android 9 (API 28) or newer. Open **Choose ROM** and select your headerless, 1 MiB Kirby's Dream Course (USA) image in the Android document picker. The app verifies the SHA-256 in `rom_identity.txt` before replacing its private copy. On subsequent launches, tap **Play**.
 
-The game opens in landscape. The on-screen controls map to the SNES D-pad, A/B/X/Y, L/R, Start and Select. The host also accepts SDL gamepad input. Android Back exits the game. The host stores configuration and saves in the app-specific external files directory, including `saves/save.srm`. Uninstalling the app removes its data. Debug builds use the separate `io.github.alondero.kdc.debug` application ID.
+The game opens in landscape. Slide your left thumb around the D-pad for eight-way movement. The right-hand diamond has X above, B below, Y on the left and A on the right. You can hold a direction and a face button together. L and R sit above the two clusters, with Select and Start at the bottom center. The touch controls hide when Android detects a gamepad or joystick and return when the last one disconnects. Android Back exits the game.
+
+The host stores configuration and saves in the app-specific external files directory, including `saves/save.srm`. Uninstalling the app removes its data. Debug builds use the separate `io.github.alondero.kdc.debug` application ID.
 
 ## Build locally
 
@@ -28,6 +30,8 @@ Keep a private backup of the keystore, alias and password together in encrypted 
 For GitHub Actions, configure `ANDROID_KEYSTORE_BASE64` with the base64-encoded keystore and set the same three password/alias secrets in the Kirby repository. The Linux release job materializes the keystore in the runner's temporary directory for the signing step. A dry run uses the Android debug identity. A publishing run requires the release key and uploads the signed APK alongside the two desktop ZIPs. The release verification step compares all three downloads with the build outputs.
 
 ## Device evidence
+
+On the Redmi K30 Pro, a two-finger input sequence held Up+Left and B, slid to Right while holding B, then released each finger independently. The pressed indicators matched at every step. Start opened the title menu. ADB-created HID gamepads exercised connection during play, launch with a pad attached and removal of two pads in succession. All twelve controls returned after the last disconnect.
 
 A Redmi K30 Pro running Android 16 imported the verified USA ROM through the system picker, showed the title screen in landscape and reached one-player name entry with on-screen controls. Physical gamepads, Android 9, multiplayer, audible output and full-course completion on Android still need device testing.
 
