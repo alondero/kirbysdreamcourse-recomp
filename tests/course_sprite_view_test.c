@@ -222,5 +222,31 @@ int main(void)
             EXPECT(!memcmp(&s, &original, sizeof(s)));
         }
     }
+    /* Recovered state-14 slow roll has two shared, direction-independent
+     * frames (docs/orbit-rolling-artwork.md). They must never be mistaken
+     * for the normal directional family. These are synthetic pixels and
+     * deliberately separate P1/P2 records, not extracted artwork. */
+    for (unsigned player = 0; player <= 2; player += 2) {
+        unsigned destination = player ? 0x7e00 : 0x7c00;
+        unsigned records = player ? 0xc9eb : 0xab7e;
+        for (unsigned phase = 0; phase < 2; ++phase) {
+            unsigned source = 0xf800 + phase * 0x120;
+            Script(0x87, records + phase * 9, source, destination, 0x120);
+            /* A unique pattern distinct from all directional fixtures. */
+            memset(rom + Offset(0x8d, source), 0xf0 + phase, 0x120);
+            Load(source, destination, 0x120);
+            view = (KdcSpriteView){.family = KDC_SPRITE_VIEW_BALL,
+                                  .player = (uint8_t)player};
+            for (unsigned mirror = 0; mirror < 2; ++mirror) {
+                original = (KdcOrbitSprite){.attributes = (player ? 0x31e0 : 0x31c0) | mirror * 0x4000,
+                    .offset_x = -12, .offset_y = -19, .motion_x = 1, .world = true};
+                for (int turn = -8; turn <= 8; ++turn) {
+                    s = original;
+                    EXPECT(!KdcApplySpriteView(rom, sizeof(rom), vram, view, turn * pi / 2, 8, &s));
+                    EXPECT(!memcmp(&s, &original, sizeof(s)));
+                }
+            }
+        }
+    }
     return failures ? 1 : 0;
 }
