@@ -11,6 +11,12 @@ Build prerequisites, system-library requirements and Steam Deck verification
 are recorded in [Linux support](linux.md). Both platforms use `tools/setup.py`
 for the guarded patch stack; Windows retains its PowerShell entry points.
 
+The Linux runner also cross-compiles the arm64 Android library and packages
+`kirbysdreamcourse-recomp-android-arm64.apk`. Dry runs produce a debug-signed
+APK. Publishing requires the persistent signing key and the four Actions
+secrets in [Android support](android.md#release-signing). The publish job
+verifies all three downloaded assets against the built files.
+
 ## Private build inputs
 
 Follow the companion-repository pattern used by the Lamborghini and AeroGauge
@@ -96,7 +102,7 @@ gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref
 ```
 
 A dry run builds the dispatched commit with a `v0.0.0-dryrun-<sha>` version,
-uploads the tested Windows and Linux ZIPs and skips publication. It uses private inputs and
+uploads the Windows and Linux ZIPs and Android APK and skips publication. It uses private inputs and
 CI minutes. Editing the release skill alone does not authorize dispatch.
 
 After a tested commit is tagged and the tag pushed:

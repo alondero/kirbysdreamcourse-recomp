@@ -95,7 +95,15 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_TRANSITION_
 if(NOT KDC_TRANSITION_PACING_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-transition-pacing.patch after the presentation patches")
 endif()
-add_executable(KirbyDreamCourseRecomp ${SNESRECOMP_RUNNER_SOURCES}
+if(ANDROID)
+    add_library(KirbyDreamCourseRecomp SHARED)
+    set_target_properties(KirbyDreamCourseRecomp PROPERTIES OUTPUT_NAME main)
+    # SDLActivity loads this library. Keep SDL's static JNI bootstrap.
+    target_link_options(KirbyDreamCourseRecomp PRIVATE "-Wl,-u,JNI_OnLoad")
+else()
+    add_executable(KirbyDreamCourseRecomp)
+endif()
+target_sources(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/dev_start.c src/practice.c src/practice_draw.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c
     src/course_sprite_view.c src/cpu_opponent.c src/cpu_preview.c src/cpu_label.c
@@ -308,3 +316,25 @@ add_custom_command(TARGET KirbyDreamCourseRecomp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/licenses/recomp-ui"
         "$<TARGET_FILE_DIR:KirbyDreamCourseRecomp>/licenses/recomp-ui"
     VERBATIM)
+
+if(ANDROID)
+    # The pinned UI uses SDL2's spelling of the Android storage getter.
+    set_property(SOURCE "${RECOMP_UI_ROOT}/src/common/backends/imgui/launcher_imgui.cpp"
+        APPEND PROPERTY COMPILE_DEFINITIONS SDL_ENABLE_OLD_NAMES)
+    set(RUI_ASSETS "${RECOMP_UI_ROOT}/assets")
+    include("${RECOMP_UI_ROOT}/cmake/recomp_ui_assets.cmake")
+    _recomp_ui_stage_assets(KirbyDreamCourseRecomp snes)
+    FetchContent_GetProperties(SDL3 SOURCE_DIR KDC_SDL_SOURCE)
+    set(KDC_APK "${CMAKE_BINARY_DIR}/apk")
+    add_custom_command(TARGET KirbyDreamCourseRecomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${KDC_APK}/jniLibs/${ANDROID_ABI}"
+        COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:KirbyDreamCourseRecomp>" "${KDC_APK}/jniLibs/${ANDROID_ABI}/libmain.so"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${KDC_SDL_SOURCE}/android-project/app/src/main/java" "${KDC_APK}/sdl-java"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/assets" "${KDC_APK}/assets/assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_BINARY_DIR}/licenses" "${KDC_APK}/assets/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/LICENSE" "${CMAKE_SOURCE_DIR}/LICENSE.snesrecomp"
+            "${CMAKE_SOURCE_DIR}/LICENSE.SDL3.txt" "${CMAKE_SOURCE_DIR}/THIRD_PARTY_ATTRIBUTION.md" "${KDC_APK}/assets/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_ANDROID_NDK}/NOTICE" "${KDC_APK}/assets/licenses/NDK.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_ANDROID_NDK}/NOTICE.toolchain" "${KDC_APK}/assets/licenses/NDK-toolchain.txt"
+        VERBATIM)
+endif()

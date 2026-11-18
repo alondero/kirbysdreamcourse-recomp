@@ -1,11 +1,11 @@
 ---
 name: release
-description: Build, package, publish and verify Windows and Linux binary releases of Kirby's Dream Course Recomp.
+description: Build, package, publish and verify Windows, Linux and Android binary releases of Kirby's Dream Course Recomp.
 ---
 
 # Kirby's Dream Course release
 
-Release `alondero/kirbysdreamcourse-recomp` as **ready-to-run Windows and Linux x64 ZIPs**
+Release `alondero/kirbysdreamcourse-recomp` as **Windows and Linux x64 ZIPs and an Android arm64 APK**
 containing the native executable, its runtime dependencies, launcher
 resources and notices. The player supplies the ROM and launches the game
 without Python, CMake, Ninja, a compiler or a generation step. This is the
@@ -169,6 +169,10 @@ If a needed workflow or build path is missing, implement and validate it only
 within the authorized release scope before proceeding. Never assume a workflow
 mentioned in a comment exists. Recheck readiness after changing build inputs.
 
+Build and verify the Android APK using [Android support](../../../docs/android.md).
+Check the Android signing secrets before publishing. Test ROM import, launch and
+touch input on a device when available. Keep the ROM and device captures private.
+
 ## 4. Tag and publish the prepared result
 
 Only proceed after the applicable packaging gates pass and the version and
@@ -188,22 +192,22 @@ The workflow checks out the requested tag for publishing and the dispatched
 commit for dry runs. Confirm the workflow revision contains the tested build
 changes and origin names this repository. Capture the exact run ID and observe
 it in waits of at most 60 seconds so progress remains visible. The expected
-assets are `kirbysdreamcourse-recomp-windows-x64.zip` and
+assets are `kirbysdreamcourse-recomp-android-arm64.apk`, `kirbysdreamcourse-recomp-windows-x64.zip` and
 `kirbysdreamcourse-recomp-linux-x64.zip`. Both platform jobs must pass and agree
 on commit/version before publishing. Keep prerelease true for the current
 experimental state unless the user requests otherwise.
 
-The workflow creates an initial notes body and a Windows & Linux x64 title. Replace
+The workflow creates an initial notes body and a Windows, Linux & Android title. Replace
 the body with the complete prepared UTF-8 notes once the build has passed:
 
 ```powershell
-gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recompiled <version> (Windows & Linux x64)" --notes-file <notes-path>
+gh release edit <version> --repo alondero/kirbysdreamcourse-recomp --title "Kirby's Dream Course Recompiled <version> (Windows, Linux & Android)" --notes-file <notes-path>
 ```
 
 ## 5. Verify the published release
 
 ```powershell
-python .agents/skills/release/scripts/release.py verify --version <version> --target <full-sha> --archive <tested-windows-archive> --extra-archive <tested-linux-archive> --title "Kirby's Dream Course Recompiled <version> (Windows & Linux x64)" --prerelease true
+python .agents/skills/release/scripts/release.py verify --version <version> --target <full-sha> --archive <tested-windows-archive> --extra-archive <tested-linux-archive> --extra-archive <tested-android-apk> --title "Kirby's Dream Course Recompiled <version> (Windows, Linux & Android)" --prerelease true
 ```
 
 The helper checks the remote tag's peeled commit (including annotated tags),

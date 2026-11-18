@@ -99,6 +99,8 @@ def build(args):
         run("git", "clone", "-c", "core.autocrlf=false", "--no-hardlinks", "--no-checkout", pristine, framework)
         run("git", "-C", framework, "checkout", "--detach", FRAMEWORK_REV)
     patches = list(PATCHES)
+    if args.android_ndk:
+        patches.append("android-window")
     if args.apu_boundary_sync:
         patches.append("apu-boundary-sync")
     for name in patches:
@@ -132,7 +134,14 @@ def build(args):
         options.append("-DKDC_EXPERIMENTAL_APU_BOUNDARY_STATE=ON")
     if args.sdl_source:
         options.append(f"-DFETCHCONTENT_SOURCE_DIR_SDL3={Path(args.sdl_source).resolve(strict=True)}")
-    if sys.platform == "win32":
+    if args.android_ndk:
+        ndk = Path(args.android_ndk).resolve(strict=True)
+        options += [
+            f"-DCMAKE_TOOLCHAIN_FILE={ndk / 'build/cmake/android.toolchain.cmake'}",
+            "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-28",
+            "-DANDROID_STL=c++_static", "-DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON",
+        ]
+    elif sys.platform == "win32":
         windres = Path(shutil.which("gcc")).parent / "windres.exe"
         if windres.is_file():
             options.append(f"-DCMAKE_RC_COMPILER={windres.as_posix()}")
@@ -144,7 +153,9 @@ def build(args):
                     "-DCMAKE_DISABLE_FIND_PACKAGE_Freetype=ON"]
     run(args.cmake, "-S", ROOT, "-B", output, "-G", "Ninja", *options)
     run(args.cmake, "--build", output, "--parallel", str(args.jobs))
-    executable = "KirbyDreamCourseRecomp" + (".exe" if sys.platform == "win32" else "")
+    executable = "KirbyDreamCourseRecomp.exe" if sys.platform == "win32" else "KirbyDreamCourseRecomp"
+    if args.android_ndk:
+        executable = "libmain.so"
     print(f"Built {output / executable}")
 
 
@@ -153,6 +164,7 @@ def main():
     parser.add_argument("--rom", default="Kirby's Dream Course (USA).sfc")
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--sdl-source")
+    parser.add_argument("--android-ndk", help="Cross-compile the shared game library for Android arm64")
     parser.add_argument("--version", default="dev")
     parser.add_argument("--name", default="guarded")
     parser.add_argument("--jobs", type=int, default=8)

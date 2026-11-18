@@ -1358,7 +1358,11 @@ static void DrawBand(void *context, unsigned index)
 static double Milliseconds(void)
 {
     struct timespec now;
+#ifdef __ANDROID__
+    clock_gettime(CLOCK_MONOTONIC, &now);
+#else
     timespec_get(&now, TIME_UTC);
+#endif
     return now.tv_sec * 1000.0 + now.tv_nsec / 1000000.0;
 }
 
