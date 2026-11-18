@@ -48,8 +48,22 @@
 #include "desktop/sdl_compat.h"
 #include "config.h"
 #ifdef __ANDROID__
+#include <jni.h>
 /* SDLActivity loads libmain.so and dlsyms its SDL_main. */
 #define main SDL_main
+
+static void SetGameplayControlsVisible(int visible)
+{
+    JNIEnv *env = SDL_GetAndroidJNIEnv();
+    if (!env) return;
+    jobject activity = SDL_GetAndroidActivity();
+    if (!activity) return;
+    jclass activity_class = (*env)->GetObjectClass(env, activity);
+    jmethodID setter = (*env)->GetMethodID(env, activity_class, "setGameplayControlsVisible", "(Z)V");
+    if (setter) (*env)->CallVoidMethod(env, activity, setter, (jboolean)(visible != 0));
+    (*env)->DeleteLocalRef(env, activity_class);
+    (*env)->DeleteLocalRef(env, activity);
+}
 #endif
 
 #ifndef SNES_GAME_VERSION
@@ -142,6 +156,9 @@ static const SnesDesktopHostGame kGameHost = {
     .widescreen_supported = 1,
     .native_widescreen    = 1,
     .in_game_launcher   = 1,
+#ifdef __ANDROID__
+    .set_gameplay_controls_visible = SetGameplayControlsVisible,
+#endif
     .launcher_with_rom  = 1,
     .validate_rom_path  = ValidateRomPath,
     .display_aspect_supported = 1,

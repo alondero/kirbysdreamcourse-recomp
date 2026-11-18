@@ -22,7 +22,9 @@ for build commands and Steam Deck verification limits.
 
 On Android 9 or newer (arm64), install `kirbysdreamcourse-recomp-android-arm64.apk`,
 open **Choose ROM**, and select the supported image. Play in landscape using the
-touch controls or a controller. See [Android support](docs/android.md).
+touch controls or a controller. Tap **Menu** in the upper-right corner, use
+Android **Back**, or press **Select+L3** to open the shared settings during play.
+See [Android support](docs/android.md).
 
 Maintainers use the `Build & Release` workflow and the repository's release
 skill. The workflow fetches build inputs from a private companion repository

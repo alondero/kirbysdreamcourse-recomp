@@ -16,7 +16,7 @@ public class ImportActivity extends Activity {
     static final String ROM = "course.sfc";
     private static final String SHA256 = "0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b";
     private TextView message;
-    private Button pick, play;
+    private Button pick, play, settings;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -34,9 +34,13 @@ public class ImportActivity extends Activity {
         box.addView(pick);
         play = new Button(this);
         play.setText("Play");
-        play.setEnabled(new File(getFilesDir(), ROM).isFile());
-        play.setOnClickListener(v -> prepareGame(null));
+        play.setOnClickListener(v -> prepareGame(null, false));
         box.addView(play);
+        settings = new Button(this);
+        settings.setText("Settings");
+        settings.setOnClickListener(v -> prepareGame(null, true));
+        box.addView(settings);
+        resetControls(message.getText().toString());
         setContentView(box);
     }
 
@@ -54,9 +58,10 @@ public class ImportActivity extends Activity {
         }
     }
 
-    private void prepareGame(Uri uri) {
+    private void prepareGame(Uri uri, boolean showLauncher) {
         pick.setEnabled(false);
         play.setEnabled(false);
+        settings.setEnabled(false);
         message.setText(uri == null ? "Preparing game?" : "Checking ROM?");
         new Thread(() -> {
             try {
@@ -65,7 +70,8 @@ public class ImportActivity extends Activity {
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     resetControls("ROM ready.");
-                    startActivity(new Intent(this, GameActivity.class));
+                    startActivity(new Intent(this, GameActivity.class)
+                            .putExtra(GameActivity.SHOW_LAUNCHER, showLauncher));
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> resetControls("Could not open game: " + e.getMessage()));
@@ -76,13 +82,15 @@ public class ImportActivity extends Activity {
     private void resetControls(String status) {
         message.setText(status);
         pick.setEnabled(true);
-        play.setEnabled(new File(getFilesDir(), ROM).isFile());
+        boolean hasRom = new File(getFilesDir(), ROM).isFile();
+        play.setEnabled(hasRom);
+        settings.setEnabled(hasRom);
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request != 1 || result != RESULT_OK || data == null || data.getData() == null) return;
-        prepareGame(data.getData());
+        prepareGame(data.getData(), false);
     }
 
     private void importRom(Uri uri) throws IOException, java.security.NoSuchAlgorithmException {

@@ -2,9 +2,15 @@
 
 Install `kirbysdreamcourse-recomp-android-arm64.apk` on an ARM64 device running Android 9 (API 28) or newer. Open **Choose ROM** and select your headerless, 1 MiB Kirby's Dream Course (USA) image in the Android document picker. The app verifies the SHA-256 in `rom_identity.txt` before replacing its private copy. On subsequent launches, tap **Play**.
 
-The game opens in landscape. Slide your left thumb around the D-pad for eight-way movement. The right-hand diamond has X above, B below, Y on the left and A on the right. You can hold a direction and a face button together. L and R sit above the two clusters, with Select and Start at the bottom center. The touch controls hide when Android detects a gamepad or joystick and return when the last one disconnects. Android Back exits the game.
+The shared launcher opens in landscape before the game starts. Use **Settings** for display and audio, the player cards for controller configuration, and **Mods** for Kirby's presentation options. Tap **Play** to start the game. **Skip launcher on boot** goes directly to gameplay on subsequent launches. **Settings** on the ROM screen always opens the startup launcher.
+
+During play, tap **Menu** in the upper-right corner or use Android **Back**. A controller can open the menu with **Select+L3** (Back plus a left-stick click by default) or **Guide/Home** when Android passes that button to the app. Swipe vertically to scroll the menu. **Resume** or Android **Back** applies changes and resumes play. **Quit Game** returns to the ROM screen. Renderer and audio sample rate are available in the startup launcher, as on PC.
+
+Slide your left thumb around the D-pad for eight-way movement. The right-hand diamond has X above, B below, Y on the left and A on the right. You can hold a direction and a face button together. L and R sit above the two clusters, with Select and Start at the bottom center. The on-screen SNES controls hide when Android detects a gamepad or joystick and return when the last one disconnects. The **Menu** button stays available during play.
 
 The host stores configuration and saves in the app-specific external files directory, including `saves/save.srm`. Uninstalling the app removes its data. Debug builds use the separate `io.github.alondero.kdc.debug` application ID.
+
+Super Mario All-Stars uses a dedicated on-screen menu button, Android Back and controller shortcuts. DKC2 offers Android settings before gameplay. Kirby uses those entry points with the shared recomp-ui settings on the SDLActivity surface. [Super Mario All-Stars controls](https://github.com/TanookiStudios/SuperMarioAllStarsRecomp/blob/25d73ed4db7033b9177ec116f99f4185e7397a6f/README.md#controls), [DKC2 Android port notes](https://github.com/deivid22srk/DKC2-Android-Port/blob/9a072b05c1c8145637fb883e75cf1767a52bf7ee/docs/PORT_ANDROID.md#real-settings-launchercfg)
 
 ## Build locally
 
@@ -30,6 +36,10 @@ Keep a private backup of the keystore, alias and password together in encrypted 
 For GitHub Actions, configure `ANDROID_KEYSTORE_BASE64` with the base64-encoded keystore and set the same three password/alias secrets in the Kirby repository. The Linux release job materializes the keystore in the runner's temporary directory for the signing step. A dry run uses the Android debug identity. A publishing run requires the release key and uploads the signed APK alongside the two desktop ZIPs. The release verification step compares all three downloads with the build outputs.
 
 ## Device evidence
+
+The shared launcher was tested on an Android 15 emulator using the arm64 debug APK. The startup launcher, touch Menu, Android Back, swipe scrolling, Select+L3, Guide/Home, Resume and Quit Game were exercised. Controller shortcuts used an Android virtual gamepad. A startup sample-rate edit and an in-game volume edit persisted. With **Skip launcher on boot** enabled, **Play** went directly to the game and **Settings** on the ROM screen still opened the launcher.
+
+On the same emulator, a diagnostic run opened the in-game launcher at frame 8 and held it open until Back. Against a no-input run without the launcher, all 32 CPU and APU trace frames, 20 WRAM captures and final SRAM matched. The first WRAM difference against the pinned Snes9x 1.63 reference was host frame 15 / reference frame 16 in both runs. The new launcher still needs testing on physical Android hardware.
 
 On the Redmi K30 Pro, a two-finger input sequence held Up+Left and B, slid to Right while holding B, then released each finger independently. The pressed indicators matched at every step. Start opened the title menu. ADB-created HID gamepads exercised connection during play, launch with a pad attached and removal of two pads in succession. All twelve controls returned after the last disconnect.
 

@@ -96,6 +96,11 @@ if(NOT KDC_TRANSITION_PACING_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-transition-pacing.patch after the presentation patches")
 endif()
 if(ANDROID)
+    file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_main.h" KDC_ANDROID_LAUNCHER_API
+        REGEX "set_gameplay_controls_visible" LIMIT_COUNT 1)
+    if(NOT KDC_ANDROID_LAUNCHER_API)
+        message(FATAL_ERROR "Apply patches/snesrecomp-android-launcher.patch; tools/setup.py includes it")
+    endif()
     add_library(KirbyDreamCourseRecomp SHARED)
     set_target_properties(KirbyDreamCourseRecomp PROPERTIES OUTPUT_NAME main)
     # SDLActivity loads this library. Keep SDL's static JNI bootstrap.
@@ -271,14 +276,21 @@ execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" rev-parse HEAD
 if(NOT UI_GIT_RESULT EQUAL 0 OR NOT KDC_RECOMP_UI_HEAD STREQUAL KDC_RECOMP_UI_REV)
     message(FATAL_ERROR "recomp-ui revision does not match the tested pin")
 endif()
-# Built-in settings providers do not offer external package management.
-set(KDC_UI_PATCH "${CMAKE_SOURCE_DIR}/patches/recomp-ui-builtin-settings.patch")
-execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --reverse --check "${KDC_UI_PATCH}"
-    RESULT_VARIABLE KDC_UI_PATCHED OUTPUT_QUIET ERROR_QUIET)
-if(NOT KDC_UI_PATCHED EQUAL 0)
+# Built-in providers hide external package management. Android borrows the SDLActivity window.
+set(KDC_UI_PATCHES recomp-ui-builtin-settings.patch)
+if(ANDROID)
+    list(APPEND KDC_UI_PATCHES recomp-ui-android-launcher.patch)
+endif()
+foreach(KDC_UI_PATCH_NAME IN LISTS KDC_UI_PATCHES)
+    set(KDC_UI_PATCH "${CMAKE_SOURCE_DIR}/patches/${KDC_UI_PATCH_NAME}")
+    execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply --reverse --check "${KDC_UI_PATCH}"
+        RESULT_VARIABLE KDC_UI_PATCHED OUTPUT_QUIET ERROR_QUIET)
+    if(KDC_UI_PATCHED EQUAL 0)
+        continue()
+    endif()
     if(FETCHCONTENT_SOURCE_DIR_KDC_RECOMP_UI)
         message(FATAL_ERROR
-            "The supplied recomp-ui checkout needs patches/recomp-ui-builtin-settings.patch. "
+            "The supplied recomp-ui checkout needs patches/${KDC_UI_PATCH_NAME}. "
             "It was left unchanged. Apply that patch explicitly, or omit "
             "FETCHCONTENT_SOURCE_DIR_KDC_RECOMP_UI to use the managed checkout.")
     endif()
@@ -286,7 +298,7 @@ if(NOT KDC_UI_PATCHED EQUAL 0)
         RESULT_VARIABLE KDC_UI_PATCH_CHECK)
     if(NOT KDC_UI_PATCH_CHECK EQUAL 0)
         message(FATAL_ERROR
-            "recomp-ui built-in settings patch does not apply to the managed checkout: "
+            "${KDC_UI_PATCH_NAME} does not apply to the managed checkout: "
             "${kdc_recomp_ui_SOURCE_DIR}. An older project patch or local edits may be present. "
             "Preserve any edits, then use a fresh build directory or recreate this managed "
             "checkout before configuring again.")
@@ -294,9 +306,9 @@ if(NOT KDC_UI_PATCHED EQUAL 0)
     execute_process(COMMAND git -C "${kdc_recomp_ui_SOURCE_DIR}" apply "${KDC_UI_PATCH}"
         RESULT_VARIABLE KDC_UI_PATCH_RESULT)
     if(NOT KDC_UI_PATCH_RESULT EQUAL 0)
-        message(FATAL_ERROR "Could not apply recomp-ui built-in settings patch")
+        message(FATAL_ERROR "Could not apply ${KDC_UI_PATCH_NAME}")
     endif()
-endif()
+endforeach()
 set(RECOMP_UI_ROOT "${kdc_recomp_ui_SOURCE_DIR}" CACHE PATH "Pinned launcher UI" FORCE)
 include("${RECOMP_UI_ROOT}/recomp_ui.cmake")
 recomp_target_launcher_ui(KirbyDreamCourseRecomp CONSOLE snes)
