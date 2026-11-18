@@ -474,6 +474,13 @@ Camera-relative artwork currently covers the normal ball and active parasol
 stages. Other powers and detached closing effects retain their original
 artwork. Both players have synthetic coverage; the new runtime view checks
 exercise player one. These changes do not establish all-power compatibility.
+
+The [rolling artwork investigation](orbit-rolling-artwork.md) recovered the
+two-frame state-14 slow-roll loop for both players, including a genuine P2
+shot. This family shares direction-independent source art and retains its
+native animation through the existing fallback. No directional remapping is
+justified for it; other rolling/spin states remain unqualified.
+
 Tall scenery or terrain nearer the camera can hide the player at some angles
 (for example the tree on hole 1-3 at 135 degrees); no see-through silhouette
 is drawn. Ground shadows that the original game draws as background artwork,
