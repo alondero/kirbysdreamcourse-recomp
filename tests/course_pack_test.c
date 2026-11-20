@@ -76,26 +76,32 @@ static void BufRec(Buf *b, uint32_t offset, const void *payload, uint16_t size)
     BufPut(b, payload, size);
 }
 
-static uint8_t *BuildSyntheticGdcIps(size_t *out_size, uint8_t shape_val, uint8_t tee_val)
+static uint8_t *BuildSyntheticGdcIpsEx(size_t *out_size, uint8_t shape_val,
+                                       uint8_t tee_val, unsigned s1_len,
+                                       unsigned s2_len, unsigned tee_pos,
+                                       unsigned s3_len, unsigned s4_len)
 {
     Buf b = {0};
     BufPut(&b, "PATCH", 5);
 
     /* One shared valid hole placed at file 0x140000 ($A8:8000):
      * Stream 0 (32 bytes): 4x4 hole, origins 0x10 / 0x20, name "MAP80       ".
-     * Streams 1..10: minimal HAL-LZSS compressed streams (literal + 0xFF). */
+     * Streams 1..10: minimal HAL-LZSS compressed streams (literal/RLE + 0xFF). */
     uint8_t hdr32[32] = {0};
     hdr32[0] = 0xff; hdr32[1] = 0xff;
-    hdr32[2] = 4; hdr32[4] = 4; /* width=4, height=4 */
+    hdr32[2] = 4; hdr32[4] = 4; /* width=4, height=4 (16 cells) */
     hdr32[8] = 0x10; hdr32[10] = 0x20; hdr32[14] = 0x40;
     memcpy(hdr32 + 16, "MAP80       ", 12);
 
-    uint8_t s1[3] = {0x2f, shape_val, 0xff}; /* 16 bytes of shape_val */
-    uint8_t s2[4] = {0x00, tee_val, 0x2e, 0x00}; /* wait: use clean raw 16B! */
-    (void)s2;
-    uint8_t s2_raw[18] = {0x0f, tee_val, 0x40, 0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff};
-    uint8_t s3[3] = {0x2f, 0x02, 0xff}; /* 16 bytes of elevation 2 */
-    uint8_t s4[3] = {0x2f, 0x01, 0xff}; /* 16 bytes of walls */
+    uint8_t s1[3] = {(uint8_t)(0x20u | ((s1_len - 1u) & 0x1fu)), shape_val, 0xff};
+    uint8_t s2_raw[36] = {0};
+    s2_raw[0] = (uint8_t)((s2_len - 1u) & 0x1fu);
+    if (tee_pos < s2_len) s2_raw[1u + tee_pos] = tee_val;
+    if (tee_pos != 1u && 1u < s2_len) s2_raw[2] = 0x40;
+    if (tee_pos != 2u && 2u < s2_len) s2_raw[3] = 0x41;
+    s2_raw[1u + s2_len] = 0xff;
+    uint8_t s3[3] = {(uint8_t)(0x20u | ((s3_len - 1u) & 0x1fu)), 0x02, 0xff};
+    uint8_t s4[3] = {(uint8_t)(0x20u | ((s4_len - 1u) & 0x1fu)), 0x01, 0xff};
     uint8_t s5[4] = {0x01, 0x00, 0x00, 0xff};
     uint8_t s6[4] = {0x01, 0x04, 0x00, 0xff};
     uint8_t s7[4] = {0x01, 0x00, 0x00, 0xff};
@@ -104,7 +110,7 @@ static uint8_t *BuildSyntheticGdcIps(size_t *out_size, uint8_t shape_val, uint8_
     uint8_t s10[3] = {0x27, 0xff, 0xff}; /* 8 bytes of 0xFF */
 
     const uint8_t *blobs[11] = {hdr32, s1, s2_raw, s3, s4, s5, s6, s7, s8, s9, s10};
-    const uint16_t lens[11] = {32, 3, 18, 3, 3, 4, 4, 4, 4, 4, 3};
+    const uint16_t lens[11] = {32, 3, (uint16_t)(s2_len + 2u), 3, 3, 4, 4, 4, 4, 4, 3};
     uint32_t ptrs[11];
     uint32_t cur = 0x140000u;
     for (unsigned t = 0; t < 11u; ++t) {
@@ -168,6 +174,20 @@ static uint8_t *BuildSyntheticGdcIps(size_t *out_size, uint8_t shape_val, uint8_
     return b.data;
 }
 
+static uint8_t *BuildSyntheticGdcIps(size_t *out_size, uint8_t shape_val, uint8_t tee_val)
+{
+    return BuildSyntheticGdcIpsEx(out_size, shape_val, tee_val, 16u, 16u, 0u, 16u, 16u);
+}
+
+static bool WriteFileBytes(const char *path, const uint8_t *data, size_t size)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1u, size, f) == size;
+    fclose(f);
+    return ok;
+}
+
 static int TestHalDecompress(void)
 {
     uint8_t out[128];
@@ -199,17 +219,19 @@ static int TestHalDecompress(void)
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     if (TestHalDecompress() != 0) return 1;
 
+    KdcCoursePackSetRom(NULL, 0);
     KdcCoursePacksResetCatalog();
     CHECK(KdcCoursePackCount() == 2u && KdcCoursePackExternalCount() == 0u);
     CHECK(KdcCoursePackFindById("1p-normal") == 0);
     CHECK(KdcCoursePackFindById("1p-extra") == 1);
     CHECK(!KdcCoursePacksMenuEnabled());
 
-    /* Reject malformed IPS inputs cleanly. */
+    /* Reject malformed IPS inputs cleanly, including wrong plane lengths and
+     * tees located outside the declared width x height grid. */
     char err[160] = {0};
     CHECK(!KdcCoursePackLoadIpsMemory((const uint8_t *)"NOPE", 4, "bad", err, sizeof(err)));
     size_t bad_sz = 0;
@@ -219,6 +241,41 @@ int main(void)
     uint8_t *no_tee = BuildSyntheticGdcIps(&bad_sz, 1u, 0x00u);
     CHECK(!KdcCoursePackLoadIpsMemory(no_tee, bad_sz, "no-tee", err, sizeof(err)));
     free(no_tee);
+    uint8_t *short_shape = BuildSyntheticGdcIpsEx(&bad_sz, 1u, 0x0cu, 1u, 16u, 0u, 16u, 16u);
+    CHECK(!KdcCoursePackLoadIpsMemory(short_shape, bad_sz, "short-shape", err, sizeof(err)));
+    free(short_shape);
+    uint8_t *tee_oob = BuildSyntheticGdcIpsEx(&bad_sz, 1u, 0x0cu, 16u, 17u, 16u, 16u, 16u);
+    CHECK(!KdcCoursePackLoadIpsMemory(tee_oob, bad_sz, "tee-oob", err, sizeof(err)));
+    free(tee_oob);
+    uint8_t *short_elev = BuildSyntheticGdcIpsEx(&bad_sz, 1u, 0x0cu, 16u, 16u, 0u, 15u, 16u);
+    CHECK(!KdcCoursePackLoadIpsMemory(short_elev, bad_sz, "short-elev", err, sizeof(err)));
+    free(short_elev);
+    uint8_t *short_wall = BuildSyntheticGdcIpsEx(&bad_sz, 1u, 0x0cu, 16u, 16u, 0u, 16u, 15u);
+    CHECK(!KdcCoursePackLoadIpsMemory(short_wall, bad_sz, "short-wall", err, sizeof(err)));
+    free(short_wall);
+
+    /* Directory scan: rejected files must not consume catalog slots. */
+    if (argc >= 2 && argv[1][0]) {
+        for (unsigned i = 0; i < 20u; ++i) {
+            char p[512];
+            snprintf(p, sizeof(p), "%s/%02u_rejected.ips", argv[1], i);
+            CHECK(WriteFileBytes(p, (const uint8_t *)"PATCHEOF", 8u));
+        }
+        size_t valid_sz = 0;
+        uint8_t *valid_ips = BuildSyntheticGdcIps(&valid_sz, 5u, 0x0cu);
+        char vp[512];
+        snprintf(vp, sizeof(vp), "%s/zz_valid.ips", argv[1]);
+        CHECK(WriteFileBytes(vp, valid_ips, valid_sz));
+        free(valid_ips);
+
+        KdcCoursePacksSetDropinDir(argv[1]);
+        KdcCoursePacksEnsureLoaded();
+        CHECK(KdcCoursePackCount() == 3u && KdcCoursePackExternalCount() == 1u);
+        CHECK(KdcCoursePackFindById("gdc") == 2);
+
+        KdcCoursePacksResetCatalog();
+        CHECK(KdcCoursePackCount() == 2u && KdcCoursePackExternalCount() == 0u);
+    }
 
     /* Load valid synthetic Grump's Dream Course IPS. */
     size_t ips_sz = 0;
@@ -252,12 +309,20 @@ int main(void)
 
     /* Built-in 1P Extra Course 7 (ROM course 14, map 112..119, palette 8) in 2P. */
     CHECK(KdcCoursePackSelect(1u, 6u));
-    ram[0x6a5eu] = 3u; /* hole 4 */
+    ram[0x6a5eu] = 3u; /* hole 4 -> map 115 -> (115 & 0x3F) = 51 */
     ram[0x17ffu] = 1u;
     Fire(&cpu, 0x80c168u);
     CHECK(Word(ram, 0xabb2u) == 115u && Word(ram, 0xabb4u) == 230u && Word(ram, 0xabb6u) == 345u);
     Fire(&cpu, 0x82b1cau);
     CHECK(redirect == 0); /* Built-in pack lets the USA loader run natively. */
+    /* Built-in music reads $80:C9D5 from the verified runtime ROM (no-op before ROM load). */
+    Fire(&cpu, 0x80c988u);
+    CHECK(redirect == 0);
+    uint8_t fake_rom[0x5000] = {0};
+    for (unsigned i = 0; i < 64u; ++i) fake_rom[0x49d5u + i] = (uint8_t)(0x40u + i);
+    KdcCoursePackSetRom(fake_rom, sizeof(fake_rom));
+    Fire(&cpu, 0x80c988u);
+    CHECK(redirect == 0x80c999u && cpu.A == (uint16_t)(0x40u + 51u));
     Fire(&cpu, 0x80d843u);
     CHECK(redirect == 0x80d84cu && cpu.A == 0xd8edu + 8u * 0x20u);
     Fire(&cpu, 0x86fc95u);

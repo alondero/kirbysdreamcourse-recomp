@@ -53,7 +53,16 @@ enable the 19 custom courses (152 holes) from **Grump's Dream Course**:
   authentic vanilla palette assignments and mapped vanilla hole music.
 - Custom 2P matches isolate battery writes into `saves/custom/save.srm` (or
   `saves/cpu/save.srm` for 1P vs CPU) and restore ordinary SRAM byte-for-byte
-  on exit. Save states and rewind remain disabled during custom sessions.
+  on exit. Save states and rewind remain disabled during custom sessions and
+  custom `--dev-hole pack:*` / `pack-2p:*` starts.
+- Built-in 1P courses in 2P read the USA solo music table (`$80:C9D5..$80:CA14`)
+  from the verified runtime ROM rather than storing ROM tables in source.
+- Drop-in packs are discovered from `courses/` beside the executable (independent
+  of the caller's working directory), while explicit `--course-pack PATH`
+  arguments resolve relative to the caller's working directory. All `.ips`
+  candidates are sorted and validated structurally (including exact
+  `width × height` lengths for gameplay planes 1–4 and a tee within the grid);
+  rejected files do not consume catalog capacity.
 
 ## USA integration evidence
 
@@ -98,3 +107,23 @@ $env:KDC_TEST_COURSE_PACK = '1'
 $env:KDC_TEST_GDC_IPS = 'C:/path/to/GrumpsDreamCourse[1.01].ips'
 python -m unittest discover -s tests -p 'test_course_pack.py' -v
 ```
+
+### Reference comparability and untested paths
+
+- **Comparable reference scenario:** With **Extra 2P courses** disabled
+  (the default), ordinary zero-input boot remains byte-identical in WRAM and
+  SRAM to the pre-change executable, preserving the pinned Snes9x 1.63 baseline
+  first divergence (host frame 15 versus reference frame 16, recorded in
+  [compatibility.md](compatibility.md)).
+- **Custom-course verification:** Because custom 2P menus, single-player
+  courses in 2P, and Grump's Dream Course IPS injection intentionally diverge
+  from the unmodified USA ROM flow, those paths are verified by comparing the
+  host's guarded native path against its interpreter fallback (`SNESRECOMP_LLE_BOUNCE=0`),
+  plus a deterministic 8-hole progression, 2P finale, return-to-picker, and
+  B-to-title replay (`test_custom_2p_full_eight_hole_progression_and_finale`).
+  That 8-hole replay drives hole-clear state transitions rather than natural
+  shot-by-shot play across all 152 holes.
+- **Untested paths:** Linux and Android builds (including POSIX `opendir`
+  directory scanning and Android external-storage `courses/` discovery),
+  natural shot-by-shot completion of all 152 holes, and physical two-controller
+  play were not executed in the Windows verification runs.

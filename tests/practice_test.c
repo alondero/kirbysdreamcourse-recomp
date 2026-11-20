@@ -444,6 +444,14 @@ int main(void)
     Tap(SNES_PAD_B);
     CHECK(!KdcPracticeCurrentView()->active && !KdcPracticeCurrentView()->custom_match &&
           !KdcCoursePackHasActive() && !strcmp(root, "saves") && battery[0] == 0xa5);
+    /* Custom developer starts (--dev-hole pack:*) must also block snapshots/rewind. */
+    CHECK(KdcPracticeSnapshotsAllowed());
+    CHECK(KdcDevSelect("pack-2p:1p-normal:1:1"));
+    CHECK(!KdcPracticeSnapshotsAllowed());
+    CHECK(KdcCoursePackSelect(0u, 0u));
+    CHECK(!KdcPracticeSnapshotsAllowed());
+    CHECK(KdcDevSelect(NULL));
+    CHECK(!KdcCoursePackHasActive() && KdcPracticeSnapshotsAllowed());
     KdcCoursePacksSetEnabled(false);
     return 0;
 }

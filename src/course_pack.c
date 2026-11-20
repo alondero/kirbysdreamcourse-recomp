@@ -39,14 +39,19 @@ enum {
     kGdcExpandedMin = 0x140000u,
     kGdcPal1Base = 0xd4a9u,
     kGdcAnimPalBase = 0xa444u,
+    kUsaSoloMusicRomOffset = 0x49d5u, /* LoROM $80:C9D5..$80:CA14 */
+    kUsaSoloMusicBytes = 64u,
 };
 
 static KdcCoursePack packs[KDC_PACK_MAX_PACKS];
 static unsigned pack_count;
 static bool catalog_initialized;
 static bool directory_scanned;
+static char dropin_dir[1024];
 static bool menu_enabled;
 static bool cli_forced;
+static uint8_t usa_solo_music[kUsaSoloMusicBytes];
+static bool usa_solo_music_loaded;
 
 static bool active;
 static unsigned active_pack_index;
@@ -153,18 +158,30 @@ bool KdcHalDecompress(const uint8_t *src, size_t src_size,
     return false;
 }
 
-/* USA vanilla per-hole music table ($80:C9D5..$80:CA14) for 1P courses 0..7.
- * Extra 1P courses 8..15 reuse the exact same eight rows in $80:C99D. */
-static const uint8_t kUsaSoloMusic[8][8] = {
-    {0x89, 0x89, 0x89, 0x89, 0x85, 0x85, 0x85, 0x8b},
-    {0x84, 0x84, 0x84, 0x84, 0x84, 0x84, 0x84, 0x8b},
-    {0x89, 0x89, 0x89, 0x89, 0x89, 0x89, 0x89, 0x8b},
-    {0x8c, 0x8c, 0x8c, 0x8c, 0x8c, 0x8c, 0x8c, 0x8b},
-    {0x88, 0x88, 0x88, 0x88, 0x86, 0x86, 0x86, 0x8b},
-    {0x87, 0x87, 0x87, 0x87, 0x87, 0x87, 0x87, 0x8b},
-    {0x88, 0x88, 0x89, 0x89, 0x84, 0x84, 0x84, 0x8b},
-    {0x8a, 0x8a, 0x8a, 0x8a, 0x8a, 0x8a, 0x8a, 0x8b},
-};
+void KdcCoursePackSetRom(const uint8_t *rom, size_t rom_size)
+{
+    if (!rom || rom_size < kUsaSoloMusicRomOffset + kUsaSoloMusicBytes) {
+        usa_solo_music_loaded = false;
+        memset(usa_solo_music, 0, sizeof(usa_solo_music));
+        return;
+    }
+    memcpy(usa_solo_music, rom + kUsaSoloMusicRomOffset, kUsaSoloMusicBytes);
+    usa_solo_music_loaded = true;
+}
+
+bool KdcCoursePackResolveMusic(const KdcPackHole *hole, uint8_t *out_music_id)
+{
+    if (!hole || !out_music_id) return false;
+    if (hole->external) {
+        *out_music_id = hole->music_id;
+        return true;
+    }
+    if (!usa_solo_music_loaded) return false;
+    /* USA 1P courses 0..7 and Extra 1P courses 8..15 share the 64-byte table
+     * at $80:C9D5 (indexed by (course & 7) * 8 + hole == rom_map & 0x3F). */
+    *out_music_id = usa_solo_music[hole->rom_map & 0x3fu];
+    return true;
+}
 
 static bool AddBuiltinSoloPack(const char *id, const char *name,
                                const char *short_name, unsigned base_course)
@@ -183,7 +200,7 @@ static bool AddBuiltinSoloPack(const char *id, const char *name,
         for (unsigned h = 0; h < KDC_PACK_HOLES_PER_COURSE; ++h) {
             courses[c].holes[h].external = false;
             courses[c].holes[h].rom_map = (uint8_t)(rom_course * 8u + h);
-            courses[c].holes[h].music_id = kUsaSoloMusic[c][h];
+            courses[c].holes[h].music_id = 0u;
         }
     }
     KdcCoursePack *p = &packs[pack_count++];
@@ -215,6 +232,7 @@ void KdcCoursePacksResetCatalog(void)
     pack_count = 0;
     catalog_initialized = false;
     directory_scanned = false;
+    dropin_dir[0] = '\0';
     cli_forced = false;
     active = false;
     active_pack_index = 0;
@@ -409,6 +427,7 @@ bool KdcCoursePackLoadIpsMemory(const uint8_t *ips, size_t ips_size,
             hole->rom_map = 0u;
             hole->music_id = MapJpSongToUsa(img[kGdcMusicOffset + hid]);
 
+            size_t hole_cells = 0u;
             for (unsigned t = 0; t < KDC_PACK_STREAMS; ++t) {
                 uint32_t ptr = ReadLong24(img, kGdcTableBase + t * kGdcTableStride + hid * 3u);
                 uint32_t fo = 0u;
@@ -428,6 +447,7 @@ bool KdcCoursePackLoadIpsMemory(const uint8_t *ips, size_t ips_size,
                         valid = false;
                         break;
                     }
+                    hole_cells = (size_t)w * (size_t)ht;
                     hole->stream_offset[0] = fo - kGdcExpandedMin;
                     hole->stream_size[0] = 32u;
                 } else {
@@ -438,16 +458,20 @@ bool KdcCoursePackLoadIpsMemory(const uint8_t *ips, size_t ips_size,
                         valid = false;
                         break;
                     }
+                    if (t >= 1u && t <= 4u && dec_len != hole_cells) {
+                        valid = false;
+                        break;
+                    }
                     if (t == 1u) {
-                        for (size_t k = 0; k < dec_len; ++k)
+                        for (size_t k = 0; k < hole_cells; ++k)
                             if (scratch[k] >= 28u) { valid = false; break; }
                     } else if (t == 2u) {
                         bool has_tee = false;
-                        for (size_t k = 0; k < dec_len; ++k)
+                        for (size_t k = 0; k < hole_cells; ++k)
                             if (scratch[k] == 0x0cu || scratch[k] == 0xc3u) { has_tee = true; break; }
                         if (!has_tee) valid = false;
                     } else if (t == 3u) {
-                        for (size_t k = 0; k < dec_len; ++k)
+                        for (size_t k = 0; k < hole_cells; ++k)
                             if (scratch[k] >= 100u) { valid = false; break; }
                     }
                     if (!valid) break;
@@ -561,26 +585,41 @@ static int CompareStrings(const void *a, const void *b)
     return strcmp(*sa, *sb);
 }
 
+static bool PushName(char ***list, size_t *count, size_t *cap, const char *name)
+{
+    if (*count >= *cap) {
+        size_t next = *cap ? *cap * 2u : 32u;
+        char **grown = realloc(*list, next * sizeof(*grown));
+        if (!grown) return false;
+        *list = grown;
+        *cap = next;
+    }
+    size_t nlen = strlen(name) + 1u;
+    char *copy = malloc(nlen);
+    if (!copy) return false;
+    memcpy(copy, name, nlen);
+    (*list)[(*count)++] = copy;
+    return true;
+}
+
 void KdcCoursePacksScanDirectory(const char *dir_path)
 {
     EnsureBuiltins();
     if (!dir_path || !*dir_path) return;
 
-    char *names[KDC_PACK_MAX_PACKS];
-    unsigned found = 0u;
+    char **names = NULL;
+    size_t found = 0u, cap = 0u;
 
 #ifdef _WIN32
-    char pattern[512];
+    char pattern[1536];
     snprintf(pattern, sizeof(pattern), "%s\\*", dir_path);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
-            if (!HasIpsExtension(fd.cFileName) || found >= KDC_PACK_MAX_PACKS) continue;
-            size_t nlen = strlen(fd.cFileName) + 1u;
-            char *copy = malloc(nlen);
-            if (copy) { memcpy(copy, fd.cFileName, nlen); names[found++] = copy; }
+            if (!HasIpsExtension(fd.cFileName)) continue;
+            (void)PushName(&names, &found, &cap, fd.cFileName);
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }
@@ -589,24 +628,33 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
     if (dir) {
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL) {
-            if (!HasIpsExtension(ent->d_name) || found >= KDC_PACK_MAX_PACKS) continue;
-            size_t nlen = strlen(ent->d_name) + 1u;
-            char *copy = malloc(nlen);
-            if (copy) { memcpy(copy, ent->d_name, nlen); names[found++] = copy; }
+            if (!HasIpsExtension(ent->d_name)) continue;
+            (void)PushName(&names, &found, &cap, ent->d_name);
         }
         closedir(dir);
     }
 #endif
 
     if (found > 1u) qsort(names, found, sizeof(names[0]), CompareStrings);
-    for (unsigned i = 0; i < found; ++i) {
-        char full[640], err[160] = {0};
-        snprintf(full, sizeof(full), "%s/%s", dir_path, names[i]);
-        if (!KdcCoursePackLoadIpsFile(full, err, sizeof(err))) {
-            fprintf(stderr, "Ignored course file %s: %s\n", full, err);
+    for (size_t i = 0; i < found; ++i) {
+        if (pack_count < KDC_PACK_MAX_PACKS) {
+            char full[1536], err[160] = {0};
+            snprintf(full, sizeof(full), "%s/%s", dir_path, names[i]);
+            if (!KdcCoursePackLoadIpsFile(full, err, sizeof(err))) {
+                fprintf(stderr, "Ignored course file %s: %s\n", full, err);
+            }
         }
         free(names[i]);
     }
+    free(names);
+}
+
+void KdcCoursePacksSetDropinDir(const char *dir_path)
+{
+    if (dir_path && *dir_path)
+        snprintf(dropin_dir, sizeof(dropin_dir), "%s", dir_path);
+    else
+        dropin_dir[0] = '\0';
 }
 
 void KdcCoursePacksEnsureLoaded(void)
@@ -614,7 +662,7 @@ void KdcCoursePacksEnsureLoaded(void)
     EnsureBuiltins();
     if (directory_scanned) return;
     directory_scanned = true;
-    KdcCoursePacksScanDirectory("courses");
+    KdcCoursePacksScanDirectory(dropin_dir[0] ? dropin_dir : "courses");
 }
 
 bool KdcCoursePacksAddCliPath(const char *path)

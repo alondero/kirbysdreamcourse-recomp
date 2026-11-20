@@ -50,6 +50,7 @@ bool KdcHalDecompress(const uint8_t *src, size_t src_size,
 /* Catalog lifecycle: built-in 1P Normal/Extra packs plus optional external
  * IPS packs discovered in courses/ or supplied via --course-pack. */
 void KdcCoursePacksResetCatalog(void);
+void KdcCoursePacksSetDropinDir(const char *dir_path);
 void KdcCoursePacksEnsureLoaded(void);
 void KdcCoursePacksScanDirectory(const char *dir_path);
 bool KdcCoursePackLoadIpsMemory(const uint8_t *ips, size_t ips_size,
@@ -58,6 +59,8 @@ bool KdcCoursePackLoadIpsMemory(const uint8_t *ips, size_t ips_size,
 bool KdcCoursePackLoadIpsFile(const char *path,
                               char *error_buf, size_t error_size);
 bool KdcCoursePacksAddCliPath(const char *path);
+void KdcCoursePackSetRom(const uint8_t *rom, size_t rom_size);
+bool KdcCoursePackResolveMusic(const KdcPackHole *hole, uint8_t *out_music_id);
 
 unsigned KdcCoursePackCount(void);
 unsigned KdcCoursePackExternalCount(void);

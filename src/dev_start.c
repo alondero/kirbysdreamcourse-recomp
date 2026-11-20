@@ -228,3 +228,4 @@ int KdcDevSelect(const char *selector)
 }
 
 int KdcDevEnabled(void) { return target.enabled; }
+int KdcDevUsesCoursePack(void) { return target.enabled && target.has_pack; }

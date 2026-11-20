@@ -81,11 +81,15 @@ static void Observe(CpuState *cpu, uint32_t pc)
         (void)LoadExternalStream(pack, hole, 9u, ram + 0x19800u, 0x6800u);
         interp_bridge_pre_opcode_redirect(0x82b1c9u);
         break;
-    case 0x00c988u:
+    case 0x00c988u: {
         /* Per-hole music loader ($80:C988 -> JML $80B4AC at $80:C999). */
-        cpu->A = hole->music_id;
-        interp_bridge_pre_opcode_redirect(0x80c999u);
+        uint8_t music_id = 0u;
+        if (KdcCoursePackResolveMusic(hole, &music_id)) {
+            cpu->A = music_id;
+            interp_bridge_pre_opcode_redirect(0x80c999u);
+        }
         break;
+    }
     case 0x00d843u:
         /* Course palette 0..9 ($80:D8ED + pal * 0x20 -> JSL $8090E7). */
         cpu->A = (uint16_t)(0xd8edu + (unsigned)course->palette * 0x20u);

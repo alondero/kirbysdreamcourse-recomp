@@ -152,8 +152,12 @@ bool KdcPracticeVisible(void)
 }
 bool KdcPracticeSnapshotsAllowed(void)
 {
-    /* The CPU's private planning snapshot is restored within the same frame. */
-    return KdcCpuPlanning() || (!view.screen && !view.active);
+    /* The CPU's private planning snapshot is restored within the same frame.
+     * Keep custom course packs (including --dev-hole pack:*) out of ordinary
+     * save-state slots and rewind buffers. */
+    return KdcCpuPlanning() ||
+           (!view.screen && !view.active && !KdcCoursePackHasActive() &&
+            !KdcDevUsesCoursePack());
 }
 
 static unsigned Word(const uint8_t *ram, unsigned a)

@@ -78,6 +78,8 @@ static void initialize_bounce_log(void)
     if (initialized) return;
     initialized = 1;
     KdcInitializeSprites();
+    if (g_snes && g_snes->cart && g_snes->cart->rom)
+        KdcCoursePackSetRom(g_snes->cart->rom, g_snes->cart->romImageSize);
     KdcCoursePacksSetEnabled(KdcExtraCoursesEnabled());
     KdcCoursePackInitialize();
     KdcDevInitialize();

@@ -24,7 +24,9 @@ class CoursePackTest(unittest.TestCase):
                 str(root / 'src/course_pack_runtime.c'),
                 '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            scan_dir = Path(directory) / 'scan'
+            scan_dir.mkdir()
+            result = subprocess.run([str(exe), str(scan_dir)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
@@ -49,7 +51,7 @@ class CoursePackRuntimeTest(unittest.TestCase):
         return f'press {button} 2\nwait 12\n'
 
     def run_case(self, script, extra_args=None, enable_cfg=False, copy_gdc=False,
-                 bounce='1', frames=6500):
+                 bounce='1', frames=6500, run_cwd=None):
         with tempfile.TemporaryDirectory(prefix='course-pack-', dir=self.root / 'local') as directory:
             case = Path(directory)
             host = case / self.executable.name
@@ -78,12 +80,12 @@ class CoursePackRuntimeTest(unittest.TestCase):
                     '--script', str(case / 'input.script')]
             if extra_args:
                 args.extend(extra_args)
-            result = subprocess.run(args, cwd=case, env=env, capture_output=True,
+            result = subprocess.run(args, cwd=run_cwd or case, env=env, capture_output=True,
                                     text=True, errors='replace', timeout=180)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('script quit', result.stderr)
             files = {str(p.relative_to(case)).replace('\\', '/'): p.read_bytes()
-                     for p in case.rglob('*') if p.is_file() and p.suffix in ('.bin', '.srm')}
+                     for p in case.rglob('*') if p.is_file() and p.suffix in ('.bin', '.srm', '.sav')}
             return files, result.stderr
 
     def test_solo_course_in_1p_vs_cpu(self):
@@ -193,4 +195,89 @@ class CoursePackRuntimeTest(unittest.TestCase):
         self.assertEqual(word(cfiles['after.wram.bin'], 0x1803), 0, 'CPU must finish turn and return control to P1')
         self.assertNotEqual(cfiles['before.wram.bin'][0xd8ac:0xd8bc],
                             cfiles['after.wram.bin'][0xd8ac:0xd8bc])
+
+    def test_dev_hole_pack_blocks_savestates_and_discovers_exe_dir(self):
+        if not self.gdc_ips or not self.gdc_ips.is_file():
+            self.skipTest('Set KDC_TEST_GDC_IPS to a local GrumpsDreamCourse[1.01].ips')
+        word = lambda b, a: int.from_bytes(b[a:a + 2], 'little')
+        # 1. Custom --dev-hole pack-2p must block scripted save-state writes.
+        files, _ = self.run_case('wait 600\nsavestate 5\nwait 10\ndump loaded\n',
+                                 extra_args=['--course-pack', str(self.gdc_ips),
+                                             '--dev-hole', 'pack-2p:gdc:1:1'],
+                                 frames=1000)
+        self.assertNotIn('saves/save5.sav', files)
+        self.assertEqual(word(files['loaded.wram.bin'], 0x8b92), 10)
+
+        # 2. Launching from a sibling directory must discover courses/ beside
+        #    the executable AND keep explicit --course-pack relative to caller.
+        with tempfile.TemporaryDirectory(prefix='course-sibling-', dir=self.root / 'local') as sib:
+            sibling = Path(sib)
+            sib_files, sib_log = self.run_case(
+                'wait 600\ndump loaded\n',
+                extra_args=['--dev-hole', 'pack:gdc:1:1'],
+                copy_gdc=True, frames=1000, run_cwd=sibling)
+            self.assertIn('Course pack loaded', sib_log)
+            self.assertEqual(word(sib_files['loaded.wram.bin'], 0x8b92), 10)
+            self.assertEqual(word(sib_files['loaded.wram.bin'], 0x8b94), 10)
+
+            local_ips = sibling / 'caller_gdc.ips'
+            shutil.copy2(self.gdc_ips, local_ips)
+            rel_files, rel_log = self.run_case(
+                'wait 600\ndump loaded\n',
+                extra_args=['--course-pack', 'caller_gdc.ips',
+                            '--dev-hole', 'pack:gdc:19:8'],
+                copy_gdc=False, frames=1000, run_cwd=sibling)
+            self.assertIn('Course pack loaded', rel_log)
+            self.assertEqual(word(rel_files['loaded.wram.bin'], 0x8b92), 13)
+            self.assertEqual(word(rel_files['loaded.wram.bin'], 0x8b94), 31)
+
+    def test_custom_2p_full_eight_hole_progression_and_finale(self):
+        if not self.gdc_ips or not self.gdc_ips.is_file():
+            self.skipTest('Set KDC_TEST_GDC_IPS to a local GrumpsDreamCourse[1.01].ips')
+        tap = self.tap
+        # Deterministic 8-hole progression and 2P finale transition replay on
+        # Grump's Dream Course Course 1 (Danny's Woods): exercises every hole
+        # load (holes 1..8), the 2P scoreboard/progression loop ($80:F48C..F4F0),
+        # the 2P course finale ($80:F53C), return to $83:D518 (reopening the
+        # custom picker), and B exit back to the ordinary title menu.
+        script = (
+            'wait 500\n' + tap('start') + 'wait 120\n' +
+            'dump ordinary\n' +
+            tap('down') + tap('a') + 'wait 90\n' +
+            tap('down') + tap('a') + 'wait 30\n' +
+            tap('right') * 2 + tap('a') +
+            tap('a') + tap('a') +
+            'wait 300\n' + tap('a') + 'wait 90\n' + tap('a') +
+            'wait 350\n' + (tap('down') + 'wait 20\n') * 3 + tap('a') +
+            'forcepoke da4a 0100\nforcepoke d876 01000100\n'
+            'forcepoke d956 01000100\nforcepoke ecbb 80008000\n'
+        )
+        for h in range(8):
+            script += f'until16 6a5e == {h:04x} 4000\nwait 40\ndump hole_{h}\n'
+            if h < 7:
+                script += 'wait 950\n' + (tap('a') + 'wait 40\n') * 8
+            else:
+                # Clear the 2P finale into $83:D518 without advancing past the
+                # reopened picker, then exit to the ordinary title menu with B.
+                script += 'wait 1200\n' + (tap('a') + 'wait 60\n') * 12 + 'wait 300\n' + tap('b') + 'wait 180\ndump title\n'
+        files, log = self.run_case(script, enable_cfg=True, copy_gdc=True, frames=25000)
+        word = lambda b, a: int.from_bytes(b[a:a + 2], 'little')
+        expected_dims = [
+            (10, 10), (10, 10), (15, 8), (13, 13),
+            (14, 14), (12, 14), (20, 20), (15, 15),
+        ]
+        for h, (exp_w, exp_h) in enumerate(expected_dims):
+            ram = files[f'hole_{h}.wram.bin']
+            self.assertEqual(word(ram, 0x6a5e), h)
+            self.assertEqual(word(ram, 0x6a5a), 16)
+            self.assertEqual(word(ram, 0x8b92), exp_w)
+            self.assertEqual(word(ram, 0x8b94), exp_h)
+        self.assertIn("Custom 2P: GRUMP'S DREAM / DANNY'S WOODS", log)
+        self.assertIn('Custom 2P: returned to course picker', log)
+        self.assertIn('Custom 2P: returned to ordinary title', log)
+        self.assertEqual(files['ordinary.sram.bin'], files['title.sram.bin'])
+        self.assertEqual(files['ordinary.sram.bin'], files['saves/save.srm'])
+        self.assertIn('saves/custom/save.srm', files)
+
+
 
