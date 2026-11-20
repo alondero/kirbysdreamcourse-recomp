@@ -26,7 +26,13 @@ class CoursePackTest(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             scan_dir = Path(directory) / 'scan'
             scan_dir.mkdir()
-            result = subprocess.run([str(exe), str(scan_dir)], capture_output=True, text=True)
+            (scan_dir / 'subdir.ips').mkdir()
+            run_args = [str(exe), str(scan_dir)]
+            if hasattr(os, 'mkfifo'):
+                fifo = scan_dir / '00_pipe.ips'
+                os.mkfifo(fifo)
+                run_args.append(str(fifo))
+            result = subprocess.run(run_args, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
@@ -51,13 +57,13 @@ class CoursePackRuntimeTest(unittest.TestCase):
         return f'press {button} 2\nwait 12\n'
 
     def run_case(self, script, extra_args=None, enable_cfg=False, copy_gdc=False,
-                 bounce='1', frames=6500, run_cwd=None):
+                 bounce='1', frames=6500, run_cwd=None, seed_sram=None):
         with tempfile.TemporaryDirectory(prefix='course-pack-', dir=self.root / 'local') as directory:
             case = Path(directory)
             host = case / self.executable.name
             shutil.copy2(self.executable, host)
             (case / 'saves').mkdir()
-            (case / 'saves/save.srm').write_bytes(bytes(8192))
+            (case / 'saves/save.srm').write_bytes(seed_sram if seed_sram is not None else bytes(8192))
             if enable_cfg:
                 (case / 'kdc-courses.cfg').write_text('1\n', encoding='ascii')
             if copy_gdc and self.gdc_ips and self.gdc_ips.is_file():
@@ -278,6 +284,61 @@ class CoursePackRuntimeTest(unittest.TestCase):
         self.assertEqual(files['ordinary.sram.bin'], files['title.sram.bin'])
         self.assertEqual(files['ordinary.sram.bin'], files['saves/save.srm'])
         self.assertIn('saves/custom/save.srm', files)
+
+    def test_dev_hole_pack_isolates_sram_and_preserves_ps1_catalog(self):
+        if not self.gdc_ips or not self.gdc_ips.is_file():
+            self.skipTest('Set KDC_TEST_GDC_IPS to a local GrumpsDreamCourse[1.01].ips')
+        tap = self.tap
+        # 1. Direct --dev-hole pack-2p:gdc:1:8 driven through the 2P finale must
+        #    write battery changes to saves/custom/save.srm and leave ordinary
+        #    saves/save.srm byte-identical.
+        seeded = bytes([0xa5]) * 8192
+        finale_script = (
+            'wait 80\n'
+            'forcepoke da4a 0100\nforcepoke d876 01000100\n'
+            'forcepoke d956 01000100\nforcepoke ecbb 80008000\n'
+            'wait 1200\n' + (tap('a') + 'wait 60\n') * 12 + 'wait 120\n'
+            'dump post_finale\n'
+        )
+        files, _ = self.run_case(
+            finale_script,
+            extra_args=['--course-pack', str(self.gdc_ips),
+                        '--dev-hole', 'pack-2p:gdc:1:8'],
+            frames=4000, seed_sram=seeded)
+        self.assertEqual(files['saves/save.srm'], seeded)
+        self.assertIn('saves/custom/save.srm', files)
+        self.assertNotEqual(files['saves/custom/save.srm'], seeded)
+
+        # 2. tools/play_experimental.ps1 -Executable <install> -DevHole pack-2p:gdc:1:1
+        #    must preserve drop-in catalog discovery from <install>/courses while
+        #    keeping <install>/saves untouched.
+        if os.name == 'nt':
+            with tempfile.TemporaryDirectory(prefix='ps1-install-', dir=self.root / 'local') as inst:
+                install_dir = Path(inst)
+                inst_exe = install_dir / self.executable.name
+                shutil.copy2(self.executable, inst_exe)
+                (install_dir / 'courses').mkdir()
+                shutil.copy2(self.gdc_ips, install_dir / 'courses' / self.gdc_ips.name)
+                (install_dir / 'saves').mkdir()
+                (install_dir / 'saves/save.srm').write_bytes(seeded)
+                env = {k: v for k, v in os.environ.items()
+                       if not k.startswith(('SNESRECOMP_', 'KDC_', 'SDL_', 'LNG_'))}
+                env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+                res = subprocess.run([
+                    'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', str(self.root / 'tools/play_experimental.ps1'),
+                    '-Rom', str(self.rom),
+                    '-Executable', str(inst_exe),
+                    '-DevHole', 'pack-2p:gdc:1:1',
+                    '-Frames', '120',
+                ], cwd=self.root, env=env, capture_output=True, text=True,
+                   errors='replace', timeout=120)
+                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                combined = res.stdout + res.stderr
+                self.assertIn('Course pack loaded', combined)
+                self.assertIn("GRUMP'S DREAM", combined)
+                self.assertEqual((install_dir / 'saves/save.srm').read_bytes(), seeded)
+
 
 
 

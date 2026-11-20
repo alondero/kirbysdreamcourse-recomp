@@ -27,6 +27,7 @@ static void Help(void)
          "  --dev-hole map:ID                     Raw ROM map slot 0-255\n"
          "  --dev-two-player                      Two players with map:ID\n"
          "  --course-pack PATH                    Load an external IPS course pack\n"
+         "  --course-pack-dir PATH                Override drop-in courses/ directory\n"
          "  --dev-hole-list                       Show this help\n"
          "Raw slots include demo/unused data and aliases; some may be incomplete.\n"
          "Use an isolated saves directory for developer sessions.");
@@ -114,10 +115,14 @@ int KdcDevParseArgs(int *argc, char **argv)
 {
     int write = 1, two_player = 0;
     target = (DevStart){0};
-    /* Pass 1: load any explicit --course-pack arguments first so --dev-hole
-     * pack:... can reference them regardless of flag ordering. */
+    /* Pass 1: apply any drop-in directory override and load explicit
+     * --course-pack arguments first so --dev-hole pack:... can reference them
+     * regardless of flag ordering. */
     for (int read = 1; read < *argc; ++read) {
-        if (!strcmp(argv[read], "--course-pack")) {
+        if (!strcmp(argv[read], "--course-pack-dir")) {
+            if (++read == *argc || !argv[read][0]) goto invalid;
+            KdcCoursePacksSetDropinDir(argv[read]);
+        } else if (!strcmp(argv[read], "--course-pack")) {
             if (++read == *argc || !KdcCoursePacksAddCliPath(argv[read]))
                 goto invalid;
         }
@@ -125,7 +130,8 @@ int KdcDevParseArgs(int *argc, char **argv)
     /* Pass 2: parse remaining developer flags and compact argv. */
     for (int read = 1; read < *argc; ++read) {
         if (!strcmp(argv[read], "--dev-hole-list")) { Help(); return 1; }
-        if (!strcmp(argv[read], "--course-pack")) {
+        if (!strcmp(argv[read], "--course-pack") ||
+            !strcmp(argv[read], "--course-pack-dir")) {
             ++read; /* already handled in pass 1 */
         } else if (!strcmp(argv[read], "--dev-two-player")) {
             if (two_player) goto invalid;

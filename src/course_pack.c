@@ -23,6 +23,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <sys/stat.h>
 #endif
 
 enum {
@@ -533,6 +534,20 @@ bool KdcCoursePackLoadIpsFile(const char *path, char *error_buf, size_t error_si
         SetError(error_buf, error_size, "Missing IPS file path.");
         return false;
     }
+#ifdef _WIN32
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES ||
+        (attrs & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) != 0) {
+        SetError(error_buf, error_size, "IPS path is not a regular file.");
+        return false;
+    }
+#else
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+        SetError(error_buf, error_size, "IPS path is not a regular file.");
+        return false;
+    }
+#endif
     FILE *file = fopen(path, "rb");
     if (!file) {
         SetError(error_buf, error_size, "Could not open IPS file.");
@@ -612,16 +627,19 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
 
 #ifdef _WIN32
     char pattern[1536];
-    snprintf(pattern, sizeof(pattern), "%s\\*", dir_path);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
-            if (!HasIpsExtension(fd.cFileName)) continue;
-            (void)PushName(&names, &found, &cap, fd.cFileName);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
+    int plen = snprintf(pattern, sizeof(pattern), "%s\\*", dir_path);
+    if (plen > 0 && (size_t)plen < sizeof(pattern)) {
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if ((fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) != 0)
+                    continue;
+                if (!HasIpsExtension(fd.cFileName)) continue;
+                (void)PushName(&names, &found, &cap, fd.cFileName);
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
     }
 #else
     DIR *dir = opendir(dir_path);
@@ -629,6 +647,11 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL) {
             if (!HasIpsExtension(ent->d_name)) continue;
+            char probe[1536];
+            int n = snprintf(probe, sizeof(probe), "%s/%s", dir_path, ent->d_name);
+            if (n < 0 || (size_t)n >= sizeof(probe)) continue;
+            struct stat st;
+            if (stat(probe, &st) != 0 || !S_ISREG(st.st_mode)) continue;
             (void)PushName(&names, &found, &cap, ent->d_name);
         }
         closedir(dir);
@@ -639,8 +662,9 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
     for (size_t i = 0; i < found; ++i) {
         if (pack_count < KDC_PACK_MAX_PACKS) {
             char full[1536], err[160] = {0};
-            snprintf(full, sizeof(full), "%s/%s", dir_path, names[i]);
-            if (!KdcCoursePackLoadIpsFile(full, err, sizeof(err))) {
+            int n = snprintf(full, sizeof(full), "%s/%s", dir_path, names[i]);
+            if (n > 0 && (size_t)n < sizeof(full) &&
+                !KdcCoursePackLoadIpsFile(full, err, sizeof(err))) {
                 fprintf(stderr, "Ignored course file %s: %s\n", full, err);
             }
         }

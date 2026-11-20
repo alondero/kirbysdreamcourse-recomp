@@ -26,6 +26,7 @@
  */
 
 #include "host_main.h"
+#include "common_rtl.h"
 #include "game_rtl.h"
 #include "launcher_settings.h"
 #include "transitions.h"
@@ -105,6 +106,12 @@ static const char *ValidateRomPath(const char *path)
 static void OnRomLoaded(const uint8_t *rom, size_t size)
 {
     KdcCoursePackSetRom(rom, size);
+    if (KdcDevUsesCoursePack()) {
+        /* Isolate direct CLI custom-pack starts (--dev-hole pack:*) from the
+         * ordinary battery image before RtlReadSram / RtlWriteSram run. */
+        RtlSetSaveRoot("saves/custom");
+        RtlSetQuickSaveRoot(NULL);
+    }
 }
 
 static void BeforePresentationFrame(void)

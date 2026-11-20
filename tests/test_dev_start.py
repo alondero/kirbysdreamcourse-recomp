@@ -41,10 +41,12 @@ class DevStartTest(unittest.TestCase):
                     result = subprocess.run([str(exe), 'parse', '--dev-hole', target], capture_output=True)
                     self.assertEqual(result.returncode, 2)
             for args in (['--dev-hole'], ['--dev-two-player'],
+                         ['--course-pack-dir'], ['--course-pack-dir', ''],
                          ['--dev-hole', 'normal:1:1', '--dev-two-player'],
                          ['--dev-hole', 'map:1', '--dev-hole', 'map:2']):
                 self.assertEqual(subprocess.run([str(exe), 'parse', *args], capture_output=True).returncode, 2)
-            result = subprocess.run([str(exe), 'parse', '--rom', 'input.sfc', '--no-launcher'],
+            result = subprocess.run([str(exe), 'parse', '--course-pack-dir', 'custom_dir',
+                                     '--rom', 'input.sfc', '--no-launcher'],
                                     capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.splitlines(), ['--rom', 'input.sfc', '--no-launcher'])
 

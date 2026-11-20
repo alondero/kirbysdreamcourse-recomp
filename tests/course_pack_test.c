@@ -272,6 +272,11 @@ int main(int argc, char **argv)
         KdcCoursePacksEnsureLoaded();
         CHECK(KdcCoursePackCount() == 3u && KdcCoursePackExternalCount() == 1u);
         CHECK(KdcCoursePackFindById("gdc") == 2);
+        /* Direct load of a non-regular path (e.g. a directory or FIFO) must fail cleanly. */
+        CHECK(!KdcCoursePackLoadIpsFile(argv[1], err, sizeof(err)));
+        if (argc >= 3 && argv[2][0]) {
+            CHECK(!KdcCoursePackLoadIpsFile(argv[2], err, sizeof(err)));
+        }
 
         KdcCoursePacksResetCatalog();
         CHECK(KdcCoursePackCount() == 2u && KdcCoursePackExternalCount() == 0u);

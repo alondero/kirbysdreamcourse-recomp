@@ -51,18 +51,22 @@ enable the 19 custom courses (152 holes) from **Grump's Dream Course**:
   the Japanese ROM, those cosmetic assets are not applied. The 19 courses (152
   holes) play with the USA ROM's Kirby/Keeby sprites, vanilla scenery themes,
   authentic vanilla palette assignments and mapped vanilla hole music.
-- Custom 2P matches isolate battery writes into `saves/custom/save.srm` (or
-  `saves/cpu/save.srm` for 1P vs CPU) and restore ordinary SRAM byte-for-byte
-  on exit. Save states and rewind remain disabled during custom sessions and
-  custom `--dev-hole pack:*` / `pack-2p:*` starts.
+- Custom 2P matches and direct `--dev-hole pack:*` / `pack-2p:*` starts
+  isolate battery writes into `saves/custom/save.srm` (or `saves/cpu/save.srm`
+  for 1P vs CPU) and leave ordinary `saves/save.srm` untouched. Save states and
+  rewind remain disabled during custom sessions and custom developer starts.
 - Built-in 1P courses in 2P read the USA solo music table (`$80:C9D5..$80:CA14`)
   from the verified runtime ROM rather than storing ROM tables in source.
 - Drop-in packs are discovered from `courses/` beside the executable (independent
-  of the caller's working directory), while explicit `--course-pack PATH`
-  arguments resolve relative to the caller's working directory. All `.ips`
-  candidates are sorted and validated structurally (including exact
-  `width × height` lengths for gameplay planes 1–4 and a tee within the grid);
-  rejected files do not consume catalog capacity.
+  of the caller's working directory; `--course-pack-dir PATH` overrides this
+  directory, which `tools/play_experimental.ps1` uses to preserve the selected
+  install's catalog while isolating `local/dev-play/saves`), while explicit
+  `--course-pack PATH` arguments resolve relative to the caller's working
+  directory. Non-regular files (directories, named pipes/FIFOs, devices) are
+  skipped before opening. All regular `.ips` candidates are sorted and
+  validated structurally (including exact `width × height` lengths for gameplay
+  planes 1–4 and a tee within the grid); rejected files do not consume catalog
+  capacity.
 
 ## USA integration evidence
 
