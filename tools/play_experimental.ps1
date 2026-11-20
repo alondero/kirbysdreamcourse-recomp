@@ -6,6 +6,7 @@ param(
     [string]$DevHole = '',
     [switch]$DevTwoPlayer,
     [switch]$DevHoleList,
+    [string]$CoursePack = '',
     [ValidateRange(0, 2147483647)][int]$Frames = 0
 )
 
@@ -46,7 +47,8 @@ if ($DevHole) {
         }
         foreach ($name in @('config.ini', 'keybinds.ini', 'kdc-hd.cfg',
                            'kdc-presentation.cfg', 'kdc-hud.cfg',
-                           'kdc-widescreen.cfg', 'kdc-camera.cfg', 'kdc-transitions.cfg')) {
+                           'kdc-widescreen.cfg', 'kdc-camera.cfg', 'kdc-transitions.cfg',
+                           'kdc-courses.cfg')) {
             $source = Join-Path $sourceDirectory $name
             $destination = Join-Path $devDirectory $name
             if ((Test-Path -LiteralPath $source) -and -not (Test-Path -LiteralPath $destination)) {
@@ -75,6 +77,7 @@ try {
     Push-Location -LiteralPath $fallbackDir
     try {
         $hostArgs = @('--rom', $romPath)
+        if ($CoursePack) { $hostArgs += @('--course-pack', (Resolve-ProjectPath $CoursePack)) }
         if ($NoLauncher -or $Frames -gt 0 -or $DevHole) { $hostArgs += '--no-launcher' }
         if ($DevHole) { $hostArgs += @('--dev-hole', $DevHole) }
         if ($DevTwoPlayer) { $hostArgs += '--dev-two-player' }

@@ -19,6 +19,7 @@ class DevStartTest(unittest.TestCase):
             subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
                             '-I', str(root / 'src'), '-I', str(framework / 'runner/src'),
                             str(root / 'tests/dev_start_test.c'), str(root / 'src/dev_start.c'),
+                            str(root / 'src/course_pack.c'),
                             '-o', str(exe)], check=True, capture_output=True)
             for target, map_id, course, players in (
                     ('normal:8:8', 63, 7, 0), ('extra:8:8', 127, 15, 0),

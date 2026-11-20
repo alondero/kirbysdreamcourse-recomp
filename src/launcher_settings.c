@@ -2,6 +2,7 @@
  * Keep the existing config.ini setting authoritative, including old installs.
  */
 #include "launcher_settings.h"
+#include "course_pack.h"
 #include "recomp_launcher.h"
 #include "common/sha256.h"
 
@@ -19,6 +20,7 @@ typedef struct {
     int pending_high_refresh, pending_rate;
     int pending_hd;
     int pending_transitions;
+    int pending_extra_courses;
     const char *expected_rom_hash;
     const char *last_error;
 } KdcLauncherSettingsState;
@@ -75,6 +77,25 @@ static int IsHighRefresh(const char *package, const char *feature)
 
 static int hd = -1;
 static int transitions = -1;
+static int extra_courses = -1;
+
+bool KdcExtraCoursesEnabled(void)
+{
+    if (extra_courses < 0) {
+        FILE *file = fopen("kdc-courses.cfg", "r");
+        int value = file ? fgetc(file) : '0';
+        if (file) fclose(file);
+        extra_courses = value == '1';
+        KdcCoursePacksSetEnabled(extra_courses != 0);
+    }
+    return extra_courses != 0;
+}
+
+static int IsExtraCourses(const char *package, const char *feature)
+{
+    return package && feature && !strcmp(package, "kdc.presentation") &&
+           !strcmp(feature, "extra-courses");
+}
 
 bool KdcFasterTransitionsEnabled(void)
 {
@@ -159,7 +180,7 @@ static int Count(void *ctx)
 static int FeatureCount(void *ctx)
 {
     (void)ctx;
-    return 5;
+    return 6;
 }
 
 static int IsOrbit(const char *package, const char *feature)
@@ -184,14 +205,15 @@ static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
     snprintf(out->name, sizeof(out->name), "Kirby's Dream Course presentation");
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
     out->enabled = state->pending_widescreen || state->pending_orbit ||
-                   state->pending_high_refresh || state->pending_hd || state->pending_transitions;
+                   state->pending_high_refresh || state->pending_hd ||
+                   state->pending_transitions || state->pending_extra_courses;
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
     const KdcLauncherSettingsState *state = ctx;
-    if (index < 0 || index >= 5 || !out) return 0;
+    if (index < 0 || index >= 6 || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
@@ -225,6 +247,13 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
                  "new games only. Gameplay retains its original speed.");
         out->enabled = state->pending_transitions;
         out->option_count = 0;
+    } else if (index == 5) {
+        snprintf(out->id, sizeof(out->id), "extra-courses");
+        snprintf(out->name, sizeof(out->name), "Extra 2P courses");
+        snprintf(out->group, sizeof(out->group), "Gameplay");
+        KdcCoursePacksDescribeStatus(out->description, sizeof(out->description));
+        out->enabled = state->pending_extra_courses;
+        out->option_count = 0;
     } else if (index == 3) {
         snprintf(out->id, sizeof(out->id), "hd_textures");
         snprintf(out->name, sizeof(out->name), "HD textures");
@@ -252,6 +281,10 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 static int EnableFeature(void *ctx, const char *package, const char *feature, int enabled)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsExtraCourses(package, feature)) {
+        state->pending_extra_courses = enabled != 0;
+        return 1;
+    }
     if (IsTransitions(package, feature)) {
         state->pending_transitions = enabled != 0;
         return 1;
@@ -452,6 +485,14 @@ static int Commit(void *ctx, const char *rom)
         if (!ok) { state->last_error = "Could not save transition settings."; return 0; }
         transitions = state->pending_transitions;
     }
+    if (state->pending_extra_courses != KdcExtraCoursesEnabled()) {
+        FILE *file = fopen("kdc-courses.cfg", "w");
+        int ok = file && fprintf(file, "%d\n", state->pending_extra_courses) > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) { state->last_error = "Could not save extra course settings."; return 0; }
+        extra_courses = state->pending_extra_courses;
+        KdcCoursePacksSetEnabled(extra_courses != 0);
+    }
     *state->widescreen = state->pending_widescreen != 0;
     return 1;
 }
@@ -492,6 +533,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .pending_rate = rate,
         .pending_hd = KdcHdTexturesEnabled(),
         .pending_transitions = KdcFasterTransitionsEnabled(),
+        .pending_extra_courses = KdcExtraCoursesEnabled(),
         .expected_rom_hash = rom_sha256,
     };
     return &provider;

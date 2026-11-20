@@ -16,6 +16,7 @@ int main(int argc, char **argv)
     CHECK(argc == 5 || argc == 6 || argc == 7);
     if (argc == 7) {
         CHECK(KdcFasterTransitionsEnabled());
+        CHECK(KdcExtraCoursesEnabled());
         CHECK(KdcWidescreenAspect() == 2);
         CHECK(KdcHudEdges());
         CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
@@ -58,7 +59,13 @@ int main(int argc, char **argv)
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "unknown"));
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "edges"));
     CHECK(!KdcHudEdges());
-    CHECK(provider->feature_count(provider->ctx) == 5);
+    CHECK(provider->feature_count(provider->ctx) == 6);
+    CHECK(!KdcExtraCoursesEnabled());
+    CHECK(provider->feature_get(provider->ctx, 5, &feature));
+    CHECK(!strcmp(feature.id, "extra-courses") && !feature.enabled && !feature.option_count);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "extra-courses", 1));
+    CHECK(!KdcExtraCoursesEnabled());
     CHECK(!KdcFasterTransitionsEnabled());
     CHECK(provider->feature_get(provider->ctx, 4, &feature));
     CHECK(!strcmp(feature.id, "faster-transitions") && !feature.enabled && !feature.option_count);
@@ -99,7 +106,7 @@ int main(int argc, char **argv)
     CHECK(!KdcHdTexturesEnabled()); /* off by default */
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
     CHECK(!KdcHdTexturesEnabled()); /* staged, not applied */
-    CHECK(!provider->feature_get(provider->ctx, 5, &feature));
+    CHECK(!provider->feature_get(provider->ctx, 6, &feature));
     CHECK(!provider->feature_get(provider->ctx, 0, NULL));
     CHECK(!provider->feature_enable(provider->ctx, "foreign", "widescreen", 1));
     CHECK(!provider->feature_enable(provider->ctx, NULL, NULL, 1));
@@ -110,6 +117,8 @@ int main(int argc, char **argv)
     CHECK(!widescreen);
     CHECK(KdcWidescreenAspect() == 0);
     provider = KdcLauncherSettings(&widescreen, hash);
+    CHECK(provider->feature_get(provider->ctx, 5, &feature));
+    CHECK(!feature.enabled); /* dismissed extra-courses edit */
     CHECK(provider->feature_get(provider->ctx, 4, &feature));
     CHECK(!feature.enabled); /* dismissed transition edit */
     CHECK(provider->feature_get(provider->ctx, 1, &feature));
@@ -165,5 +174,8 @@ int main(int argc, char **argv)
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "faster-transitions", 1));
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(KdcFasterTransitionsEnabled());
+    CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "extra-courses", 1));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcExtraCoursesEnabled());
     return 0;
 }

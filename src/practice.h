@@ -5,10 +5,11 @@
 #include <stdint.h>
 struct Ppu;
 typedef struct {
-    int screen; /* 0: game, 1: hole picker, 2: session pause */
+    int screen; /* 0: game, 1: hole picker, 2: session pause, 3: 2P/CPU extra course picker */
     int row, mode, course, hole, ability;
-    int cpu; /* 0: practice, 1..3: CPU match difficulty (original 2P menus) */
-    bool active, title, title_background;
+    int pack, pack_course; /* screen 3 selection into KdcCoursePack */
+    int cpu; /* 0: practice or 2P human, 1..3: CPU match difficulty */
+    bool active, title, title_background, custom_match;
     const char *error;
 } KdcPracticeView;
 enum { KDC_PRACTICE_ABILITIES = 11 };

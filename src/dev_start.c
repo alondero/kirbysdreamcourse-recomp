@@ -1,4 +1,5 @@
 #include "dev_start.h"
+#include "course_pack.h"
 #include "cpu_state.h"
 #include "snes/interp_bridge.h"
 #include <stdio.h>
@@ -6,8 +7,8 @@
 #include <string.h>
 
 typedef struct {
-    unsigned course, hole, map;
-    int enabled, raw, multiplayer, extra;
+    unsigned course, hole, map, pack, pack_course;
+    int enabled, raw, multiplayer, extra, has_pack;
 } DevStart;
 
 static DevStart target;
@@ -16,14 +17,17 @@ static int pending;
 static void Help(void)
 {
     puts("Developer hole start (course/hole numbers are 1-based):\n"
-         "  --dev-hole normal:COURSE:HOLE       Courses 1-8, holes 1-8\n"
-         "  --dev-hole extra:COURSE:HOLE        Extra courses 1-8\n"
-         "  --dev-hole multi:COURSE:HOLE        Two-player courses 1-4\n"
-         "  --dev-hole multi-extra:COURSE:HOLE  Extra two-player courses 1-4\n"
-         "  --dev-hole demo:NUMBER              Attract-mode holes 1-4 (playable)\n"
-         "  --dev-hole map:ID                   Raw ROM map slot 0-255\n"
-         "  --dev-two-player                    Two players with map:ID\n"
-         "  --dev-hole-list                     Show this help\n"
+         "  --dev-hole normal:COURSE:HOLE         Courses 1-8, holes 1-8\n"
+         "  --dev-hole extra:COURSE:HOLE          Extra courses 1-8\n"
+         "  --dev-hole multi:COURSE:HOLE          Two-player courses 1-4\n"
+         "  --dev-hole multi-extra:COURSE:HOLE    Extra two-player courses 1-4\n"
+         "  --dev-hole pack:ID:COURSE:HOLE        Course pack hole (1P context)\n"
+         "  --dev-hole pack-2p:ID:COURSE:HOLE     Course pack hole (2P context)\n"
+         "  --dev-hole demo:NUMBER                Attract-mode holes 1-4 (playable)\n"
+         "  --dev-hole map:ID                     Raw ROM map slot 0-255\n"
+         "  --dev-two-player                      Two players with map:ID\n"
+         "  --course-pack PATH                    Load an external IPS course pack\n"
+         "  --dev-hole-list                       Show this help\n"
          "Raw slots include demo/unused data and aliases; some may be incomplete.\n"
          "Use an isolated saves directory for developer sessions.");
 }
@@ -60,6 +64,31 @@ static int ParseTarget(const char *text, DevStart *out)
         result.course = result.map / 8;
         result.hole = result.map % 8;
         result.extra = result.course >= 8;
+    } else if ((length == 4 && !strncmp(text, "pack", length)) ||
+               (length == 7 && !strncmp(text, "pack-2p", length))) {
+        const char *sep = strchr(numbers, ':');
+        if (!sep || sep == numbers || (size_t)(sep - numbers) >= 24u) return 0;
+        char pack_id[24];
+        memcpy(pack_id, numbers, (size_t)(sep - numbers));
+        pack_id[sep - numbers] = '\0';
+        KdcCoursePacksEnsureLoaded();
+        int pidx = KdcCoursePackFindById(pack_id);
+        if (pidx < 0) return 0;
+        const KdcCoursePack *pack = KdcCoursePackGet((unsigned)pidx);
+        if (!pack || !pack->course_count) return 0;
+        numbers = sep + 1;
+        unsigned course, hole;
+        if (!Number(&numbers, &course) || *numbers++ != ':' ||
+            !Number(&numbers, &hole) || *numbers || course < 1 ||
+            course > pack->course_count || hole < 1 || hole > 8)
+            return 0;
+        result.has_pack = 1;
+        result.pack = (unsigned)pidx;
+        result.pack_course = course - 1;
+        result.multiplayer = length == 7;
+        result.course = result.multiplayer ? 16u : 0u;
+        result.hole = hole - 1;
+        result.map = result.course * 8 + result.hole;
     } else {
         if (length == 6 && !strncmp(text, "normal", length)) { }
         else if (length == 5 && !strncmp(text, "extra", length)) result.extra = 1;
@@ -85,9 +114,20 @@ int KdcDevParseArgs(int *argc, char **argv)
 {
     int write = 1, two_player = 0;
     target = (DevStart){0};
+    /* Pass 1: load any explicit --course-pack arguments first so --dev-hole
+     * pack:... can reference them regardless of flag ordering. */
+    for (int read = 1; read < *argc; ++read) {
+        if (!strcmp(argv[read], "--course-pack")) {
+            if (++read == *argc || !KdcCoursePacksAddCliPath(argv[read]))
+                goto invalid;
+        }
+    }
+    /* Pass 2: parse remaining developer flags and compact argv. */
     for (int read = 1; read < *argc; ++read) {
         if (!strcmp(argv[read], "--dev-hole-list")) { Help(); return 1; }
-        if (!strcmp(argv[read], "--dev-two-player")) {
+        if (!strcmp(argv[read], "--course-pack")) {
+            ++read; /* already handled in pass 1 */
+        } else if (!strcmp(argv[read], "--dev-two-player")) {
             if (two_player) goto invalid;
             two_player = 1;
         } else if (!strcmp(argv[read], "--dev-hole")) {
@@ -124,6 +164,8 @@ static void Observe(CpuState *cpu, uint32_t pc)
     case 0x00f0ff:
         /* Reset, SRAM validation and hardware/APU initialization have run.
          * Enter new-game initialization on the same main-loop stack. */
+        if (target.has_pack)
+            (void)KdcCoursePackSelect(target.pack, target.pack_course);
         Word(cpu, 0x17ff, target.multiplayer);
         Word(cpu, 0xeab9, target.extra);
         interp_bridge_pre_opcode_redirect(0x80f1db);
@@ -145,9 +187,17 @@ static void Observe(CpuState *cpu, uint32_t pc)
             Word(cpu, 0xabb4, target.map * 2);
             Word(cpu, 0xabb6, target.map * 3);
         }
-        fprintf(stderr, "Developer start: map %u, %s, hole %u\n",
-                target.map, target.multiplayer ? "two players" : "one player",
-                target.hole + 1);
+        if (target.has_pack) {
+            const KdcCoursePack *pack = KdcCoursePackGet(target.pack);
+            fprintf(stderr, "Developer start: pack %s course %u, %s, hole %u\n",
+                    pack ? pack->id : "?", target.pack_course + 1u,
+                    target.multiplayer ? "two players" : "one player",
+                    target.hole + 1u);
+        } else {
+            fprintf(stderr, "Developer start: map %u, %s, hole %u\n",
+                    target.map, target.multiplayer ? "two players" : "one player",
+                    target.hole + 1);
+        }
         pending = 0;
         break;
     }
@@ -171,6 +221,7 @@ int KdcDevSelect(const char *selector)
 {
     DevStart next = {0};
     if (selector && !ParseTarget(selector, &next)) return 0;
+    if (target.has_pack && !next.has_pack) KdcCoursePackClearActive();
     target = next;
     pending = target.enabled;
     return 1;
