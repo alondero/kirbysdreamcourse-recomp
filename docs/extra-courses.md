@@ -59,8 +59,10 @@ enable the 19 custom courses (152 holes) from **Grump's Dream Course**:
   from the verified runtime ROM rather than storing ROM tables in source.
 - Drop-in packs are discovered from `courses/` beside the executable (independent
   of the caller's working directory; `--course-pack-dir PATH` overrides this
-  directory, which `tools/play_experimental.ps1` uses to preserve the selected
-  install's catalog while isolating `local/dev-play/saves`), while explicit
+  directory relative to the caller's working directory before the host anchors
+  its working directory, and `tools/play_experimental.ps1` uses it for
+  `-DevHole pack:*` / `pack-2p:*` launches to preserve the selected install's
+  catalog while isolating `local/dev-play/saves`), while explicit
   `--course-pack PATH` arguments resolve relative to the caller's working
   directory. Non-regular files (directories, named pipes/FIFOs, devices) are
   skipped before opening. All regular `.ips` candidates are sorted and

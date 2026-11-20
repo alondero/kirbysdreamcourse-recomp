@@ -237,6 +237,19 @@ class CoursePackRuntimeTest(unittest.TestCase):
             self.assertEqual(word(rel_files['loaded.wram.bin'], 0x8b92), 13)
             self.assertEqual(word(rel_files['loaded.wram.bin'], 0x8b94), 31)
 
+            # 3. Relative --course-pack-dir on a normal launch (no --dev-hole)
+            #    must resolve against the caller's cwd before the host anchors
+            #    its working directory to the executable directory.
+            packs_dir = sibling / 'packs'
+            packs_dir.mkdir()
+            shutil.copy2(self.gdc_ips, packs_dir / self.gdc_ips.name)
+            _, dir_log = self.run_case(
+                'wait 60\n',
+                extra_args=['--course-pack-dir', 'packs'],
+                copy_gdc=False, frames=200, run_cwd=sibling)
+            self.assertIn('Course pack loaded', dir_log)
+            self.assertIn("GRUMP'S DREAM", dir_log)
+
     def test_custom_2p_full_eight_hole_progression_and_finale(self):
         if not self.gdc_ips or not self.gdc_ips.is_file():
             self.skipTest('Set KDC_TEST_GDC_IPS to a local GrumpsDreamCourse[1.01].ips')
@@ -309,12 +322,20 @@ class CoursePackRuntimeTest(unittest.TestCase):
         self.assertIn('saves/custom/save.srm', files)
         self.assertNotEqual(files['saves/custom/save.srm'], seeded)
 
-        # 2. tools/play_experimental.ps1 -Executable <install> -DevHole pack-2p:gdc:1:1
-        #    must preserve drop-in catalog discovery from <install>/courses while
-        #    keeping <install>/saves untouched.
+        # 2. tools/play_experimental.ps1 run from a temporary project root (so
+        #    it never touches the checkout's local/dev-play) must preserve
+        #    drop-in catalog discovery for pack-2p: while leaving install saves
+        #    untouched, and must not pass --course-pack-dir for ordinary
+        #    -DevHole normal:1:1 starts.
         if os.name == 'nt':
-            with tempfile.TemporaryDirectory(prefix='ps1-install-', dir=self.root / 'local') as inst:
-                install_dir = Path(inst)
+            with tempfile.TemporaryDirectory(prefix='ps1-proj-', dir=self.root / 'local') as proj:
+                proj_root = Path(proj)
+                tools_dir = proj_root / 'tools'
+                tools_dir.mkdir()
+                shutil.copy2(self.root / 'tools/play_experimental.ps1', tools_dir / 'play_experimental.ps1')
+                shutil.copy2(self.root / 'tools/invoke_native.ps1', tools_dir / 'invoke_native.ps1')
+                install_dir = proj_root / 'install'
+                install_dir.mkdir()
                 inst_exe = install_dir / self.executable.name
                 shutil.copy2(self.executable, inst_exe)
                 (install_dir / 'courses').mkdir()
@@ -326,18 +347,37 @@ class CoursePackRuntimeTest(unittest.TestCase):
                 env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
                 res = subprocess.run([
                     'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                    '-File', str(self.root / 'tools/play_experimental.ps1'),
+                    '-File', str(tools_dir / 'play_experimental.ps1'),
                     '-Rom', str(self.rom),
                     '-Executable', str(inst_exe),
                     '-DevHole', 'pack-2p:gdc:1:1',
                     '-Frames', '120',
-                ], cwd=self.root, env=env, capture_output=True, text=True,
+                ], cwd=proj_root, env=env, capture_output=True, text=True,
                    errors='replace', timeout=120)
                 self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
                 combined = res.stdout + res.stderr
                 self.assertIn('Course pack loaded', combined)
                 self.assertIn("GRUMP'S DREAM", combined)
                 self.assertEqual((install_dir / 'saves/save.srm').read_bytes(), seeded)
+
+                # Verify ordinary -DevHole normal:1:1 does not pass --course-pack-dir
+                # (preserving compatibility with pre-feature executables).
+                probe_script = tools_dir / 'play_experimental.ps1'
+                fake_install = proj_root / 'older-install'
+                fake_install.mkdir()
+                fake_exe = fake_install / 'KirbyDreamCourseRecomp.exe'
+                shutil.copy2(self.executable, fake_exe)
+                res_norm = subprocess.run([
+                    'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', str(probe_script),
+                    '-Rom', str(self.rom),
+                    '-Executable', str(fake_exe),
+                    '-DevHole', 'normal:1:1',
+                    '-Frames', '60',
+                ], cwd=proj_root, env=env, capture_output=True, text=True,
+                   errors='replace', timeout=120)
+                self.assertEqual(res_norm.returncode, 0, res_norm.stdout + res_norm.stderr)
+                self.assertNotIn('Course pack loaded', res_norm.stdout + res_norm.stderr)
 
 
 

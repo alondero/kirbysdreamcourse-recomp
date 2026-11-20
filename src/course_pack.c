@@ -24,6 +24,7 @@
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 enum {
@@ -675,10 +676,26 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
 
 void KdcCoursePacksSetDropinDir(const char *dir_path)
 {
-    if (dir_path && *dir_path)
-        snprintf(dropin_dir, sizeof(dropin_dir), "%s", dir_path);
-    else
+    if (!dir_path || !*dir_path) {
         dropin_dir[0] = '\0';
+        return;
+    }
+#ifdef _WIN32
+    char resolved[1024];
+    if (_fullpath(resolved, dir_path, sizeof(resolved))) {
+        snprintf(dropin_dir, sizeof(dropin_dir), "%s", resolved);
+        return;
+    }
+#else
+    if (dir_path[0] != '/') {
+        char cwd[1024];
+        if (getcwd(cwd, sizeof(cwd))) {
+            int n = snprintf(dropin_dir, sizeof(dropin_dir), "%s/%s", cwd, dir_path);
+            if (n > 0 && (size_t)n < sizeof(dropin_dir)) return;
+        }
+    }
+#endif
+    snprintf(dropin_dir, sizeof(dropin_dir), "%s", dir_path);
 }
 
 void KdcCoursePacksEnsureLoaded(void)

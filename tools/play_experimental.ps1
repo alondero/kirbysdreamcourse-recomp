@@ -40,7 +40,9 @@ if ($DevHole) {
     $devExe = Join-Path $devDirectory 'KirbyDreamCourseRecomp.exe'
     if ($exePath -ne $devExe) {
         $sourceDirectory = Split-Path -Parent $exePath
-        $devCoursePackDir = Join-Path $sourceDirectory 'courses'
+        if ($DevHole.StartsWith('pack:') -or $DevHole.StartsWith('pack-2p:')) {
+            $devCoursePackDir = Join-Path $sourceDirectory 'courses'
+        }
         Copy-Item -LiteralPath $exePath -Destination $devExe
         foreach ($name in @('assets', 'licenses')) {
             $source = Join-Path $sourceDirectory $name
