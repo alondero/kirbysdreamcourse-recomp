@@ -15,6 +15,8 @@ enum { kKdcHdScale = 4 };
 
 /* The launcher setting, or KDC_HD when set. */
 bool KdcHdEnabled(void);
+/* The launcher HD UI setting (kdc-hd-ui.cfg), or KDC_HD_UI when set. */
+bool KdcHdUiEnabled(void);
 
 /* Desktop host hook: binds or releases the tile source and returns the
  * presentation scale for the next frame. */

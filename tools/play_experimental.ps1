@@ -50,7 +50,7 @@ if ($DevHole) {
                 Copy-Item -LiteralPath $source -Destination $devDirectory -Recurse -Force
             }
         }
-        foreach ($name in @('config.ini', 'keybinds.ini', 'kdc-hd.cfg',
+        foreach ($name in @('config.ini', 'keybinds.ini', 'kdc-hd.cfg', 'kdc-hd-ui.cfg',
                            'kdc-presentation.cfg', 'kdc-hud.cfg',
                            'kdc-widescreen.cfg', 'kdc-camera.cfg', 'kdc-transitions.cfg',
                            'kdc-courses.cfg')) {

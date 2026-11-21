@@ -36,6 +36,8 @@ void PpuSetBackgroundSample(Ppu *p, bool (*sample)(const Ppu *, unsigned, int, i
 }
 static bool hd_enabled;
 bool KdcHdEnabled(void) { return hd_enabled; }
+static bool hd_ui_enabled;
+bool KdcHdUiEnabled(void) { return hd_ui_enabled; }
 bool KdcOrbitEnabled(void) { return true; }
 
 void KdcVisitOrbitSprites(const Ppu *value, const uint8_t *ram,
@@ -840,6 +842,19 @@ int main(void)
         assert(hd_pixels[i] == 0xdeadbeef);
     assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
     assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
+    /* Modernized UI: the HUD is composed at HD from its own tiles rather
+     * than copied from the native field, keeping BG3 and screen OBJ colours. */
+    hd_ui_enabled = true;
+    Fill(hd_pixels, sizeof(hd_pixels) / sizeof(*hd_pixels));
+    assert(KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, (uint8_t *)native_field,
+                         width, height, 1, 4));
+    assert(hd_pixels[(191 * 4 + 1) * hd_stride + 16 * 4 + 1] == 0xffff00ff);
+    assert(hd_pixels[(200 * 4 + 1) * hd_stride + 20 * 4 + 1] == 0xffffff00);
+    for (unsigned i = hd_stride * hd_height; i < sizeof(hd_pixels) / sizeof(*hd_pixels); ++i)
+        assert(hd_pixels[i] == 0xdeadbeef);
+    assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
+    assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
+    hd_ui_enabled = false;
     assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, NULL, width, height, 1, 0));
     assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, NULL, width, height, 1, 5));
     assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, width * 4, NULL, width, height, 1, 4));

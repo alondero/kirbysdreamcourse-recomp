@@ -18,7 +18,7 @@ typedef struct {
     int pending_hud;
     int pending_orbit;
     int pending_high_refresh, pending_rate;
-    int pending_hd;
+    int pending_hd, pending_hd_ui;
     int pending_transitions;
     int pending_extra_courses;
     const char *expected_rom_hash;
@@ -76,6 +76,7 @@ static int IsHighRefresh(const char *package, const char *feature)
 }
 
 static int hd = -1;
+static int hd_ui = -1;
 static int transitions = -1;
 static int extra_courses = -1;
 
@@ -123,6 +124,18 @@ bool KdcHdTexturesEnabled(void)
         hd = value == '1';
     }
     return hd != 0;
+}
+
+bool KdcHdUiOptionEnabled(void)
+{
+    if (hd_ui < 0) {
+        char value[16] = {0};
+        FILE *file = fopen("kdc-hd-ui.cfg", "r");
+        if (file) { (void)fgets(value, sizeof(value), file); fclose(file); }
+        value[strcspn(value, "\r\n")] = 0;
+        hd_ui = strcmp(value, "original") != 0 && strcmp(value, "0") != 0;
+    }
+    return hd_ui != 0;
 }
 
 bool KdcOrbitEnabled(void)
@@ -259,11 +272,10 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
         snprintf(out->name, sizeof(out->name), "HD textures");
         snprintf(out->description, sizeof(out->description),
                  "Redraws course terrain, scenery and sprites at 4x with smoothed "
-                 "edges, keeping the original colours and palette effects. Menus, "
-                 "the orbit camera view and anything not reproducible stay pixel "
-                 "sharp.");
+                 "edges, and optionally replaces HUD, menu and font elements with "
+                 "modernized 4x artwork while keeping the original colours and palette effects.");
         out->enabled = state->pending_hd;
-        out->option_count = 0;
+        out->option_count = 1;
     }
     if (index == 2) {
         snprintf(out->id, sizeof(out->id), "high-refresh");
@@ -310,6 +322,19 @@ static int GetOption(void *ctx, const char *package, const char *feature,
                      int index, RecompLauncherCModOption *out)
 {
     const KdcLauncherSettingsState *state = ctx;
+    if (IsHdTextures(package, feature) && index == 0 && out) {
+        *out = (RecompLauncherCModOption){0};
+        snprintf(out->id, sizeof(out->id), "ui");
+        snprintf(out->label, sizeof(out->label), "HUD, menus and fonts");
+        snprintf(out->description, sizeof(out->description),
+                 "Modernized replaces HUD, menu and font elements with faithful 4x "
+                 "high-resolution artwork. Original keeps UI elements pixel sharp.");
+        snprintf(out->value, sizeof(out->value), "%s", state->pending_hd_ui ? "modern" : "original");
+        snprintf(out->default_value, sizeof(out->default_value), "modern");
+        out->type = RECOMP_MOD_OPTION_CHOICE;
+        out->choice_count = 2;
+        return 1;
+    }
     if (IsHighRefresh(package, feature) && index == 0 && out) {
         *out = (RecompLauncherCModOption){0};
         snprintf(out->id, sizeof(out->id), "fps");
@@ -347,6 +372,12 @@ static int GetChoice(void *ctx, const char *package, const char *feature,
                      const char *option, int index, RecompLauncherCModChoice *out)
 {
     (void)ctx;
+    if (IsHdTextures(package, feature) && option && !strcmp(option, "ui") && out && index >= 0 && index < 2) {
+        *out = (RecompLauncherCModChoice){0};
+        snprintf(out->value, sizeof(out->value), "%s", index ? "original" : "modern");
+        snprintf(out->label, sizeof(out->label), "%s", index ? "Original (pixel sharp)" : "Modernized");
+        return 1;
+    }
     if (IsFeature(package, feature) && option && !strcmp(option, "hud") && out && index >= 0 && index < 2) {
         *out = (RecompLauncherCModChoice){0};
         snprintf(out->value, sizeof(out->value), "%s", index ? "edges" : "centered");
@@ -372,6 +403,11 @@ static int SetOption(void *ctx, const char *package, const char *feature,
                      const char *option, const char *value)
 {
     KdcLauncherSettingsState *state = ctx;
+    if (IsHdTextures(package, feature) && option && value && !strcmp(option, "ui")) {
+        if (strcmp(value, "modern") && strcmp(value, "original")) return 0;
+        state->pending_hd_ui = !strcmp(value, "modern");
+        return 1;
+    }
     if (IsFeature(package, feature) && option && value && !strcmp(option, "hud")) {
         if (strcmp(value, "centered") && strcmp(value, "edges")) return 0;
         state->pending_hud = !strcmp(value, "edges");
@@ -468,6 +504,16 @@ static int Commit(void *ctx, const char *rom)
         }
         hd = state->pending_hd;
     }
+    if (state->pending_hd_ui != KdcHdUiOptionEnabled()) {
+        FILE *file = fopen("kdc-hd-ui.cfg", "w");
+        int ok = file && fprintf(file, "%s\n", state->pending_hd_ui ? "modern" : "original") > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) {
+            state->last_error = "Could not save HD UI texture settings.";
+            return 0;
+        }
+        hd_ui = state->pending_hd_ui;
+    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     if (state->pending_high_refresh != KdcHighRefreshEnabled() || state->pending_rate != rate) {
@@ -532,6 +578,7 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .pending_high_refresh = KdcHighRefreshEnabled(),
         .pending_rate = rate,
         .pending_hd = KdcHdTexturesEnabled(),
+        .pending_hd_ui = KdcHdUiOptionEnabled(),
         .pending_transitions = KdcFasterTransitionsEnabled(),
         .pending_extra_courses = KdcExtraCoursesEnabled(),
         .expected_rom_hash = rom_sha256,

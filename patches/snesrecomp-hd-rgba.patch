@@ -1,0 +1,225 @@
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1144,6 +1144,7 @@
+  * per-subpixel priority resolution where the outcome is already known. */
+ typedef struct PpuHdImage {
+   uint64_t opaque, clear, same;
++  uint32_t rgba;
+   uint8_t indices[];
+ } PpuHdImage;
+ typedef struct PpuHdTileEntry {
+@@ -1177,6 +1178,7 @@
+ } PpuHdCellMemo;
+ struct PpuHdTiles {
+   PpuHdTileFill *fill;
++  PpuHdRgbaFill *rgba_fill;
+   PpuHdTileContextPolicy *context_policy;
+   void *context;
+   PpuHdLinePolicy *policy;
+@@ -1306,6 +1308,15 @@
+   return true;
+ }
+ 
++bool PpuSetHdRgbaSource(Ppu *ppu, PpuHdRgbaFill *fill) {
++  if (!ppu || !ppu->hdTiles) return false;
++  if (ppu->hdTiles->rgba_fill != fill) {
++    PpuHdTilesClearCache(ppu->hdTiles);
++    ppu->hdTiles->rgba_fill = fill;
++  }
++  return true;
++}
++
+ bool PpuSetHdTileContextPolicy(Ppu *ppu, PpuHdTileContextPolicy *policy) {
+   if (!ppu || !ppu->hdTiles) return false;
+   if (ppu->hdTiles->context_policy != policy) {
+@@ -1450,7 +1461,7 @@
+                  offsetof(PpuHdTileQuery, border) == offsetof(PpuHdTileQuery, words) + 64 &&
+                  sizeof(((PpuHdTileQuery *)0)->border) % 8 == 0,
+                  "hashed query fields must be contiguous");
+-  return PpuHdMix(0x9e3779b97f4a7c15ull ^ q->bpp ^ ((uint64_t)q->layer << 8),
++  return PpuHdMix(0x9e3779b97f4a7c15ull ^ q->bpp ^ ((uint64_t)q->layer << 8) ^ ((uint64_t)q->address << 16),
+                   q->words, 64 + sizeof(q->border));
+ }
+ 
+@@ -1597,6 +1608,7 @@
+     q.words[i] = vram[(rec->address + i) & 0x7fff];
+   for (unsigned i = 1; i < (1u << bpp); ++i)
+     q.colors[i] = ppu->cgram[(palette + i) & 0xff];
++  if (t->rgba_fill) q.address = rec->address;
+   q.bpp = (uint8_t)bpp;
+   q.layer = (uint8_t)source;
+   if (source < 2 && bpp == 4 && !(rec->flags & kPpuHdNoBorder) &&
+@@ -1611,14 +1623,29 @@
+     PpuHdTileEntry *e = &t->entries[slot];
+     if (!e->used) {
+       if (t->count + 1 >= kPpuHdCacheSlots) break; /* full until next line */
+-      const size_t bytes = sizeof(PpuHdImage) + (size_t)64 * t->scale * t->scale;
+-      PpuHdImage *image = malloc(bytes);
++      const size_t samples = (size_t)64 * t->scale * t->scale;
++      PpuHdImage *image = NULL;
+       ++t->stats.misses;
+-      if (image && !t->fill(&q, image->indices, t->context)) {
+-        free(image);
+-        image = NULL;
++      if (t->rgba_fill) {
++        uint32_t rgba[64 * kPpuHdTileMaxScale * kPpuHdTileMaxScale];
++        if (t->rgba_fill(&q, rgba)) {
++          image = calloc(1, sizeof(*image) + samples * sizeof(uint32_t));
++          if (image) {
++            image->rgba = 1;
++            memcpy(image->indices, rgba, samples * sizeof(uint32_t));
++          }
++        }
+       }
+-      if (image) PpuHdSummarise(&q, image);
++      if (!image) {
++        image = malloc(sizeof(*image) + samples);
++        if (image && t->fill(&q, image->indices, t->context)) {
++          image->rgba = 0;
++          PpuHdSummarise(&q, image);
++        } else {
++          free(image);
++          image = NULL;
++        }
++      }
+       e->used = true;
+       e->last_frame = t->cache_frame;
+       e->hash = hash;
+@@ -3382,6 +3409,67 @@
+   return best;
+ }
+ 
++/* Resolve the small source stack back-to-front at an RGBA subpixel.
++ * Window masks and native evidence were validated by the caller. */
++static uint32_t PpuHdExpand(unsigned bgr) {
++  unsigned rgb = ((bgr & 31) << 19) | ((bgr & 992) << 6) | ((bgr >> 10 & 31) << 3);
++  return rgb | ((rgb >> 5) & 0x070707);
++}
++
++static uint32_t PpuHdRgbMath(const Ppu *p, uint32_t rgb, unsigned layer,
++                             uint32_t other, bool sub_pixel, bool inside) {
++  if (PpuHdWindowCondition(PPU_clipMode(p), inside)) rgb = 0;
++  if (!(PPU_mathEnabled(p) & (1u << layer)) ||
++      PpuHdWindowCondition(PPU_preventMathMode(p), inside)) return rgb;
++  uint32_t result = 0;
++  for (int shift = 0; shift <= 16; shift += 8) {
++    int a = (rgb >> shift) & 255, b = (other >> shift) & 255;
++    a += PPU_subtractColor(p) ? -b : b;
++    if (PPU_halfColor(p) && (!PPU_addSubscreen(p) || sub_pixel)) a /= 2;
++    result |= (uint32_t)(a < 0 ? 0 : a > 255 ? 255 : a) << shift;
++  }
++  return result;
++}
++
++static uint32_t PpuHdPaintScreen(Ppu *p, const PpuHdCandidate *c, unsigned count,
++    unsigned sx, size_t x, bool main, bool inside, uint32_t other, bool *sub_pixel) {
++  struct Sample { uint16_t z; uint32_t ink; } stack[kPpuHdSources];
++  unsigned used = 0;
++  for (unsigned k = 0; k < count; ++k) {
++    const int offset = (int)sx * c[k].step;
++    uint16_t z = c[k].rec->z;
++    uint32_t ink;
++    if (c[k].image && c[k].image->rgba) {
++      size_t pos = (size_t)(c[k].line - c[k].image->indices + offset);
++      memcpy(&ink, c[k].image->indices + pos * sizeof(ink), sizeof(ink));
++      if (!(ink >> 24)) continue;
++      ++z;
++    } else {
++      unsigned index = c[k].line ? c[k].line[offset] : c[k].native_index;
++      if (!index) continue;
++      z += index;
++      ink = 0xff000000u | PpuHdExpand(PpuPixelColor(p,z,x));
++    }
++    unsigned j = used++;
++    while (j && stack[j - 1].z > z) { stack[j] = stack[j - 1]; --j; }
++    stack[j] = (struct Sample){z, ink};
++  }
++  uint32_t result = main ? PpuHdExpand(PpuPixelColor(p,0x0500,x)) : PpuHdExpand(p->fixedColor);
++  if (main) result = PpuHdRgbMath(p, result, 5, other, *sub_pixel, inside);
++  else *sub_pixel = used != 0;
++  for (unsigned k = 0; k < used; ++k) {
++    unsigned a = stack[k].ink >> 24;
++    uint32_t rgb = stack[k].ink & 0xffffff;
++    if (main) rgb = PpuHdRgbMath(p, rgb, (stack[k].z >> 8) & 15, other, *sub_pixel, inside);
++    if (a == 255) { result = rgb; continue; }
++    uint32_t mixed = 0;
++    for (int shift = 0; shift <= 16; shift += 8)
++      mixed |= ((((rgb >> shift & 255) * a + (result >> shift & 255) * (255-a) + 127) / 255) << shift);
++    result = mixed;
++  }
++  return result;
++}
++
+ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
+   struct PpuHdTiles *t = ppu->hdTiles;
+   const PpuMode7HdSurface *surface = &ppu->mode7Hd;
+@@ -3457,7 +3545,7 @@
+     unsigned count[2] = {0, 0};
+     if (x >= left && x < right && !(t->policy && keep[x - left])) {
+       const size_t i = (size_t)(x + kPpuExtraLeftRight);
+-      bool any_image = false;
++      bool any_image = false, rgba = false;
+       for (unsigned screen = 0; t->any[i] && screen < (sub_rendered ? 2u : 1u); ++screen) {
+         for (unsigned source = 0; source < kPpuHdSources; ++source) {
+           const PpuHdTileRecord *rec = source == kPpuHdObj ?
+@@ -3468,6 +3556,8 @@
+           c->rec = rec;
+           c->image = rec->entry ? t->entries[rec->entry - 1].image : NULL;
+           any_image |= c->image != NULL;
++          rgba |= c->image && c->image->rgba;
++          c->step = 0;
+         }
+       }
+       /* Without an HD image the result is the native pixel; only a pixel we
+@@ -3498,7 +3588,7 @@
+         kind[0] = PpuHdClassify(cand[0], count[0], &win[0]);
+         if (sub_rendered) kind[1] = PpuHdClassify(cand[1], count[1], &win[1]);
+         /* Every subpixel resolves to the validated native pair. */
+-        if (kind[0] == kPpuHdResolveNative && kind[1] == kPpuHdResolveNative)
++        if (!rgba && kind[0] == kPpuHdResolveNative && kind[1] == kPpuHdResolveNative)
+           valid = false;
+       }
+       if (valid) {
+@@ -3512,6 +3602,21 @@
+           PpuHdSelectSubrow(cand[0], count[0], scale, sy);
+           if (sub_rendered) PpuHdSelectSubrow(cand[1], count[1], scale, sy);
+           for (unsigned sx = 0; sx < scale; ++sx) {
++            if (rgba) {
++              bool sub_pixel = false;
++              uint32_t other = PpuHdExpand(ppu->fixedColor);
++              if (sub_rendered) {
++                uint32_t sub_rgb = PpuHdPaintScreen(ppu, cand[1], count[1], sx, i,
++                    false, inside, 0, &sub_pixel);
++                if (sub_pixel) other = sub_rgb;
++              }
++              uint32_t rgb = PpuHdPaintScreen(ppu, cand[0], count[0], sx, i,
++                  true, inside, other, &sub_pixel);
++              unsigned bright = ppu->inidisp & 15;
++              row[sx] = (((rgb >> 16) * bright / 15) << 16) |
++                  (((rgb >> 8 & 255) * bright / 15) << 8) | ((rgb & 255) * bright / 15);
++              continue;
++            }
+             uint16_t value[2] = {main, sub};
+             for (unsigned screen = 0; screen < 2; ++screen) {
+               const PpuHdCandidate *c = cand[screen];
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -40,6 +40,7 @@
+    * of 12, then two left/right columns of 8. Zero means transparent or unavailable (OBJ,
+    * other palette, unsupported layer, or no context-policy request). Included in the content cache key. */
+   uint8_t border[80];
++  uint16_t address; /* VRAM word address for RGBA artwork assembled across characters. */
+   uint8_t bpp;   /* 2 or 4 */
+   uint8_t layer; /* BG1..BG4 = 0..3; OBJ = 4; part of the cache key */
+   uint8_t scale; /* output texels per native pixel, per axis */
+@@ -50,6 +51,10 @@
+  * query. It must not touch guest state. */
+ typedef bool PpuHdTileFill(const PpuHdTileQuery *query, uint8_t *indices,
+                            void *context);
++/* Optional straight-alpha 0xAARRGGBB artwork in unbrightened colour space.
++ * Returning false selects the indexed source for this query. */
++typedef bool PpuHdRgbaFill(const PpuHdTileQuery *query, uint32_t *pixels);
++bool PpuSetHdRgbaSource(Ppu *ppu, PpuHdRgbaFill *fill);
+ /* Optional cheap request for neighbour evidence before a content-cache lookup.
+  * The query has words, colours, bpp and layer; border is still zero. */
+ typedef bool PpuHdTileContextPolicy(const PpuHdTileQuery *query, void *context);

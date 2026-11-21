@@ -1,12 +1,9 @@
 # HD textures
 
-The optional HD textures mode redraws course terrain, scenery and sprites at
-four times the native resolution. It keeps the original palette and every
-priority, window, colour-math and brightness rule. Regular checker edges are
-reconstructed geometrically; other original 8x8 characters use a palette-locked pixel-art scaler, so
-every HD pixel uses one of that character's own palette entries. Palette
-fades and colour cycling therefore keep working. Guest state is unchanged;
-this is presentation only.
+HD textures redraw the course at four times the native resolution. Terrain,
+scenery and world sprites use the live game palette. The checker edges are
+reconstructed geometrically. Modernized interface art uses RGBA samples
+tinted from the same live palettes. Both renderers change presentation only.
 
 ## Enabling
 
@@ -14,7 +11,18 @@ Enable **HD textures** on the launcher's **Mods** page. It is off by default
 and can be changed during play. The choice is saved in `kdc-hd.cfg` beside
 the executable.
 
-What changes and what stays pixel sharp:
+The mod's **HUD, menus and fonts** option chooses how interface art is
+drawn while HD textures are on:
+
+- **Modernized** (default): HUD, menu and font characters are replaced by
+  redrawn 4x artwork (see [Modernized interface](#modernized-interface)).
+- **Original (pixel sharp)**: the interface stays native, as in the table
+  below.
+
+The option is saved in `kdc-hd-ui.cfg` (`modern` or `original`).
+`KDC_HD_UI=1`/`0` overrides it for tests.
+
+What changes and what stays pixel sharp with **Original** interface art:
 
 | Scaled at 4x | Kept native (nearest-scaled) |
 | --- | --- |
@@ -23,6 +31,67 @@ What changes and what stays pixel sharp:
 | Course sprites, including widescreen margins | Lines using mosaic, interlace, pseudo-hires or 16x16 characters |
 | Orbit/high-refresh terrain, scenery and world sprites | Screen-anchored orbit HUD sprites |
 | | Any pixel the exactness check below cannot reproduce |
+
+With **Modernized** interface art, the title, menus, course select,
+scorecards and HUD (BG3 panel and screen-anchored sprites, in both the PPU
+and orbit renderers) are also drawn at 4x.
+
+## Modernized interface
+
+The Modernized setting draws recognized interface elements into the 4x surface
+using straight-alpha RGBA tiles. A 2bpp character can now have a translucent
+edge and hundreds of intermediate colours. The game identifies artwork by the
+bitplane hash. The title and menu headers also use the VRAM address because
+several cells have identical bitplanes and different positions in the design.
+
+| Artwork | Presentation |
+| --- | --- |
+| Title | Hand-lettered two-line logo, illustrated Kirby and typeset credits |
+| Menus | Aileron outlines fitted to the game's cells, rounded text boxes, Members List and Name Entry headers |
+| Course HUD | HOLE and SHOT labels, segmented counters, Mini Kirby, tomatoes, player and CPU banners, energy capsules and frames |
+| Portraits | Continuous 128x128 illustrations with the player's live palette and ability-specific artwork |
+| Aiming | Shaded spin dial, bar markings, guide numerals, stars and OB! lettering |
+
+The artwork lives in `src/hd_ui.c`. The font outlines can be regenerated with
+`python tools/generate_ui_font.py` using Pillow 12.2.0 and fontTools.
+`patches/snesrecomp-hd-rgba.patch` adds an optional tile source to the PPU.
+It resolves translucent samples against lower-priority layers, using the
+current colour window, colour math and scanline brightness. The orbit renderer
+uses the same RGBA artwork for sprites and the foreground BG3 pass. Course
+terrain continues to use the indexed source. Unrecognized menu tiles retain
+the game's artwork. The widescreen Edge HUD presentation overlay can still
+select native scanlines in the PPU renderer.
+
+The ROM-free policy test checks half-transparent ink against a known backdrop.
+The opt-in real-ROM suite (`KDC_TEST_HD=1`) checks the original title and
+portrait against native output and the modern portrait against the 4bpp colour
+limit. Captures belong in ignored `local/`.
+
+### Texture packs
+
+A texture pack replaces the drawn artwork with art authored outside this
+repository. Pack art is derived from the game, so packs are never committed or
+distributed with the project. With Modernized art selected, the game loads the
+file named by `KDC_HD_PACK`, or `kdc-hd-ui.pack` in the working directory.
+While a pack is loaded it is the only interface art source. Characters the pack
+does not cover keep the game's own pixels, and the practice menu expands those
+portrait characters 4x. Without a pack, the drawn artwork above is used.
+
+A pack stores palette indices, not colours. Each 4x sample holds up to three
+(palette index, weight) pairs, and the sum of the weights is the sample's
+opacity. `src/hd_pack.c` mixes the live palette at draw time. This keeps fades,
+flashes, player 2's palette and dithering-style blends correct.
+
+| Part | Layout (little-endian) |
+| --- | --- |
+| Header, 24 bytes | `KDCHDUI1`, version `u32` = 1, entry count `u32`, scale `u32` = 4, reserved `u32` |
+| Entry, 16 bytes | bitplane FNV-1a hash `u64`, VRAM word address `u16` (`0xFFFF` = any), bpp `u8`, layer `u8` (BG1-BG3 = 0-2, OBJ = 4), tile offset `u32` |
+| Tile, 5120 bytes | 32x32 samples of `{i0 \| i1 << 4, i2, w0, w1, w2}`, unflipped |
+
+Entries must be sorted strictly by hash, bpp, layer, then address, or the pack
+is rejected. A lookup prefers an entry for the character's VRAM address over an
+`0xFFFF` entry. `tests/test_hd_pack.py` covers loading, rejection and live
+recolouring.
 
 ## How it works
 

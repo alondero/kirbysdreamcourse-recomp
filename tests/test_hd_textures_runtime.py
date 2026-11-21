@@ -20,7 +20,7 @@ def load_ppm(path):
 class HdTexturesRuntimeTest(unittest.TestCase):
     root = Path(__file__).resolve().parents[1]
 
-    def capture(self, directory, name, frame, hd, dev_hole=None, high_refresh=False):
+    def capture(self, directory, name, frame, hd, dev_hole=None, high_refresh=False, ui=None):
         rom = Path(os.environ.get('KDC_HD_ROM', self.root / "Kirby's Dream Course (USA).sfc"))
         self.assertEqual(hashlib.sha256(rom.read_bytes()).hexdigest(),
                          '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b')
@@ -47,6 +47,8 @@ class HdTexturesRuntimeTest(unittest.TestCase):
                    SNESRECOMP_SCREENSHOT=str(shot),
                    SNESRECOMP_SCREENSHOT_FRAME=str(frame),
                    KDC_HD='1' if hd else '0')
+        if ui is not None:
+            env['KDC_HD_UI'] = ui
         args = [str(host), '--no-launcher', '--rom', str(rom)]
         if dev_hole:
             args += ['--dev-hole', dev_hole]
@@ -89,15 +91,34 @@ class HdTexturesRuntimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='hd-textures-', dir=self.root / 'local') as directory:
             directory = Path(directory)
             course_native = self.capture(directory, 'course-native', 380, False, 'normal:1:1')
-            course_hd = self.capture(directory, 'course-hd', 380, True, 'normal:1:1')
+            course_hd = self.capture(directory, 'course-hd', 380, True, 'normal:1:1', ui='0')
             # Course terrain, scenery and sprites are redrawn.
             self.assertGreater(self.compare(course_native, course_hd), 10000)
             # The HUD panel's Kirby portrait box keeps its native art.
             self.assertEqual(self.compare(course_native, course_hd, (24, 182, 48, 206)), 0)
             # A title/menu scene keeps its native art.
             menu_native = self.capture(directory, 'menu-native', 300, False)
-            menu_hd = self.capture(directory, 'menu-hd', 300, True)
+            menu_hd = self.capture(directory, 'menu-hd', 300, True, ui='0')
             self.assertEqual(self.compare(menu_native, menu_hd), 0)
+
+    def test_modernized_hud_menus_and_fonts_redraw_at_4x(self):
+        with tempfile.TemporaryDirectory(prefix='hd-ui-', dir=self.root / 'local') as directory:
+            directory = Path(directory)
+            course_native = self.capture(directory, 'course-native', 380, False, 'normal:1:1')
+            course_hd = self.capture(directory, 'course-hd', 380, True, 'normal:1:1', ui='1')
+            # The HUD portrait box and counters gain sub-pixel detail.
+            self.assertGreater(self.compare(course_native, course_hd, (24, 182, 48, 206)), 100)
+            self.assertGreater(self.compare(course_native, course_hd, (56, 180, 236, 212)), 500)
+            width, _, pixels = course_hd
+            portrait_colors = {pixels[i:i + 3] for y in range(184 * 4, 204 * 4)
+                               for x in range(25 * 4, 47 * 4)
+                               for i in [(y * width + x) * 3]}
+            self.assertGreater(len(portrait_colors), 64,
+                               'The portrait still renders through the 16-color tile palette')
+            # Title/menu text and frames are redrawn too.
+            menu_native = self.capture(directory, 'menu-native', 300, False)
+            menu_hd = self.capture(directory, 'menu-hd', 300, True, ui='1')
+            self.assertGreater(self.compare(menu_native, menu_hd), 1000)
 
 
 if __name__ == '__main__':

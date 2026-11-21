@@ -9,12 +9,14 @@
 #include "snes/ppu.h"
 #include "snes/snes.h"
 #include "snes_overlay_draw.h"
+#include "hd_pack.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "CHECK %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 Snes *g_snes;
+bool KdcHdUiEnabled(void) { return true; }
 int snes_frame_counter = 1;
 uint8 *g_sram;
 int g_sram_size = 8192;
@@ -215,6 +217,38 @@ static void CheckPracticeBadgeHudPlacement(void)
     g_snes = NULL;
 }
 
+/* An installed texture pack that does not cover a portrait character must
+ * leave the game's own pixels visible, not an empty hole in the panel. */
+static void CheckPortraitWithoutPackArt(void)
+{
+    static Snes snes_state;
+    static Cart cart;
+    static uint8_t rom[0x100000];
+    static uint32_t fb[1024 * 896];
+    static uint8_t pack[24 + 16 + 32 * 32 * 5];
+    memset(&snes_state, 0, sizeof(snes_state));
+    memset(&cart, 0, sizeof(cart));
+    memset(rom, 0, sizeof(rom));
+    memset(rom, 0xff, 0x400);                  /* every portrait pixel uses colour 15 */
+    rom[0x14 * 0x8000 + 0x2849 + 30] = 0x1f;   /* colour 15 = pure red */
+    cart.rom = rom;
+    cart.romImageSize = sizeof(rom);
+    snes_state.cart = &cart;
+    g_snes = &snes_state;
+    memset(pack, 0, sizeof(pack));
+    memcpy(pack, "KDCHDUI1", 8);
+    pack[8] = 1; pack[12] = 1; pack[16] = 4;
+    pack[24] = 1;                              /* one entry for an unrelated character */
+    pack[34] = 4; pack[35] = 4; pack[32] = 0xff; pack[33] = 0xff;
+    pack[36] = 40;
+    CHECK(KdcHdPackLoadMemory(pack, sizeof(pack)));
+    memset(fb, 0, sizeof(fb));
+    KdcPracticeDrawHd((uint8_t *)fb, 1024 * 4, 256, 224, 4);
+    CHECK(fb[(145 * 4) * 1024 + 97 * 4] == 0xffff0000);
+    KdcHdPackUnload();
+    g_snes = NULL;
+}
+
 int main(void)
 {
     g_sram = battery;
@@ -267,6 +301,7 @@ int main(void)
         if (i + 1 < KDC_PRACTICE_ABILITIES) Tap(SNES_PAD_RIGHT);
     }
     CHECK(!strcmp(KdcPracticeAbilityName(KdcPracticeCurrentView()->ability), "UFO"));
+    CheckPortraitWithoutPackArt();
     /* The title-menu font sheet is not ASCII-ordered: it carries the
      * hyphen at 29, the space at 31, '<' at 10, '>' at 12, digits at
      * 16..25 and letters at 33..58. ASCII-32 would draw the question

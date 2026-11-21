@@ -30,6 +30,8 @@ static uint32_t hd_buf[kHeight * kScale * kFullWidth * kScale];
 static int meter_sprite_x = 100;
 
 bool KdcHdTexturesEnabled(void) { return true; }
+static bool hd_ui_enabled = false;
+bool KdcHdUiOptionEnabled(void) { return hd_ui_enabled; }
 bool KdcCheckerNeedsContext(const uint16_t words[16]) { (void)words; return false; }
 bool KdcOrbitComposing(void) { return false; }
 
@@ -43,6 +45,15 @@ bool KdcHdNearestTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 bool KdcHdSmoothTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 {
     return KdcHdNearestTile(q, indices, context);
+}
+
+static bool use_rgba;
+bool KdcHdUiRgba(const PpuHdTileQuery *q, uint32_t *pixels)
+{
+    if (!use_rgba || q->layer != 2) return false;
+    for (unsigned i = 0; i < 64 * q->scale * q->scale; ++i)
+        pixels[i] = 0x80783456;
+    return true;
 }
 
 void KdcVisitOrbitSprites(const struct Ppu *ppu, const uint8_t *ram,
@@ -181,6 +192,36 @@ int main(void)
     assert(HdAt(102, 102) == hd_color);
     assert(HdAt(142, 102) == native_color);
 
-    free(p);
+    /* 4. Modernized UI: HUD sprites and panel spans are no longer kept native. */
+    hd_ui_enabled = true;
+    assert(KdcHdUiEnabled());
+    assert(KdcHdScale() == kScale);
+    p->window1left = 128;
+    p->window1right = 127;
+    ppu_drawCapturedLine(p, 1, true);
+    ppu_drawCapturedLine(p, 102, true);
+    p->window1left = 56;
+    p->window1right = 235;
+    ppu_drawCapturedLine(p, 185, true);
+    assert(HdAt(142, 102) == hd_color);
+    assert(HdAt(left + 4, 185) == hd_color);
+    assert(HdAt(128, 185) == hd_color);
+
+    /* Half-covered custom ink over a black backdrop, with colour math off. */
+    use_rgba = true;
+    p->screenEnabled[0] = 4;
+    p->screenWindowed[0] = 0;
+    p->cgadsub = p->cgwsel = 0;
+    PpuInvalidateHdTiles(p);
+    ppu_drawCapturedLine(p, 1, true);
+    assert(HdAt(40, 1) == 0x3c1a2b);
+    p->inidisp = 7;
+    ppu_drawCapturedLine(p, 1, true);
+    assert(HdAt(40, 1) == 0x1c0c14);
+    p->inidisp = 15;
+    p->cgadsub = 4; /* Add white to BG3 before blending its coverage. */
+    ppu_drawCapturedLine(p, 1, true);
+    assert(HdAt(40, 1) == 0x808080);
+    ppu_free(p);
     return 0;
 }

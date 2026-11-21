@@ -21,9 +21,13 @@ bool CountedArt(const PpuHdTileQuery *q, uint8_t *pixels, void *context)
 /* Unused host-facing paths still need symbols on Windows linkers. */
 bool KdcIsCourse(const Ppu *ppu) { (void)ppu; return true; }
 bool KdcHdEnabled(void) { return true; }
+bool KdcHdUiEnabled(void) { return false; }
 bool KdcHudActive(const Ppu *ppu) { (void)ppu; return false; }
 bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 { (void)ppu; (void)x; (void)y; return false; }
+bool KdcHudSample(const Ppu *ppu, unsigned layer, int x, int y,
+                  uint16_t *tile, int *px, int *py, void *context)
+{ (void)ppu; (void)layer; (void)x; (void)y; (void)tile; (void)px; (void)py; (void)context; return false; }
 int KdcHudPortraitShift(const Ppu *ppu, int x, int y, uint16_t attributes)
 { (void)ppu; (void)x; (void)y; (void)attributes; return 0; }
 void KdcVisitOrbitSprites(const Ppu *ppu, const uint8_t *ram,
@@ -33,7 +37,7 @@ void KdcVisitOrbitSprites(const Ppu *ppu, const uint8_t *ram,
 /* The index at the centre of an enlarged 8x8 character. */
 static unsigned Centre(const Render *render, unsigned address)
 {
-    const uint8_t *pixels = HdArtTileLookup(render, address, false, 0, 4);
+    const uint32_t *pixels = HdArtTileLookup(render, address, false, 0, 4);
     assert(pixels);
     return pixels[(4 * kKdcHdScale) * (8 * kKdcHdScale) + 4 * kKdcHdScale];
 }
@@ -44,6 +48,7 @@ int main(void)
     static Snes snes;
     snes.ppu = &ppu;
     g_snes = &snes;
+    ppu.cgram[1] = 1; ppu.cgram[2] = 2; ppu.cgram[3] = 3;
     Render render = {.ppu = &ppu, .hd = true, .scale = 4};
     for (unsigned y = 0; y < 8; ++y) {
         ppu.vram[16 + y] = 0x00ff;   /* plane 0: index 1 */
@@ -52,22 +57,22 @@ int main(void)
     /* One enlargement per character however often a draw samples it. */
     ++art_generation;
     for (unsigned i = 0; i < 5000; ++i) {
-        assert(Centre(&render, 16) == 1);
-        assert(Centre(&render, 0x1010) == 2);
+        assert(Centre(&render, 16) == Color(1));
+        assert(Centre(&render, 0x1010) == Color(2));
     }
     assert(art_fills == 2);
     /* A later draw with the same words and colours reuses the artwork. */
     ++art_generation;
-    assert(Centre(&render, 16) == 1);
+    assert(Centre(&render, 16) == Color(1));
     assert(art_fills == 2);
     /* Uploads and palette changes are observed on the next draw. */
     for (unsigned y = 0; y < 8; ++y) ppu.vram[16 + y] = 0xffff;
     ++art_generation;
-    assert(Centre(&render, 16) == 3);
+    assert(Centre(&render, 16) == Color(3));
     assert(art_fills == 3);
     ppu.cgram[3] = 0x7fff;
     ++art_generation;
-    assert(Centre(&render, 16) == 3);
+    assert(Centre(&render, 16) == Color(0x7fff));
     assert(art_fills == 4);
     /* Even cache pressure cannot regenerate artwork admitted this draw, nor
      * retry a source that found no room with another enlargement. */

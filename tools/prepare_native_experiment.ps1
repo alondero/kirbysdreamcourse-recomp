@@ -157,6 +157,7 @@ $patches += 'snesrecomp-hd-tile-perf.patch'
 $patches += 'snesrecomp-hd-composition.patch'
 $patches += 'snesrecomp-presentation-budget.patch'
 $patches += 'snesrecomp-hd-hitches.patch'
+$patches += 'snesrecomp-hd-rgba.patch'
 $patches += 'snesrecomp-bridge-diagnostic-cache.patch'
 $patches += 'snesrecomp-transition-pacing.patch'
 foreach ($patchName in $patches) {
