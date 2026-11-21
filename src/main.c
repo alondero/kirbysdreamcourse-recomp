@@ -26,14 +26,17 @@
  */
 
 #include "host_main.h"
+#include "common_rtl.h"
 #include "game_rtl.h"
 #include "launcher_settings.h"
 #include "transitions.h"
 #include "dev_start.h"
+#include "course_pack.h"
 #include "course_camera_host.h"
 #include "course_orbit.h"
 #include "host_clock.h"
 #include "host_api.h"
+#include "host_paths.h"
 #include "hd_textures.h"
 #include "practice.h"
 #include "widescreen.h"
@@ -100,6 +103,17 @@ static const char *ValidateRomPath(const char *path)
     return KdcValidateRomPath(path, SNESRECOMP_ROM_EXPECTED_SHA256);
 }
 
+static void OnRomLoaded(const uint8_t *rom, size_t size)
+{
+    KdcCoursePackSetRom(rom, size);
+    if (KdcDevUsesCoursePack()) {
+        /* Isolate direct CLI custom-pack starts (--dev-hole pack:*) from the
+         * ordinary battery image before RtlReadSram / RtlWriteSram run. */
+        RtlSetSaveRoot("saves/custom");
+        RtlSetQuickSaveRoot(NULL);
+    }
+}
+
 static void BeforePresentationFrame(void)
 {
     if (!snesrecomp_host_frame_is_live()) return;
@@ -161,6 +175,7 @@ static const SnesDesktopHostGame kGameHost = {
 #endif
     .launcher_with_rom  = 1,
     .validate_rom_path  = ValidateRomPath,
+    .on_rom_loaded      = OnRomLoaded,
     .display_aspect_supported = 1,
     .mods_provider      = LauncherSettings,
     .configure_launcher = KdcConfigureLauncher,
@@ -218,6 +233,13 @@ int main(int argc, char **argv)
             setenv(names[i], "1", 0);
 #endif
         }
+    }
+#endif
+#ifndef __ANDROID__
+    {
+        char courses_dir[1024];
+        if (snesrecomp_exe_dir_path("courses", courses_dir, sizeof(courses_dir)))
+            (void)KdcCoursePacksSetDropinDir(courses_dir);
     }
 #endif
     int dev = KdcDevParseArgs(&argc, argv);

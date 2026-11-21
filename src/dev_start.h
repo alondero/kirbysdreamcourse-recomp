@@ -11,5 +11,6 @@ void KdcDevStateLoaded(void);
  * NULL disables the shortcut. Invalid selections leave it unchanged. */
 int KdcDevSelect(const char *selector);
 int KdcDevEnabled(void);
+int KdcDevUsesCoursePack(void);
 
 #endif

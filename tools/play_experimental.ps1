@@ -6,6 +6,7 @@ param(
     [string]$DevHole = '',
     [switch]$DevTwoPlayer,
     [switch]$DevHoleList,
+    [string]$CoursePack = '',
     [ValidateRange(0, 2147483647)][int]$Frames = 0
 )
 
@@ -29,14 +30,19 @@ $expected = '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b'
 if ((Get-FileHash -LiteralPath $romPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
     throw 'ROM SHA-256 mismatch; use the supported headerless USA image.'
 }
+$devCoursePackDir = ''
 if ($DevHole) {
     # Host persistence is executable-relative. Give test starts their own
-    # saves/config rather than the normal play session's battery image.
+    # saves/config rather than the normal play session's battery image, while
+    # preserving drop-in course discovery from the selected install directory.
     $devDirectory = Join-Path $root 'local/dev-play'
     New-Item -ItemType Directory -Force -Path $devDirectory | Out-Null
     $devExe = Join-Path $devDirectory 'KirbyDreamCourseRecomp.exe'
     if ($exePath -ne $devExe) {
         $sourceDirectory = Split-Path -Parent $exePath
+        if ($DevHole.StartsWith('pack:') -or $DevHole.StartsWith('pack-2p:')) {
+            $devCoursePackDir = Join-Path $sourceDirectory 'courses'
+        }
         Copy-Item -LiteralPath $exePath -Destination $devExe
         foreach ($name in @('assets', 'licenses')) {
             $source = Join-Path $sourceDirectory $name
@@ -46,7 +52,8 @@ if ($DevHole) {
         }
         foreach ($name in @('config.ini', 'keybinds.ini', 'kdc-hd.cfg',
                            'kdc-presentation.cfg', 'kdc-hud.cfg',
-                           'kdc-widescreen.cfg', 'kdc-camera.cfg', 'kdc-transitions.cfg')) {
+                           'kdc-widescreen.cfg', 'kdc-camera.cfg', 'kdc-transitions.cfg',
+                           'kdc-courses.cfg')) {
             $source = Join-Path $sourceDirectory $name
             $destination = Join-Path $devDirectory $name
             if ((Test-Path -LiteralPath $source) -and -not (Test-Path -LiteralPath $destination)) {
@@ -75,6 +82,8 @@ try {
     Push-Location -LiteralPath $fallbackDir
     try {
         $hostArgs = @('--rom', $romPath)
+        if ($devCoursePackDir) { $hostArgs += @('--course-pack-dir', $devCoursePackDir) }
+        if ($CoursePack) { $hostArgs += @('--course-pack', (Resolve-ProjectPath $CoursePack)) }
         if ($NoLauncher -or $Frames -gt 0 -or $DevHole) { $hostArgs += '--no-launcher' }
         if ($DevHole) { $hostArgs += @('--dev-hole', $DevHole) }
         if ($DevTwoPlayer) { $hostArgs += '--dev-two-player' }

@@ -16,6 +16,7 @@ int KdcPresentationFps(void);
 /* The saved HD textures choice (kdc-hd.cfg); off unless enabled. */
 bool KdcHdTexturesEnabled(void);
 bool KdcFasterTransitionsEnabled(void);
+bool KdcExtraCoursesEnabled(void);
 
 /* NULL accepts the exact raw image; otherwise returns a player-facing reason. */
 const char *KdcValidateRomPath(const char *path, const char *rom_sha256);

@@ -49,6 +49,8 @@
 #include "course_sprites.h"
 #include "course_hud.h"
 #include "launcher_settings.h"
+#include "course_pack.h"
+#include "course_orbit.h"
 #include "transitions.h"
 #include "dev_start.h"
 #include "practice.h"
@@ -76,6 +78,10 @@ static void initialize_bounce_log(void)
     if (initialized) return;
     initialized = 1;
     KdcInitializeSprites();
+    if (g_snes && g_snes->cart && g_snes->cart->rom)
+        KdcCoursePackSetRom(g_snes->cart->rom, g_snes->cart->romImageSize);
+    KdcCoursePacksSetEnabled(KdcExtraCoursesEnabled());
+    KdcCoursePackInitialize();
     KdcDevInitialize();
     KdcPracticeInitialize();
     KdcCpuInitialize();
@@ -116,8 +122,14 @@ static bool PlannerRollback(void) { return RtlIsRollbackLoad() && KdcCpuPlanning
 
 void GameRunOneFrame(void)
 {
+    static uint32_t last_pack_gen;
     initialize_bounce_log();
     snes_beam_frame_driver_run_frame();
+    if (KdcCoursePackGeneration() != last_pack_gen) {
+        last_pack_gen = KdcCoursePackGeneration();
+        KdcOrbitReset();
+        KdcResetSprites(g_snes ? g_snes->ppu : NULL);
+    }
     KdcTransitionsFrame();
     LabelCpuSeat();
     if (apu_state_log && g_snes && g_snes->apu) {

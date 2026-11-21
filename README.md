@@ -94,6 +94,21 @@ progress.
 See [CPU opponents](docs/cpu-opponent.md) for controls, validation and tactical
 limitations, including copy abilities that the CPU does not yet activate.
 
+## Extra 2P courses and Grump's Dream Course
+
+Enable **Extra 2P courses** on the launcher's **Mods** page (`kdc-courses.cfg`,
+off by default) to add a **MORE COURSES** option to **2P GAME** and
+**1P VS CPU**, while keeping the regular two-player courses untouched. Out of
+the box this unlocks all 16 single-player courses (1P Normal 1–8 and 1P Extra
+1–8) for two-player and CPU matches.
+
+To also add the 19 custom courses (152 holes) from **Grump's Dream Course**,
+place your copy of `GrumpsDreamCourse[1.01].ips` in a `courses/` folder beside
+the executable (or pass `--course-pack PATH` / `-CoursePack PATH`). No Japanese
+ROM is required; loaded IPS packs also appear in **PRACTICE** and `--dev-hole`.
+See [extra courses](docs/extra-courses.md) for details, save isolation and
+limits.
+
 ## Start directly on a hole
 
 After building, use the developer shortcut to skip the menus:

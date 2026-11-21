@@ -67,14 +67,18 @@ if ($InitialSram) {
     $sram = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $InitialSram).Path)
     if ($sram.Length -ne 8192) { throw "Initial SRAM must be exactly 8192 bytes." }
 }
-[IO.File]::WriteAllBytes((Join-Path $destination 'saves/save.srm'), $sram)
+$isPackDevHole = $DevHole.StartsWith('pack:') -or $DevHole.StartsWith('pack-2p:')
+$sramRelative = if ($isPackDevHole) { 'saves/custom/save.srm' } else { 'saves/save.srm' }
+$sramTarget = Join-Path $destination $sramRelative
+New-Item -ItemType Directory -Force (Split-Path -Parent $sramTarget) | Out-Null
+[IO.File]::WriteAllBytes($sramTarget, $sram)
 $initialStateHash = $null
 if ($InitialState) {
     $statePath = (Resolve-Path -LiteralPath $InitialState).Path
     $initialStateHash = (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash.ToLowerInvariant()
     Copy-Item -LiteralPath $statePath -Destination (Join-Path $destination 'saves/save1.sav')
 }
-$initialSramHash = (Get-FileHash -LiteralPath (Join-Path $destination 'saves/save.srm') -Algorithm SHA256).Hash.ToLowerInvariant()
+$initialSramHash = (Get-FileHash -LiteralPath $sramTarget -Algorithm SHA256).Hash.ToLowerInvariant()
 $recordingHash = $null
 $env:SDL_VIDEODRIVER = 'dummy'
 $env:SDL_AUDIODRIVER = 'dummy'

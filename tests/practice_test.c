@@ -1,4 +1,5 @@
 #include "practice.h"
+#include "course_pack.h"
 #include "course_hud.h"
 #include "dev_start.h"
 #include "cpu_opponent.h"
@@ -35,8 +36,8 @@ bool KdcIsCourse(const Ppu *ppu)
 static char root[96] = "saves";
 static bool write_ok = true;
 static int resets;
-static uint32_t redirect, sites[12];
-static InterpPreOpcodeHook hooks[12];
+static uint32_t redirect, sites[32];
+static InterpPreOpcodeHook hooks[32];
 static unsigned count;
 static unsigned cpu_selected, cpu_selections, cpu_frames;
 static bool planning, rollback_load;
@@ -50,7 +51,7 @@ bool RtlIsRollbackLoad(void) { return rollback_load; }
 
 bool interp_bridge_add_pre_opcode_hook(uint32_t pc, InterpPreOpcodeHook hook)
 {
-    CHECK(count < 12); sites[count] = pc; hooks[count++] = hook; return true;
+    CHECK(count < 32); sites[count] = pc; hooks[count++] = hook; return true;
 }
 void interp_bridge_pre_opcode_redirect(uint32_t pc) { redirect = pc; }
 const char *RtlSaveRoot(void) { return root; }
@@ -62,12 +63,25 @@ int RtlWriteSram(void)
     memcpy(!strcmp(root, "saves") ? ordinary_file : practice_file, g_sram, 8192);
     return 1;
 }
-void RtlReadSram(void) { CHECK(!strcmp(root, "saves/practice") || !strcmp(root,"saves/cpu")); memcpy(g_sram, practice_file, 8192); }
+void RtlReadSram(void)
+{
+    CHECK(!strcmp(root, "saves/practice") || !strcmp(root, "saves/cpu") ||
+          !strcmp(root, "saves/custom"));
+    memcpy(g_sram, practice_file, 8192);
+}
 void RtlReset(int mode) { CHECK(mode == 1); ++resets; KdcDevReset(); KdcPracticeReset(); }
 static void Observe(CpuState *cpu, uint32_t pc)
 {
-    for (unsigned i = 0; i < count; ++i) if (sites[i] == pc) { hooks[i](cpu, pc); return; }
-    CHECK(0);
+    bool matched = false;
+    for (unsigned i = 0; i < count; ++i) {
+        if (sites[i] == pc) {
+            uint32_t before = redirect;
+            matched = true;
+            hooks[i](cpu, pc);
+            if (redirect != before) return;
+        }
+    }
+    CHECK(matched);
 }
 static void Tap(uint32_t button)
 {
@@ -207,7 +221,7 @@ int main(void)
     memset(battery, 0xa5, sizeof(battery));
     memset(practice_file, 0x33, sizeof(practice_file));
     KdcDevInitialize(); KdcPracticeInitialize();
-    CHECK(count == 9 && KdcPracticeSnapshotsAllowed());
+    CHECK(count == 12 && KdcPracticeSnapshotsAllowed());
     uint32_t ordinary_input = SNES_PAD_A;
     CHECK(KdcPracticeFrame(&ordinary_input));
     KdcPracticeReset();
@@ -394,5 +408,50 @@ int main(void)
     OpenPause(); Tap(SNES_PAD_DOWN); Tap(SNES_PAD_A);
     CHECK(!KdcPracticeCurrentView()->active && resets == resets_before + 1 && !cpu_selected);
     CHECK(battery[0] == 0xa5 && practice_file[0] == 0x66 && KdcPracticeSnapshotsAllowed());
+
+    /* Extra 2P courses: hidden when disabled, appended to 2P submenu when enabled. */
+    ram[cpu.S + 1] = 0x46; ram[cpu.S + 2] = 0xbb;
+    ram[cpu.S + 3] = 0x35; ram[cpu.S + 4] = 0xb8;
+    ram[0x1e4a] = 2; ram[0xea8e] = 11; ram[0xea97] = 9; ram[0xea98] = 11;
+    KdcCoursePacksSetEnabled(false);
+    Observe(&cpu, 0x83bbd8);
+    CHECK(ram[0x1e4a] == 2);
+    KdcCoursePacksSetEnabled(true);
+    Observe(&cpu, 0x83bbd8);
+    CHECK(ram[0x1e4a] == 3 && ram[0xea90] == 11 && ram[0xea99] == 13 && ram[0xeaa2] == 2);
+    CHECK(ram[0x39da + 2 * (13 * 32 + 11)] == KdcPracticeGuestGlyph('M'));
+
+    /* Selecting MORE COURSES opens screen 3, launches 1P Extra Course 2 in 2P,
+     * skips the 4-card vanilla selector, and returns to screen 3 after Hole 8. */
+    redirect = 0; cpu.A = 2; Observe(&cpu, 0x83b836);
+    CHECK(redirect == 0x83b824 && KdcPracticeCurrentView()->screen == 3);
+    Tap(SNES_PAD_RIGHT); /* pack 1 = 1P EXTRA */
+    Tap(SNES_PAD_DOWN);
+    Tap(SNES_PAD_RIGHT); /* course 2 */
+    Tap(SNES_PAD_DOWN);
+    int r_before = resets;
+    Tap(SNES_PAD_A);
+    CHECK(resets == r_before + 1 && KdcPracticeCurrentView()->active &&
+          KdcPracticeCurrentView()->custom_match && !KdcPracticeVisible() &&
+          !strcmp(root, "saves/custom") && KdcCoursePackHasActive());
+    redirect = 0; Observe(&cpu, 0x80f0ff);
+    CHECK(redirect == 0x80f1db && ram[0x17ff] == 1 && ram[0xeab9] == 0);
+    redirect = 0; Observe(&cpu, 0x83d518);
+    CHECK(redirect == 0x83d6d6 && ram[0x6a5a] == 16 && ram[0x6a5c] == 32 && ram[0xd7a2] == 0);
+    /* Returning to $83:D518 after Hole 8 reopens screen 3; B exits cleanly. */
+    redirect = 0; Observe(&cpu, 0x83d518);
+    CHECK(redirect == 0x80f120 && KdcPracticeCurrentView()->screen == 3);
+    Tap(SNES_PAD_B);
+    CHECK(!KdcPracticeCurrentView()->active && !KdcPracticeCurrentView()->custom_match &&
+          !KdcCoursePackHasActive() && !strcmp(root, "saves") && battery[0] == 0xa5);
+    /* Custom developer starts (--dev-hole pack:*) must also block snapshots/rewind. */
+    CHECK(KdcPracticeSnapshotsAllowed());
+    CHECK(KdcDevSelect("pack-2p:1p-normal:1:1"));
+    CHECK(!KdcPracticeSnapshotsAllowed());
+    CHECK(KdcCoursePackSelect(0u, 0u));
+    CHECK(!KdcPracticeSnapshotsAllowed());
+    CHECK(KdcDevSelect(NULL));
+    CHECK(!KdcCoursePackHasActive() && KdcPracticeSnapshotsAllowed());
+    KdcCoursePacksSetEnabled(false);
     return 0;
 }

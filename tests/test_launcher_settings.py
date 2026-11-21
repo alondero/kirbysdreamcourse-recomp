@@ -31,6 +31,7 @@ class LauncherSettingsTest(unittest.TestCase):
                          '-I', str(root / 'src'), '-I', str(ui / 'src'),
                          str(root / 'tests/launcher_settings_test.c'),
                          str(root / 'src/launcher_settings.c'),
+                         str(root / 'src/course_pack.c'),
                          str(ui / 'src/common/sha256.c'), '-o', str(executable)],
                         capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -41,9 +42,11 @@ class LauncherSettingsTest(unittest.TestCase):
                     self.assertEqual((Path(directory) / 'kdc-widescreen.cfg').read_text().strip(), '21:9')
                     self.assertEqual((Path(directory) / 'kdc-hd.cfg').read_text().strip(), '0')
                     self.assertEqual((Path(directory) / 'kdc-transitions.cfg').read_text().strip(), '1')
+                    self.assertEqual((Path(directory) / 'kdc-courses.cfg').read_text().strip(), '1')
                     reloaded = subprocess.run(args + ['reload', 'check'], capture_output=True,
                                               text=True, cwd=directory)
                     self.assertEqual(reloaded.returncode, 0, reloaded.stdout + reloaded.stderr)
+                    (Path(directory) / 'kdc-courses.cfg').unlink()
                     (Path(directory) / 'kdc-transitions.cfg').unlink()
                     (Path(directory) / 'kdc-widescreen.cfg').unlink()
                     self.assertEqual((Path(directory) / 'kdc-hud.cfg').read_text().strip(), 'edges')

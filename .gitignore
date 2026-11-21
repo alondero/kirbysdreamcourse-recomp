@@ -2,12 +2,14 @@
 *.sfc
 *.smc
 *.fig
+*.ips
 *.bin
 *.sav
 *.srm
 *.state
 *.state[0-9]*
 /roms/
+/courses/
 /rom-assets/
 /assets/extracted/
 /generated/
@@ -21,6 +23,7 @@
 kdc-camera.cfg
 kdc-presentation.cfg
 kdc-transitions.cfg
+kdc-courses.cfg
 __pycache__/
 
 # Local development and generated content
