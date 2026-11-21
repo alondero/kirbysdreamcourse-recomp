@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -404,6 +405,34 @@ class CoursePackRuntimeTest(unittest.TestCase):
                 ], cwd=proj_root, env=env, capture_output=True, text=True,
                    errors='replace', timeout=120)
                 self.assertEqual(res_norm.returncode, 0, res_norm.stdout + res_norm.stderr)
+
+                # Verify tools/headless.ps1 stages -InitialSram into saves/custom/save.srm
+                # for built-in pack:* selectors so guest SRAM matches run.json.
+                shutil.copy2(self.root / 'tools/headless.ps1', tools_dir / 'headless.ps1')
+                seed_file = proj_root / 'seed.srm'
+                seed_file.write_bytes(seeded)
+                dump_dir = proj_root / 'headless_dumps'
+                dump_dir.mkdir()
+                probe_script = proj_root / 'headless_probe.script'
+                probe_script.write_text('dump f0\nwait 10\n', encoding='ascii')
+                headless_env = dict(env, SNESRECOMP_DUMP_DIR=str(dump_dir))
+                res_hl = subprocess.run([
+                    'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', str(tools_dir / 'headless.ps1'),
+                    '-Rom', str(self.rom),
+                    '-Executable', str(inst_exe),
+                    '-Output', 'local/headless-pack',
+                    '-InitialSram', str(seed_file),
+                    '-DevHole', 'pack:1p-normal:1:1',
+                    '-InputScript', str(probe_script),
+                    '-Frames', '5',
+                    '-Unpaced',
+                ], cwd=proj_root, env=headless_env, capture_output=True, text=True,
+                   errors='replace', timeout=120)
+                self.assertEqual(res_hl.returncode, 0, res_hl.stdout + res_hl.stderr)
+                manifest = json.loads((proj_root / 'local/headless-pack/run.json').read_text(encoding='utf-8-sig'))
+                self.assertEqual(manifest['initial_sram_sha256'], hashlib.sha256(seeded).hexdigest())
+                self.assertEqual((dump_dir / 'f0.sram.bin').read_bytes(), seeded)
 
 
 
