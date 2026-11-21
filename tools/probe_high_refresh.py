@@ -33,7 +33,7 @@ def main():
                         str(root / 'src/hd_image.c'),
                         str(root / 'src/host_parallel.c'),
                         str(root / 'src/hd_scaler.c'),
-                        str(root / 'src/hd_tile_source.c'),
+                        str(root / 'src/hd_tile_source.c'), str(root / 'src/hd_ui.c'),
                         str(source / 'desktop/host_clock.c'), '-lm', '-lpthread',
                         '-o', str(executable)],
                        check=True)

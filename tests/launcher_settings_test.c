@@ -21,6 +21,7 @@ int main(int argc, char **argv)
         CHECK(KdcHudEdges());
         CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
         CHECK(!KdcHdTexturesEnabled());
+        CHECK(!KdcHdUiOptionEnabled());
         return 0;
     }
     RecompLauncherCGameInfo info = {.has_run_ahead = 1, .has_renderer = 1};
@@ -100,10 +101,20 @@ int main(int argc, char **argv)
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(KdcOrbitEnabled()); /* staged, not applied */
     CHECK(provider->feature_get(provider->ctx, 3, &feature));
-    CHECK(!strcmp(feature.id, "hd_textures") && !feature.enabled && !feature.option_count);
+    CHECK(!strcmp(feature.id, "hd_textures") && !feature.enabled && feature.option_count == 1);
     CHECK(!strcmp(feature.package_id, package.id));
     CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
     CHECK(!KdcHdTexturesEnabled()); /* off by default */
+    CHECK(KdcHdUiOptionEnabled()); /* modernized UI by default */
+    CHECK(provider->feature_option_get(provider->ctx, "kdc.presentation", "hd_textures", 0, &option));
+    CHECK(option.choice_count == 2 && !strcmp(option.value, "modern"));
+    CHECK(provider->feature_choice_get(provider->ctx, "kdc.presentation", "hd_textures", "ui", 0, &choice));
+    CHECK(!strcmp(choice.value, "modern"));
+    CHECK(provider->feature_choice_get(provider->ctx, "kdc.presentation", "hd_textures", "ui", 1, &choice));
+    CHECK(!strcmp(choice.value, "original"));
+    CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "hd_textures", "ui", "invalid"));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "hd_textures", "ui", "original"));
+    CHECK(KdcHdUiOptionEnabled()); /* staged, not applied */
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
     CHECK(!KdcHdTexturesEnabled()); /* staged, not applied */
     CHECK(!provider->feature_get(provider->ctx, 6, &feature));
@@ -138,9 +149,11 @@ int main(int argc, char **argv)
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
+    CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "hd_textures", "ui", "original"));
     CHECK(!provider->commit(provider->ctx, "missing.sfc"));
     CHECK(!KdcFasterTransitionsEnabled());
     CHECK(!KdcHdTexturesEnabled());
+    CHECK(KdcHdUiOptionEnabled());
     CHECK(provider->last_error(provider->ctx));
     CHECK(!widescreen);
     CHECK(!provider->commit(provider->ctx, argv[3])); /* copier header */
@@ -151,6 +164,7 @@ int main(int argc, char **argv)
     CHECK(KdcHudEdges());
     CHECK(!KdcOrbitEnabled());
     CHECK(KdcHdTexturesEnabled());
+    CHECK(!KdcHdUiOptionEnabled());
     CHECK(KdcWidescreenAspect() == 2);
     CHECK(!provider->last_error(provider->ctx));
     provider = KdcLauncherSettings(&widescreen, hash);

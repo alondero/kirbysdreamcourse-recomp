@@ -85,6 +85,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_HITCH_STATS_API
 if(NOT KDC_HD_HITCH_STATS_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-hitches.patch after the presentation budget patch")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_RGBA_API
+    REGEX "PpuSetHdRgbaSource" LIMIT_COUNT 1)
+if(NOT KDC_HD_RGBA_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-hd-rgba.patch after the HD hitches patch")
+endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.h" KDC_PRESENTATION_BUDGET_API
      REGEX "snes_host_clock_presentation_allowed" LIMIT_COUNT 1)
 if(NOT KDC_PRESENTATION_BUDGET_API)
@@ -112,7 +117,7 @@ target_sources(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/course_pack.c src/course_pack_runtime.c src/dev_start.c src/practice.c src/practice_draw.c src/gen_stubs.c
     src/course_camera.c src/course_geometry.c src/course_orbit.c src/course_camera_host.c src/course_hud.c
     src/course_sprite_view.c src/cpu_opponent.c src/cpu_preview.c src/cpu_label.c
-    src/hd_scaler.c src/hd_tile_source.c src/hd_textures.c src/course_checker.c
+    src/hd_scaler.c src/hd_tile_source.c src/hd_textures.c src/hd_ui.c src/hd_pack.c src/course_checker.c
     src/course_terrain.c src/hd_image.c src/host_parallel.c src/transitions.c)
 snesrecomp_rom_identity(KirbyDreamCourseRecomp ${CMAKE_SOURCE_DIR}/rom_identity.txt)
 set(KDC_GENERATED_DIR "${CMAKE_SOURCE_DIR}/generated" CACHE PATH "Local generated game code")

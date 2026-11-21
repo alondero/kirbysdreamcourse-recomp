@@ -6,6 +6,7 @@
 #include "course_hud.h"
 #include "course_terrain.h"
 #include "hd_textures.h"
+#include "hd_ui.h"
 #include "host_parallel.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
@@ -83,7 +84,7 @@ typedef struct Piece {
     bool masked;
     /* Ground decals: output pixel and depth to original projected position. */
     double inverse[4][3], plane[3][2], step;
-    const uint8_t *const *art; /* enlarged image per 8x8 cell, or NULL */
+    const uint32_t *const *art; /* enlarged image per 8x8 cell, or NULL */
     unsigned base;             /* OBJ character base in VRAM words */
     const uint32_t *colors;    /* the piece's 16 palette colours */
 } Piece;
@@ -250,7 +251,7 @@ static unsigned TilePixel(const uint16_t *vram, unsigned tile,
  * source is stable during a draw; revalidate content once per draw so VRAM
  * uploads, animation and palette cycling cannot leave stale replacements. */
 static uint64_t art_generation;
-static const uint8_t *HdArtTileLookup(const Render *render, unsigned address, bool rom,
+static const uint32_t *HdArtTileLookup(const Render *render, unsigned address, bool rom,
                                 unsigned palette, unsigned bpp)
 {
     enum { count = 4096, side = 8 * kKdcHdScale };
@@ -259,7 +260,8 @@ static const uint8_t *HdArtTileLookup(const Render *render, unsigned address, bo
         uint64_t generation;
         bool rom, valid;
         PpuHdTileQuery query;
-        uint8_t pixels[side * side];
+        uint32_t pixels[side * side];
+        bool ui;
     } cache[count];
     unsigned hash = address ^ (palette << 17) ^ (rom ? 0x55555555u : 0) ^ (bpp << 25);
     hash ^= hash >> 16; hash *= 0x7feb352du; hash ^= hash >> 15;
@@ -280,15 +282,23 @@ static const uint8_t *HdArtTileLookup(const Render *render, unsigned address, bo
      * an expensive rescale on every alternating source pixel. */
     if (!entry) return NULL;
     if (!same || entry->generation != art_generation) {
-        PpuHdTileQuery q = {.bpp = bpp, .layer = 4, .scale = kKdcHdScale};
+        PpuHdTileQuery q = {.bpp = bpp, .layer = bpp == 2 ? 2 : 4, .scale = kKdcHdScale};
         for (unsigned i = 0; i < bpp * 4; ++i)
             q.words[i] = rom ? g_snes->cart->rom[address + 2 * i] |
                 (uint16_t)g_snes->cart->rom[address + 2 * i + 1] << 8 :
                 PpuRenderVram(render->ppu)[(address + i) & 0x7fff];
         for (unsigned i = 1; i < (1u << bpp); ++i) q.colors[i] = render->ppu->cgram[palette + i];
-        if (!same || memcmp(&q, &entry->query, sizeof(q))) {
-            if (!KdcHdSmoothTile(&q, entry->pixels, NULL))
-                KdcHdNearestTile(&q, entry->pixels, NULL);
+        const bool ui = KdcHdUiEnabled();
+        if (!same || ui != entry->ui || memcmp(&q, &entry->query, sizeof(q))) {
+            if (!ui || !KdcHdUiRgba(&q, entry->pixels)) {
+                uint8_t indices[side * side];
+                if (!KdcHdSmoothTile(&q, indices, NULL))
+                    KdcHdNearestTile(&q, indices, NULL);
+                uint32_t colors[16] = {0};
+                for (unsigned k = 1; k < (1u << bpp); ++k) colors[k] = Color(q.colors[k]);
+                for (unsigned k = 0; k < side * side; ++k) entry->pixels[k] = colors[indices[k]];
+            }
+            entry->ui = ui;
             entry->query = q;
         }
         entry->address = address; entry->palette = palette; entry->bpp = bpp;
@@ -778,6 +788,121 @@ static void CopyField(const Render *render, int row, int x0, int x1)
     }
 }
 
+static void FillHudSpan(const Render *render, int row, int x0, int x1, uint32_t color)
+{
+    const int scale = render->scale, native_width = render->width / scale;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= native_width) x1 = native_width - 1;
+    if (x0 > x1) return;
+    for (int sy = 0; sy < scale; ++sy) {
+        uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch);
+        for (int x = x0 * scale; x < (x1 + 1) * scale; ++x)
+            line[x] = color;
+    }
+}
+
+static void HudWindowRows(const Render *render, int row0, int row1)
+{
+    if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000) return;
+    const int scale = render->scale, native_width = render->width / scale;
+    const int extra = (native_width - 256) / 2;
+    const uint32_t backing = Color(render->ppu->fixedColor);
+    if (KdcHudActive(render->ppu) && render->ppu->presentationWindows) {
+        for (int row = row0; row < row1; ++row) {
+            int16_t edges[8] = {0};
+            uint8_t count = 0, bits = 0;
+            if (!render->ppu->presentationWindows(render->ppu, 0, row + 1, edges, &count, &bits))
+                continue;
+            for (unsigned i = 0; i < count; ++i)
+                if ((bits >> i) & 1u)
+                    FillHudSpan(render, row, edges[i] + extra, edges[i + 1] - 1 + extra, backing);
+        }
+        return;
+    }
+    if (render->ppu->windowsel != 0x220000 || render->ppu->fixedColor != 0x7fff) return;
+    const bool multi = KdcReadWord(g_ram, 0x17ff) == 1;
+    const unsigned top_v = multi ? (render->vram[0x3c00 + 21 * 32 + 4] == 0x34e7 ? 172u : 196u) : 180u;
+    for (int row = row0; row < row1; ++row) {
+        const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+        if (multi && v >= 8 && v < 168) continue;
+        int left, right;
+        if (v < top_v || v >= 212u ||
+            !KdcHudSpan(render->vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2], &left, &right))
+            continue;
+        int win_l = (multi ? left + 4 : 56) + extra;
+        int win_r = right - 4 + extra;
+        FillHudSpan(render, row, win_l, win_r, backing);
+    }
+}
+
+static void HudBg3HdRows(const Render *render, int row0, int row1)
+{
+    if (!render->scenery && !KdcHudActive(render->ppu)) return;
+    if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000) return;
+    const int scale = render->scale, native_width = render->width / scale;
+    const int extra = (native_width - 256) / 2;
+    const uint16_t scroll = render->ppu->hScroll[2];
+    const bool edge_hud = KdcHudActive(render->ppu);
+    for (int row = row0; row < row1; ++row) {
+        const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+        for (int x = 0; x < native_width; ++x) {
+            const int screen_x = x - extra;
+            uint16_t tile;
+            int px, py;
+            if (edge_hud) {
+                bool flip;
+                unsigned col_c = KdcReflectedColumn(screen_x, 0, &flip) & 31;
+                uint16_t clean = KdcReadWord(g_ram, 0xdadc + 2 * ((((row + 1) >> 3) & 31) * 32 + col_c)) ^
+                                 (flip ? 0x4000 : 0);
+                tile = (screen_x >= 0 && screen_x < 256) ?
+                    render->vram[0x3c00 + (((row + 1) >> 3) & 31) * 32 + (screen_x >> 3)] : clean;
+                px = screen_x & 7;
+                py = (row + 1) & 7;
+                KdcHudSample(render->ppu, 2, screen_x, row + 1, &tile, &px, &py, NULL);
+                if (tile == clean) continue;
+            } else {
+                if (screen_x < 0 || screen_x >= 256) continue;
+                const unsigned u = (unsigned)(screen_x + scroll) & 255;
+                const unsigned index = (v / 8) * 32 + u / 8;
+                tile = render->vram[0x3c00 + index];
+                if (tile == KdcReadWord(g_ram, 0xdadc + 2 * index)) {
+                    x += 7 - (int)(u & 7);
+                    continue;
+                }
+                px = (int)(u & 7);
+                py = (int)(v & 7);
+            }
+            const uint32_t *art = HdArtTileLookup(render, (0x4000 + (tile & 0x3ff) * 8) & 0x7fff,
+                                                 false, ((tile >> 10) & 7) * 4, 2);
+            if (!art) {
+                const unsigned pixel = TilePixel(render->vram, tile, 0x4000, px & 7, py & 7, 2);
+                if (!pixel) continue;
+                const uint32_t color = Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + pixel]);
+                for (int sy = 0; sy < scale; ++sy) {
+                    uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch) +
+                                     x * scale;
+                    for (int sx = 0; sx < scale; ++sx) line[sx] = color;
+                }
+                continue;
+            }
+            const int col = (tile & 0x4000) ? (7 - (px & 7)) : (px & 7);
+            const int r = (tile & 0x8000) ? (7 - (py & 7)) : (py & 7);
+            for (int sy = 0; sy < scale; ++sy) {
+                uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch) +
+                                 x * scale;
+                const int sub_y = (tile & 0x8000) ? (scale - 1 - sy) : sy;
+                const int ty = (r * scale + sub_y) * kKdcHdScale / scale;
+                for (int sx = 0; sx < scale; ++sx) {
+                    const int sub_x = (tile & 0x4000) ? (scale - 1 - sx) : sx;
+                    const int tx = (col * scale + sub_x) * kKdcHdScale / scale;
+                    const unsigned pixel = art[ty * (8 * kKdcHdScale) + tx];
+                    line[sx] = KdcHdUiBlend(line[sx], pixel);
+                }
+            }
+        }
+    }
+}
+
 /* HUD pixels keep the native PPU's result, with its colour math and
  * portrait composition, for native rows [row0,row1). */
 static void RestoreRows(const Render *render, int row0, int row1)
@@ -868,13 +993,13 @@ static uint32_t PieceColor(const Render *render, const Piece *piece,
         return 0;
     if (attr & 0x4000) sx = size - 1 - sx;
     if (attr & 0x8000) sy = size - 1 - sy;
-    const uint8_t *art = piece->art ? piece->art[(sy >> 3) * (size / 8) + (sx >> 3)] : NULL;
+    const uint32_t *art = piece->art ? piece->art[(sy >> 3) * (size / 8) + (sx >> 3)] : NULL;
     unsigned pixel;
     if (art) {
         /* The enlarged character, at the continuous flipped position. */
         const double tx = attr & 0x4000 ? nextafter(size - source_x, 0) : source_x;
         const double ty = attr & 0x8000 ? nextafter(size - source_y, 0) : source_y;
-        pixel = art[((unsigned)(ty * kKdcHdScale) & (8 * kKdcHdScale - 1)) * (8 * kKdcHdScale) +
+        return art[((unsigned)(ty * kKdcHdScale) & (8 * kKdcHdScale - 1)) * (8 * kKdcHdScale) +
                     ((unsigned)(tx * kKdcHdScale) & (8 * kKdcHdScale - 1))];
     } else {
         unsigned view_tile = size <= 16 ? sprite->view_tiles[(sy >> 3) * (size / 8) + (sx >> 3)] : 0;
@@ -969,14 +1094,14 @@ static void BodyRows(const Render *render, const Piece *piece, bool world, int b
             if (!color) continue;
             /* Compare at buffer precision: equal depths keep OBJ order. */
             if (world && (float)depth < depth_row[x]) continue;
-            row[x] = color;
+            row[x] = world ? color : KdcHdUiBlend(row[x], color);
             if (world) depth_row[x] = (float)depth;
         }
     }
 }
 
 static Piece piece_buffer[sizeof(sprite_buffer) / sizeof(sprite_buffer[0])];
-static const uint8_t *art_cells[16384];
+static const uint32_t *art_cells[16384];
 
 /* Resolve the camera-dependent placement and artwork of every piece once,
  * in drawing order: decals, upright bodies, then screen pieces. */
@@ -1084,7 +1209,8 @@ static void PreparePieces(Render *render)
             }
             if (piece->x0 >= piece->x1 || piece->y0 >= piece->y1) continue;
             const unsigned cells = (unsigned)((size / 8) * (size / 8));
-            if (enlarge && sprite->world && cells_used + cells <= sizeof(art_cells) / sizeof(art_cells[0])) {
+            if (enlarge && (sprite->world || KdcHdUiEnabled()) &&
+                cells_used + cells <= sizeof(art_cells) / sizeof(art_cells[0])) {
                 /* Cells are indexed in the character's own (flipped) space. */
                 for (unsigned cell = 0; cell < cells; ++cell) {
                     const unsigned cx = cell % (unsigned)(size / 8), cy = cell / (unsigned)(size / 8);
@@ -1350,9 +1476,15 @@ static void DrawBand(void *context, unsigned index)
     TerrainRows(render, y0, y1);
     for (unsigned i = 0; i < render->decal_count; ++i) DecalRows(render, &render->decals[i], y0, y1);
     for (unsigned i = 0; i < render->body_count; ++i) BodyRows(render, &render->bodies[i], true, y0, y1);
-    HudRows(render, row0, row1);
-    for (unsigned i = 0; i < render->screen_count; ++i) BodyRows(render, &render->screen[i], false, y0, y1);
-    RestoreRows(render, row0, row1);
+    if (render->hd && render->scale > 1 && KdcHdUiEnabled()) {
+        HudWindowRows(render, row0, row1);
+        for (unsigned i = 0; i < render->screen_count; ++i) BodyRows(render, &render->screen[i], false, y0, y1);
+        /* The foreground BG3 pass follows the parallel bands on the host thread. */
+    } else {
+        HudRows(render, row0, row1);
+        for (unsigned i = 0; i < render->screen_count; ++i) BodyRows(render, &render->screen[i], false, y0, y1);
+        RestoreRows(render, row0, row1);
+    }
 }
 
 static double Milliseconds(void)
@@ -1485,6 +1617,7 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
     PreparePieces(&render);
     const double prepared = Milliseconds();
     KdcParallelFor((unsigned)((height + kBandRows - 1) / kBandRows), DrawBand, &render);
+    if (render.hd && scale > 1 && KdcHdUiEnabled()) HudBg3HdRows(&render, 0, height);
     ReportProfile(prepared - started, Milliseconds() - prepared);
     return 1;
 }

@@ -48,6 +48,8 @@ __pycache__/
 /docs/framework-spike.md
 
 /kdc-hud.cfg
+/kdc-hd.cfg
+/kdc-hd-ui.cfg
 /android/.gradle/
 /android/app/build/
 /android/local.properties
