@@ -16,6 +16,8 @@ so subsequent developer changes remain independent of ordinary play.
 | `extra:COURSE:HOLE` | 1-8 | 1-8 | 64-127 |
 | `multi:COURSE:HOLE` | 1-4 | 1-8 | 128-159 |
 | `multi-extra:COURSE:HOLE` | 1-4 | 1-8 | 192-223 |
+| `pack:ID:COURSE:HOLE` | Pack courses (1-based) | 1-8 | Built-in `1p-normal`/`1p-extra` or loaded IPS pack in 1P context (see [extra courses](extra-courses.md)) |
+| `pack-2p:ID:COURSE:HOLE` | Pack courses (1-based) | 1-8 | Same course-pack catalogs in 2P context (see [extra courses](extra-courses.md)) |
 | `demo:NUMBER` | Attract selections 1-4 | Human controlled | 0, 42, 44, 77 |
 | `map:ID` | Valid course context with an independent map override | Starts at hole 1 | Any decimal slot 0-255 |
 
@@ -33,9 +35,9 @@ The demo selections come from the four attract records referenced at `$83DB10`: 
 ./tools/play_experimental.ps1 -DevHoleList
 ```
 
-`-Executable` and `-Rom` retain their existing meanings. `-Fallback` selects interpreter execution. The shortcut bypasses the startup launcher, copies the executable and launcher resources into `local/dev-play`, and uses that directory's saves and settings. Existing controls/settings are copied on its first launch when available. Configure both controller seats via Ctrl+L for multiplayer. Ctrl+R resets and starts on the requested hole again. Loading a save state disarms the pending shortcut; it does not replace the restored game with a new hole.
+`-Executable` and `-Rom` retain their existing meanings. `-Fallback` selects interpreter execution, and `-CoursePack PATH` loads an external IPS pack. The shortcut bypasses the startup launcher, copies the executable and launcher resources into `local/dev-play`, and uses that directory's saves and settings (passing `--course-pack-dir` from the selected install only for `-DevHole pack:*` and `pack-2p:*`). Existing controls/settings are copied on its first launch when available. Configure both controller seats via Ctrl+L for multiplayer. Ctrl+R resets and starts on the requested hole again. Loading a save state disarms the pending shortcut; it does not replace the restored game with a new hole.
 
-The executable itself accepts `--dev-hole SELECTOR`, `--dev-two-player` (raw slots only), and `--dev-hole-list`. Direct executable invocation uses the usual executable-relative saves directory; the PowerShell script provides save isolation. Invalid selectors fail with exit code 2 before boot. There is no persistent setting or ROM modification.
+The executable itself accepts `--dev-hole SELECTOR`, `--dev-two-player` (raw slots only), `--course-pack PATH`, `--course-pack-dir PATH`, and `--dev-hole-list`. Ordinary direct developer starts (`normal`, `extra`, `multi`, `multi-extra`, `demo`, `map`) use the usual executable-relative `saves/` directory; the PowerShell script provides save isolation in `local/dev-play`. Direct `pack:` and `pack-2p:` starts instead automatically isolate battery saves in `saves/custom/save.srm` and disable save states and rewind so custom-pack sessions cannot overwrite ordinary saves or cross save-state boundaries (see [extra courses](extra-courses.md)). Invalid selectors fail with exit code 2 before boot. There is no persistent setting or ROM modification.
 
 For captures, use the same selector with `tools/headless.ps1 -DevHole SELECTOR` and optionally `-DevTwoPlayer`, alongside the ROM, executable, frame count and output arguments. `run.json` records the selection. Initial save states cannot be combined with a developer start. `compare_wram.py --recording` rejects these captures as ordinary reference boot scenarios because the control flow deliberately differs.
 

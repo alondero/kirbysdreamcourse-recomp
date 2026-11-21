@@ -120,8 +120,11 @@ int KdcDevParseArgs(int *argc, char **argv)
      * regardless of flag ordering. */
     for (int read = 1; read < *argc; ++read) {
         if (!strcmp(argv[read], "--course-pack-dir")) {
-            if (++read == *argc || !argv[read][0]) goto invalid;
-            KdcCoursePacksSetDropinDir(argv[read]);
+            if (++read == *argc || !argv[read][0] ||
+                !KdcCoursePacksSetDropinDir(argv[read])) {
+                fputs("Could not resolve --course-pack-dir path.\n", stderr);
+                goto invalid;
+            }
         } else if (!strcmp(argv[read], "--course-pack")) {
             if (++read == *argc || !KdcCoursePacksAddCliPath(argv[read]))
                 goto invalid;

@@ -239,7 +239,7 @@ int main(int argc, char **argv)
     {
         char courses_dir[1024];
         if (snesrecomp_exe_dir_path("courses", courses_dir, sizeof(courses_dir)))
-            KdcCoursePacksSetDropinDir(courses_dir);
+            (void)KdcCoursePacksSetDropinDir(courses_dir);
     }
 #endif
     int dev = KdcDevParseArgs(&argc, argv);

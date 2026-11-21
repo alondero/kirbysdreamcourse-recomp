@@ -32,6 +32,13 @@ class CoursePackTest(unittest.TestCase):
                 fifo = scan_dir / '00_pipe.ips'
                 os.mkfifo(fifo)
                 run_args.append(str(fifo))
+                # Build a valid >1,100-character POSIX caller path containing packs/
+                # so the dynamic getcwd/JoinPath path is exercised directly.
+                deep = Path(directory)
+                while len(str(deep)) < 1100:
+                    deep = deep / ('d' * 64)
+                (deep / 'packs').mkdir(parents=True)
+                run_args.append(str(deep))
             result = subprocess.run(run_args, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -361,23 +368,42 @@ class CoursePackRuntimeTest(unittest.TestCase):
                 self.assertEqual((install_dir / 'saves/save.srm').read_bytes(), seeded)
 
                 # Verify ordinary -DevHole normal:1:1 does not pass --course-pack-dir
-                # (preserving compatibility with pre-feature executables).
-                probe_script = tools_dir / 'play_experimental.ps1'
-                fake_install = proj_root / 'older-install'
-                fake_install.mkdir()
-                fake_exe = fake_install / 'KirbyDreamCourseRecomp.exe'
-                shutil.copy2(self.executable, fake_exe)
+                # using a compiled legacy-host stub that rejects unknown course-pack
+                # flags (would fail if the wrapper passed --course-pack-dir).
+                compiler = shutil.which('gcc')
+                self.assertIsNotNone(compiler, 'GCC required to compile legacy argument-checking stub')
+                legacy_install = proj_root / 'older-install'
+                legacy_install.mkdir()
+                (legacy_install / 'courses').mkdir()
+                legacy_src = proj_root / 'legacy_host.c'
+                legacy_src.write_text(
+                    '#include <stdio.h>\n#include <string.h>\n'
+                    'int main(int argc, char **argv) {\n'
+                    '  for (int i = 1; i < argc; ++i) {\n'
+                    '    if (!strcmp(argv[i], "--course-pack-dir") ||\n'
+                    '        !strcmp(argv[i], "--course-pack")) {\n'
+                    '      fprintf(stderr, "Unknown option: %s\\n", argv[i]);\n'
+                    '      return 2;\n'
+                    '    }\n'
+                    '  }\n'
+                    '  return 0;\n'
+                    '}\n', encoding='ascii')
+                legacy_exe = legacy_install / 'KirbyDreamCourseRecomp.exe'
+                subprocess.run([compiler, '-std=c11', str(legacy_src), '-o', str(legacy_exe)],
+                               check=True, capture_output=True, text=True)
+                # Confirm the stub itself rejects --course-pack-dir (guards against a vacuous check).
+                self.assertEqual(subprocess.run([str(legacy_exe), '--course-pack-dir', 'x'],
+                                                capture_output=True).returncode, 2)
                 res_norm = subprocess.run([
                     'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                    '-File', str(probe_script),
+                    '-File', str(tools_dir / 'play_experimental.ps1'),
                     '-Rom', str(self.rom),
-                    '-Executable', str(fake_exe),
+                    '-Executable', str(legacy_exe),
                     '-DevHole', 'normal:1:1',
                     '-Frames', '60',
                 ], cwd=proj_root, env=env, capture_output=True, text=True,
                    errors='replace', timeout=120)
                 self.assertEqual(res_norm.returncode, 0, res_norm.stdout + res_norm.stderr)
-                self.assertNotIn('Course pack loaded', res_norm.stdout + res_norm.stderr)
 
 
 

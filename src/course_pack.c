@@ -23,6 +23,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -49,7 +50,7 @@ static KdcCoursePack packs[KDC_PACK_MAX_PACKS];
 static unsigned pack_count;
 static bool catalog_initialized;
 static bool directory_scanned;
-static char dropin_dir[1024];
+static char *dropin_dir;
 static bool menu_enabled;
 static bool cli_forced;
 static uint8_t usa_solo_music[kUsaSoloMusicBytes];
@@ -234,7 +235,8 @@ void KdcCoursePacksResetCatalog(void)
     pack_count = 0;
     catalog_initialized = false;
     directory_scanned = false;
-    dropin_dir[0] = '\0';
+    free(dropin_dir);
+    dropin_dir = NULL;
     cli_forced = false;
     active = false;
     active_pack_index = 0;
@@ -618,6 +620,17 @@ static bool PushName(char ***list, size_t *count, size_t *cap, const char *name)
     return true;
 }
 
+static char *JoinPath(const char *dir, const char *sep, const char *leaf)
+{
+    size_t dl = strlen(dir), sl = strlen(sep), ll = strlen(leaf);
+    char *out = malloc(dl + sl + ll + 1u);
+    if (!out) return NULL;
+    memcpy(out, dir, dl);
+    memcpy(out + dl, sep, sl);
+    memcpy(out + dl + sl, leaf, ll + 1u);
+    return out;
+}
+
 void KdcCoursePacksScanDirectory(const char *dir_path)
 {
     EnsureBuiltins();
@@ -627,9 +640,8 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
     size_t found = 0u, cap = 0u;
 
 #ifdef _WIN32
-    char pattern[1536];
-    int plen = snprintf(pattern, sizeof(pattern), "%s\\*", dir_path);
-    if (plen > 0 && (size_t)plen < sizeof(pattern)) {
+    char *pattern = JoinPath(dir_path, "\\", "*");
+    if (pattern) {
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA(pattern, &fd);
         if (h != INVALID_HANDLE_VALUE) {
@@ -641,6 +653,7 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
             } while (FindNextFileA(h, &fd));
             FindClose(h);
         }
+        free(pattern);
     }
 #else
     DIR *dir = opendir(dir_path);
@@ -648,11 +661,12 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL) {
             if (!HasIpsExtension(ent->d_name)) continue;
-            char probe[1536];
-            int n = snprintf(probe, sizeof(probe), "%s/%s", dir_path, ent->d_name);
-            if (n < 0 || (size_t)n >= sizeof(probe)) continue;
+            char *probe = JoinPath(dir_path, "/", ent->d_name);
+            if (!probe) continue;
             struct stat st;
-            if (stat(probe, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            bool ok = stat(probe, &st) == 0 && S_ISREG(st.st_mode);
+            free(probe);
+            if (!ok) continue;
             (void)PushName(&names, &found, &cap, ent->d_name);
         }
         closedir(dir);
@@ -662,11 +676,13 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
     if (found > 1u) qsort(names, found, sizeof(names[0]), CompareStrings);
     for (size_t i = 0; i < found; ++i) {
         if (pack_count < KDC_PACK_MAX_PACKS) {
-            char full[1536], err[160] = {0};
-            int n = snprintf(full, sizeof(full), "%s/%s", dir_path, names[i]);
-            if (n > 0 && (size_t)n < sizeof(full) &&
-                !KdcCoursePackLoadIpsFile(full, err, sizeof(err))) {
-                fprintf(stderr, "Ignored course file %s: %s\n", full, err);
+            char *full = JoinPath(dir_path, "/", names[i]);
+            char err[160] = {0};
+            if (full) {
+                if (!KdcCoursePackLoadIpsFile(full, err, sizeof(err))) {
+                    fprintf(stderr, "Ignored course file %s: %s\n", full, err);
+                }
+                free(full);
             }
         }
         free(names[i]);
@@ -674,28 +690,48 @@ void KdcCoursePacksScanDirectory(const char *dir_path)
     free(names);
 }
 
-void KdcCoursePacksSetDropinDir(const char *dir_path)
+bool KdcCoursePacksSetDropinDir(const char *dir_path)
 {
     if (!dir_path || !*dir_path) {
-        dropin_dir[0] = '\0';
-        return;
+        free(dropin_dir);
+        dropin_dir = NULL;
+        return true;
     }
+    char *resolved = NULL;
 #ifdef _WIN32
-    char resolved[1024];
-    if (_fullpath(resolved, dir_path, sizeof(resolved))) {
-        snprintf(dropin_dir, sizeof(dropin_dir), "%s", resolved);
-        return;
-    }
+    resolved = _fullpath(NULL, dir_path, 0u);
+    if (!resolved) return false;
 #else
-    if (dir_path[0] != '/') {
-        char cwd[1024];
-        if (getcwd(cwd, sizeof(cwd))) {
-            int n = snprintf(dropin_dir, sizeof(dropin_dir), "%s/%s", cwd, dir_path);
-            if (n > 0 && (size_t)n < sizeof(dropin_dir)) return;
+    if (dir_path[0] == '/') {
+        size_t len = strlen(dir_path) + 1u;
+        resolved = malloc(len);
+        if (!resolved) return false;
+        memcpy(resolved, dir_path, len);
+    } else {
+        size_t cap = 1024u;
+        char *cwd = NULL;
+        for (;;) {
+            char *next = realloc(cwd, cap);
+            if (!next) {
+                free(cwd);
+                return false;
+            }
+            cwd = next;
+            if (getcwd(cwd, cap)) break;
+            if (errno != ERANGE || cap >= 65536u) {
+                free(cwd);
+                return false;
+            }
+            cap *= 2u;
         }
+        resolved = JoinPath(cwd, "/", dir_path);
+        free(cwd);
+        if (!resolved) return false;
     }
 #endif
-    snprintf(dropin_dir, sizeof(dropin_dir), "%s", dir_path);
+    free(dropin_dir);
+    dropin_dir = resolved;
+    return true;
 }
 
 void KdcCoursePacksEnsureLoaded(void)
@@ -703,7 +739,7 @@ void KdcCoursePacksEnsureLoaded(void)
     EnsureBuiltins();
     if (directory_scanned) return;
     directory_scanned = true;
-    KdcCoursePacksScanDirectory(dropin_dir[0] ? dropin_dir : "courses");
+    KdcCoursePacksScanDirectory((dropin_dir && dropin_dir[0]) ? dropin_dir : "courses");
 }
 
 bool KdcCoursePacksAddCliPath(const char *path)

@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #define CHECK(x) do { \
     if (!(x)) { \
@@ -268,7 +271,7 @@ int main(int argc, char **argv)
         CHECK(WriteFileBytes(vp, valid_ips, valid_sz));
         free(valid_ips);
 
-        KdcCoursePacksSetDropinDir(argv[1]);
+        CHECK(KdcCoursePacksSetDropinDir(argv[1]));
         KdcCoursePacksEnsureLoaded();
         CHECK(KdcCoursePackCount() == 3u && KdcCoursePackExternalCount() == 1u);
         CHECK(KdcCoursePackFindById("gdc") == 2);
@@ -280,6 +283,27 @@ int main(int argc, char **argv)
 
         KdcCoursePacksResetCatalog();
         CHECK(KdcCoursePackCount() == 2u && KdcCoursePackExternalCount() == 0u);
+
+#ifndef _WIN32
+        /* Long (>1024-byte) POSIX caller path with relative drop-in override:
+         * resolve while in argv[3], chdir away to "/", then scan cleanly. */
+        if (argc >= 4 && argv[3][0]) {
+            char orig_cwd[4096];
+            CHECK(getcwd(orig_cwd, sizeof(orig_cwd)) != NULL);
+            CHECK(chdir(argv[3]) == 0);
+            size_t long_sz = 0;
+            uint8_t *long_ips = BuildSyntheticGdcIps(&long_sz, 5u, 0x0cu);
+            CHECK(WriteFileBytes("packs/long_valid.ips", long_ips, long_sz));
+            free(long_ips);
+            CHECK(KdcCoursePacksSetDropinDir("packs"));
+            CHECK(chdir("/") == 0);
+            KdcCoursePacksEnsureLoaded();
+            CHECK(KdcCoursePackCount() == 3u && KdcCoursePackExternalCount() == 1u);
+            CHECK(KdcCoursePackFindById("gdc") == 2);
+            CHECK(chdir(orig_cwd) == 0);
+            KdcCoursePacksResetCatalog();
+        }
+#endif
     }
 
     /* Load valid synthetic Grump's Dream Course IPS. */
