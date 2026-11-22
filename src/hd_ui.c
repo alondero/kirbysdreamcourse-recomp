@@ -125,13 +125,19 @@ typedef struct Brush {
 
 static unsigned UnitByte(float x) { return x <= 0 ? 0 : x >= 1 ? 255 : (unsigned)(x * 255 + 0.5f); }
 
+static inline unsigned Div255(unsigned v)
+{
+    v += 128u;
+    return (v + (v >> 8)) >> 8;
+}
+
 static uint32_t MixRgb(uint32_t a, uint32_t b, unsigned weight)
 {
-    unsigned inv = 255 - weight;
-    uint32_t rgb = 0;
-    for (unsigned shift = 0; shift <= 16; shift += 8)
-        rgb |= ((((a >> shift & 255) * inv + (b >> shift & 255) * weight + 127) / 255) << shift);
-    return rgb;
+    const unsigned inv = 255u - weight;
+    const unsigned r = Div255(((a >> 16) & 255u) * inv + ((b >> 16) & 255u) * weight);
+    const unsigned g = Div255(((a >> 8) & 255u) * inv + ((b >> 8) & 255u) * weight);
+    const unsigned bl = Div255((a & 255u) * inv + (b & 255u) * weight);
+    return (r << 16) | (g << 8) | bl;
 }
 
 static void Ink(uint32_t *dst, uint32_t color, unsigned alpha)
@@ -1005,13 +1011,13 @@ bool KdcHdUiRgba(const PpuHdTileQuery *q, uint32_t *pixels)
 uint32_t KdcHdUiBlend(uint32_t background, uint32_t ink)
 {
     const unsigned a = ink >> 24;
-    if (a == 255) return ink;
+    if (a == 255u) return ink;
     if (!a) return background;
-    uint32_t result = 0xff000000;
-    for (unsigned shift = 0; shift <= 16; shift += 8)
-        result |=
-            ((((ink >> shift & 255) * a + (background >> shift & 255) * (255 - a) + 127) / 255) << shift);
-    return result;
+    const unsigned inv = 255u - a;
+    const unsigned r = Div255(((ink >> 16) & 255u) * a + ((background >> 16) & 255u) * inv);
+    const unsigned g = Div255(((ink >> 8) & 255u) * a + ((background >> 8) & 255u) * inv);
+    const unsigned b = Div255((ink & 255u) * a + (background & 255u) * inv);
+    return 0xff000000u | (r << 16) | (g << 8) | b;
 }
 
 void KdcHdUiGlyph(unsigned char ch, uint32_t color, uint32_t *pixels)

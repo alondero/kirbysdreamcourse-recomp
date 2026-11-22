@@ -34,6 +34,7 @@ static bool hd_ui_enabled = false;
 bool KdcHdUiOptionEnabled(void) { return hd_ui_enabled; }
 bool KdcCheckerNeedsContext(const uint16_t words[16]) { (void)words; return false; }
 bool KdcOrbitComposing(void) { return false; }
+bool KdcHdPackAvailable(void) { return false; }
 
 bool KdcHdNearestTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 {

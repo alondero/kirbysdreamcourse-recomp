@@ -1,4 +1,5 @@
 #include "hd_textures.h"
+#include "hd_pack.h"
 #include "hd_ui.h"
 #include "hd_scaler.h"
 #include "course_checker.h"
@@ -173,7 +174,13 @@ unsigned KdcHdScale(void)
      * the orbit view composes the frame the host presents that composition
      * instead of the tiles. Either way the tile work would be discarded, so
      * skip it. */
-    if (fill && ppu) PpuPauseHdTiles(ppu, (!course_active && !ui) || KdcOrbitComposing());
+    if (fill && ppu) {
+        /* Gameplay RGBA replacements (HUD/OBJ) are purely content-addressed
+         * unless a texture pack is active; disabling the VRAM address cache
+         * key during courses restores full tile deduplication. */
+        if (ui) PpuSetHdRgbaAddressKey(ppu, !course_active || KdcHdPackAvailable());
+        PpuPauseHdTiles(ppu, (!course_active && !ui) || KdcOrbitComposing());
+    }
     /* Developer diagnostic: KDC_HD_STATS=1 prints cumulative counters. */
     static int reported = -1;
     if (fill && ppu && snes_frame_counter % 300 == 0 && snes_frame_counter != reported &&

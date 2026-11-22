@@ -5,6 +5,7 @@
 #include "host_parallel.h"
 #include "snes/ppu.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,6 +15,13 @@ enum {
     kCharWords = 0x4000,   /* 1024 4bpp characters from VRAM word 0 */
     kMaxTiles = 1 << 16,   /* refuse implausible maps instead of allocating */
     kStrip = 4,            /* character rows enlarged per parallel piece */
+    kBlockCols = 8,        /* character columns per cached animated terrain block */
+    kTerrainBlockSlots = 16,
+#ifdef __ANDROID__
+    kMaxTerrainBlockCacheBytes = 16u * 1024u * 1024u,
+#else
+    kMaxTerrainBlockCacheBytes = 48u * 1024u * 1024u,
+#endif
     kReach = (kKdcHdImageReach + 7) / 8,
     /* Updates a palette's luma must hold still before the enlargement's edge
      * decisions follow it. Colours always come from the live palette; only
@@ -23,6 +31,21 @@ enum {
 };
 
 _Static_assert((int)kKdcTerrainScale == (int)kKdcHdImageScale, "one enlargement factor");
+
+typedef struct TerrainBlockEntry {
+    uint64_t hash;
+    uint64_t last_use;
+    float luma[128];
+    uint8_t *padded;
+    uint8_t *hd;
+    size_t padded_bytes, hd_bytes;
+    bool valid;
+} TerrainBlockEntry;
+
+typedef struct TerrainBlockCache {
+    TerrainBlockEntry entries[kTerrainBlockSlots];
+    uint64_t clock;
+} TerrainBlockCache;
 
 static struct {
     KdcTerrain view;
@@ -38,8 +61,46 @@ static struct {
     float luma[256];       /* the luma the enlargement was made with */
     float seen[128];       /* the luma of the previous update */
     uint8_t steady[8];     /* updates each palette's luma has held still */
+    TerrainBlockCache *block_cache;
+    unsigned block_strips, block_cols;
+    _Atomic size_t block_cache_bytes;
     KdcTerrainStats stats;
 } state;
+
+static uint64_t HashBytes(uint64_t hash, const void *data, size_t bytes)
+{
+    const uint8_t *p = data;
+    size_t i = 0;
+    for (; i + 8 <= bytes; i += 8) {
+        uint64_t w;
+        memcpy(&w, p + i, sizeof(w));
+        hash ^= w;
+        hash *= UINT64_C(0x100000001b3);
+        hash ^= hash >> 32;
+    }
+    for (; i < bytes; ++i) {
+        hash ^= p[i];
+        hash *= UINT64_C(0x100000001b3);
+    }
+    return hash;
+}
+
+static void FreeTerrainBlockCache(void)
+{
+    if (state.block_cache) {
+        const size_t total = (size_t)state.block_strips * state.block_cols;
+        for (size_t i = 0; i < total; ++i) {
+            for (unsigned s = 0; s < kTerrainBlockSlots; ++s) {
+                free(state.block_cache[i].entries[s].padded);
+                free(state.block_cache[i].entries[s].hd);
+            }
+        }
+        free(state.block_cache);
+        state.block_cache = NULL;
+    }
+    state.block_strips = state.block_cols = 0;
+    atomic_store_explicit(&state.block_cache_bytes, 0, memory_order_relaxed);
+}
 
 static uint32_t Color(unsigned rgb15)
 {
@@ -48,10 +109,23 @@ static uint32_t Color(unsigned rgb15)
            ((g << 3 | g >> 2) << 8) | (b << 3 | b >> 2);
 }
 
-enum { kSceneryFrames = 4 };
+enum {
+#ifdef __ANDROID__
+    kSceneryFrames = 16,
+    kMaxSceneryCacheBytes = 16u * 1024u * 1024u,
+#else
+    kSceneryFrames = 48,
+    kMaxSceneryCacheBytes = 48u * 1024u * 1024u,
+#endif
+    kSceneryNativeBytes = 256u * 256u,
+    kSceneryHdBytes = 1024u * 1024u,
+    kSceneryFrameBytes = kSceneryNativeBytes + kSceneryHdBytes,
+};
 typedef struct SceneryFrame {
-    uint8_t native[256 * 256];
+    uint64_t hash;
+    uint64_t last_use;
     float luma[32];
+    uint8_t *native;
     uint8_t *hd;
     bool valid;
 } SceneryFrame;
@@ -67,17 +141,22 @@ static struct {
     float seen[32];    /* the luma of the previous update */
     uint8_t steady;    /* updates the luma has held still (kSettle) */
     SceneryFrame frames[kSceneryFrames];
-    unsigned next_frame;
+    size_t cache_bytes;
+    uint64_t use_clock;
 } scenery;
 
 static void FreeSceneryFrames(void)
 {
     for (unsigned i = 0; i < kSceneryFrames; ++i) {
+        free(scenery.frames[i].native);
         free(scenery.frames[i].hd);
+        scenery.frames[i].native = NULL;
         scenery.frames[i].hd = NULL;
         scenery.frames[i].valid = false;
+        scenery.frames[i].last_use = 0;
     }
-    scenery.next_frame = 0;
+    scenery.cache_bytes = 0;
+    scenery.use_clock = 0;
     scenery.hd = NULL;
     scenery.view.hd = NULL;
     scenery.hd_valid = false;
@@ -86,6 +165,7 @@ static void FreeSceneryFrames(void)
 void KdcTerrainReset(void)
 {
     FreeSceneryFrames();
+    FreeTerrainBlockCache();
     scenery.valid = scenery.hd_valid = false;
     free(state.native);
     free(state.mask);
@@ -214,14 +294,131 @@ static void ComposeRow(void *context, unsigned index)
 typedef struct Enlarge {
     KdcHdImage image;
     const uint8_t *marked; /* per grid cell, or NULL for every cell */
+    bool use_block_cache;
+    _Atomic uint64_t scaled_tiles;
 } Enlarge;
+
+/* Copy a padded source neighbourhood for [bx0,bx1) x [by0,by1) into dst. */
+static size_t PackPaddedBlock(const KdcHdImage *image, int bx0, int by0, int bx1, int by1,
+                              uint8_t *dst)
+{
+    const int wx0 = bx0 - kKdcHdImageReach > 0 ? bx0 - kKdcHdImageReach : 0;
+    const int wy0 = by0 - kKdcHdImageReach > 0 ? by0 - kKdcHdImageReach : 0;
+    const int wx1 = bx1 + kKdcHdImageReach < image->width ? bx1 + kKdcHdImageReach : image->width;
+    const int wy1 = by1 + kKdcHdImageReach < image->height ? by1 + kKdcHdImageReach : image->height;
+    const size_t row_bytes = (size_t)(wx1 - wx0);
+    size_t offset = 0;
+    for (int y = wy0; y < wy1; ++y) {
+        memcpy(dst + offset, image->src + (size_t)y * image->src_stride + wx0, row_bytes);
+        offset += row_bytes;
+    }
+    return offset;
+}
+
+static bool EnlargeBlockCached(const Enlarge *job, unsigned strip_index, unsigned bcol,
+                               int c0, int c1, int r0, int r1)
+{
+    const KdcHdImage *image = &job->image;
+    const int bx0 = c0 * 8, by0 = r0 * 8, bx1 = c1 * 8, by1 = r1 * 8;
+    const size_t hd_row_bytes = (size_t)(bx1 - bx0) * kKdcHdImageScale;
+    const int hd_rows = (by1 - by0) * kKdcHdImageScale;
+    const size_t hd_bytes = hd_row_bytes * (size_t)hd_rows;
+    enum { kMaxPadBytes = (kBlockCols * 8 + 2 * kKdcHdImageReach) * (kStrip * 8 + 2 * kKdcHdImageReach) };
+    uint8_t padded[kMaxPadBytes];
+    const size_t padded_bytes = PackPaddedBlock(image, bx0, by0, bx1, by1, padded);
+    uint64_t hash = HashBytes(UINT64_C(0xcbf29ce484222325), state.luma, 128 * sizeof(*state.luma));
+    hash = HashBytes(hash, padded, padded_bytes);
+
+    TerrainBlockCache *cache = &state.block_cache[(size_t)strip_index * state.block_cols + bcol];
+    ++cache->clock;
+    TerrainBlockEntry *victim = NULL;
+    for (unsigned i = 0; i < kTerrainBlockSlots; ++i) {
+        TerrainBlockEntry *e = &cache->entries[i];
+        if (e->valid && e->hash == hash && e->padded_bytes == padded_bytes &&
+            e->hd_bytes == hd_bytes &&
+            !memcmp(e->luma, state.luma, sizeof(e->luma)) &&
+            !memcmp(e->padded, padded, padded_bytes)) {
+            e->last_use = cache->clock;
+            for (int y = 0; y < hd_rows; ++y) {
+                memcpy(image->dst + (size_t)(by0 * kKdcHdImageScale + y) * image->dst_stride +
+                           (size_t)bx0 * kKdcHdImageScale,
+                       e->hd + (size_t)y * hd_row_bytes, hd_row_bytes);
+            }
+            return true;
+        }
+        if (!victim || (!e->valid && victim->valid) ||
+            (e->valid && victim->valid && e->last_use < victim->last_use))
+            victim = e;
+    }
+
+    (void)KdcHdImageUpdate(image, bx0, by0, bx1, by1);
+    if (victim) {
+        const bool need_alloc = victim->padded_bytes != padded_bytes || victim->hd_bytes != hd_bytes ||
+                                !victim->padded || !victim->hd;
+        if (need_alloc) {
+            const size_t old_bytes = (victim->padded ? victim->padded_bytes : 0) +
+                                     (victim->hd ? victim->hd_bytes : 0);
+            const size_t new_bytes = padded_bytes + hd_bytes;
+            const size_t cur = atomic_load_explicit(&state.block_cache_bytes, memory_order_relaxed);
+            if (cur - old_bytes + new_bytes <= kMaxTerrainBlockCacheBytes) {
+                uint8_t *np = malloc(padded_bytes);
+                uint8_t *nh = malloc(hd_bytes);
+                if (np && nh) {
+                    free(victim->padded);
+                    free(victim->hd);
+                    victim->padded = np;
+                    victim->hd = nh;
+                    victim->padded_bytes = padded_bytes;
+                    victim->hd_bytes = hd_bytes;
+                    atomic_fetch_add_explicit(&state.block_cache_bytes, new_bytes - old_bytes,
+                                              memory_order_relaxed);
+                } else {
+                    free(np);
+                    free(nh);
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        memcpy(victim->luma, state.luma, sizeof(victim->luma));
+        memcpy(victim->padded, padded, padded_bytes);
+        for (int y = 0; y < hd_rows; ++y) {
+            memcpy(victim->hd + (size_t)y * hd_row_bytes,
+                   image->dst + (size_t)(by0 * kKdcHdImageScale + y) * image->dst_stride +
+                       (size_t)bx0 * kKdcHdImageScale,
+                   hd_row_bytes);
+        }
+        victim->hash = hash;
+        victim->last_use = cache->clock;
+        victim->valid = true;
+    }
+    return false;
+}
 
 /* A strip of character rows: enlarge each run of marked columns. */
 static void EnlargeStrip(void *context, unsigned index)
 {
-    const Enlarge *job = context;
+    Enlarge *job = context;
     const int r0 = (int)index * kStrip;
     const int r1 = r0 + kStrip < state.rows ? r0 + kStrip : state.rows;
+    if (job->use_block_cache && state.block_cache) {
+        uint64_t missed_tiles = 0;
+        for (unsigned bcol = 0; bcol < state.block_cols; ++bcol) {
+            const int c0 = (int)bcol * kBlockCols;
+            const int c1 = c0 + kBlockCols < state.columns ? c0 + kBlockCols : state.columns;
+            uint64_t marked_count = 0;
+            for (int row = r0; row < r1; ++row)
+                for (int col = c0; col < c1; ++col)
+                    marked_count += job->marked[(size_t)row * state.columns + col] != 0;
+            if (!marked_count) continue;
+            if (!EnlargeBlockCached(job, index, bcol, c0, c1, r0, r1))
+                missed_tiles += marked_count;
+        }
+        if (missed_tiles)
+            atomic_fetch_add_explicit(&job->scaled_tiles, missed_tiles, memory_order_relaxed);
+        return;
+    }
     for (int column = 0; column < state.columns;) {
         bool marked = !job->marked;
         for (int row = r0; row < r1 && !marked; ++row)
@@ -239,15 +436,28 @@ static void EnlargeStrip(void *context, unsigned index)
     }
 }
 
-static void EnlargeMarked(const uint8_t *marked)
+static uint64_t EnlargeMarked(const uint8_t *marked)
 {
+    const unsigned strips = (unsigned)((state.rows + kStrip - 1) / kStrip);
+    const bool use_cache = marked != NULL;
+    if (use_cache && !state.block_cache) {
+        const unsigned bcols = (unsigned)((state.columns + kBlockCols - 1) / kBlockCols);
+        state.block_cache = calloc((size_t)strips * bcols, sizeof(*state.block_cache));
+        if (state.block_cache) {
+            state.block_strips = strips;
+            state.block_cols = bcols;
+        }
+    }
     Enlarge job = {
         .image = {.src = state.native, .width = state.view.width, .height = state.view.height,
                   .src_stride = state.view.width, .dst = state.hd,
                   .dst_stride = state.view.width * kKdcHdImageScale, .luma = state.luma},
         .marked = marked,
+        .use_block_cache = use_cache && state.block_cache != NULL,
     };
-    KdcParallelFor((unsigned)((state.rows + kStrip - 1) / kStrip), EnlargeStrip, &job);
+    atomic_init(&job.scaled_tiles, 0);
+    KdcParallelFor(strips, EnlargeStrip, &job);
+    return atomic_load_explicit(&job.scaled_tiles, memory_order_relaxed);
 }
 
 const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bool hd)
@@ -291,6 +501,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     const bool chars_changed = all || memcmp(vram, state.chars, sizeof(state.chars));
     const bool map_changed = all || memcmp(ram + 0x13000, state.map, kMapBytes);
     if (!hd && state.hd_valid) {
+        FreeTerrainBlockCache();
         free(state.hd);
         state.hd = NULL;
         state.view.hd = NULL;
@@ -340,8 +551,11 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         EnlargeMarked(NULL);
         state.stats.scaled_tiles += cells;
     } else if (any) {
-        EnlargeMarked(state.reach);
-        for (size_t i = 0; i < cells; ++i) state.stats.scaled_tiles += state.reach[i];
+        const uint64_t scaled = EnlargeMarked(state.reach);
+        if (state.block_cache)
+            state.stats.scaled_tiles += scaled;
+        else
+            for (size_t i = 0; i < cells; ++i) state.stats.scaled_tiles += state.reach[i];
     }
     return &state.view;
 }
@@ -420,40 +634,69 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
             }
         }
     }
-    memcpy(scenery.map, ram + 0xdadc, sizeof(scenery.map));
-    memcpy(scenery.chars, vram + 0x4000, sizeof(scenery.chars));
-    scenery.valid = true;
     const bool changed = c1 >= 0;
+    if (changed || full) {
+        memcpy(scenery.map, ram + 0xdadc, sizeof(scenery.map));
+        memcpy(scenery.chars, vram + 0x4000, sizeof(scenery.chars));
+    }
+    scenery.valid = true;
     const bool enlarge_all = hd && (!scenery.hd_valid || luma_changed);
     if (!changed && !enlarge_all) return &scenery.view;
     ++state.stats.scenery_builds;
     if (luma_changed || !scenery.hd_valid) memcpy(scenery.luma, luma, sizeof(luma));
     if (!hd) return &scenery.view;
-    /* Backdrops often loop through a few animation frames. Compare the
-     * complete decoded image and the effective (settled) luma, not VRAM
-     * addresses or a hash alone. Live colours are still applied by the draw.
-     * Retaining four index images costs at most 4 MiB plus their keys. */
+    /* Backdrops often loop through animated frames. Compare a 64-bit hash
+     * first, then verify the complete decoded image and settled luma, never
+     * trusting a hash alone. Retaining lazily allocated frames up to
+     * kSceneryFrames / kMaxSceneryCacheBytes (48 MiB desktop, 16 MiB Android;
+     * ~1.06 MiB per distinct frame) eliminates cache thrashing on multi-frame
+     * animated skies while strictly bounding memory usage. */
+    uint64_t hash = HashBytes(UINT64_C(0xcbf29ce484222325), scenery.luma, 32 * sizeof(*scenery.luma));
+    hash = HashBytes(hash, scenery.native, sizeof(scenery.native));
+    ++scenery.use_clock;
+    const bool can_grow = scenery.cache_bytes + kSceneryFrameBytes <= kMaxSceneryCacheBytes;
+    SceneryFrame *victim = NULL;
     for (unsigned i = 0; i < kSceneryFrames; ++i) {
-        const SceneryFrame *frame = &scenery.frames[i];
-        if (frame->valid && !memcmp(frame->luma, scenery.luma, sizeof(frame->luma)) &&
-            !memcmp(frame->native, scenery.native, sizeof(frame->native))) {
+        SceneryFrame *frame = &scenery.frames[i];
+        if (frame->valid && frame->native && frame->hd && frame->hash == hash &&
+            !memcmp(frame->luma, scenery.luma, sizeof(frame->luma)) &&
+            !memcmp(frame->native, scenery.native, kSceneryNativeBytes)) {
+            frame->last_use = scenery.use_clock;
             scenery.view.hd = scenery.hd = frame->hd;
             scenery.hd_valid = true;
             ++state.stats.scenery_cache_hits;
             return &scenery.view;
         }
+        const bool allocated = frame->native != NULL && frame->hd != NULL;
+        if (!allocated && !can_grow) continue;
+        if (!victim || (!frame->valid && victim->valid) ||
+            (frame->valid && victim->valid && frame->last_use < victim->last_use))
+            victim = frame;
     }
-    SceneryFrame *frame = &scenery.frames[scenery.next_frame];
-    if (!frame->hd) frame->hd = malloc(1024 * 1024);
-    if (!frame->hd) {
-        /* Allocation failure must never expose the previous frame's art. */
+    SceneryFrame *frame = victim;
+    if (!frame) {
         FreeSceneryFrames();
         return &scenery.view;
+    }
+    if (!frame->native || !frame->hd) {
+        uint8_t *native_buf = frame->native ? frame->native : malloc(kSceneryNativeBytes);
+        uint8_t *hd_buf = frame->hd ? frame->hd : malloc(kSceneryHdBytes);
+        if (!native_buf || !hd_buf) {
+            if (!frame->native) free(native_buf);
+            if (!frame->hd) free(hd_buf);
+            /* Allocation failure must never expose the previous frame's art. */
+            FreeSceneryFrames();
+            return &scenery.view;
+        }
+        if (!frame->native) scenery.cache_bytes += kSceneryNativeBytes;
+        if (!frame->hd) scenery.cache_bytes += kSceneryHdBytes;
+        frame->native = native_buf;
+        frame->hd = hd_buf;
     }
     /* Partial updates are relative to the image shown last, which may be a
      * different cache entry. Seed the replacement before changing its area. */
     if (!enlarge_all && frame->hd != scenery.hd)
-        memcpy(frame->hd, scenery.hd, 1024 * 1024);
+        memcpy(frame->hd, scenery.hd, kSceneryHdBytes);
     frame->valid = false;
     scenery.hd = frame->hd;
     SceneryJob job = {
@@ -475,10 +718,11 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     const unsigned rows = (unsigned)((job.y1 - job.y0 + kSceneryTileHeight - 1) / kSceneryTileHeight);
     ++state.stats.scenery_enlargements;
     KdcParallelFor(rows * SceneryColumns(&job), EnlargeScenery, &job);
-    memcpy(frame->native, scenery.native, sizeof(frame->native));
+    memcpy(frame->native, scenery.native, kSceneryNativeBytes);
     memcpy(frame->luma, scenery.luma, sizeof(frame->luma));
+    frame->hash = hash;
+    frame->last_use = scenery.use_clock;
     frame->valid = true;
-    scenery.next_frame = (scenery.next_frame + 1) % kSceneryFrames;
     scenery.hd_valid = true;
     scenery.view.hd = scenery.hd;
     return &scenery.view;
