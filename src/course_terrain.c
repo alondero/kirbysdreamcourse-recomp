@@ -17,7 +17,11 @@ enum {
     kStrip = 4,            /* character rows enlarged per parallel piece */
     kBlockCols = 8,        /* character columns per cached animated terrain block */
     kTerrainBlockSlots = 16,
-    kMaxTerrainBlockCacheBytes = 64u * 1024u * 1024u,
+#ifdef __ANDROID__
+    kMaxTerrainBlockCacheBytes = 16u * 1024u * 1024u,
+#else
+    kMaxTerrainBlockCacheBytes = 48u * 1024u * 1024u,
+#endif
     kReach = (kKdcHdImageReach + 7) / 8,
     /* Updates a palette's luma must hold still before the enlargement's edge
      * decisions follow it. Colours always come from the live palette; only
@@ -105,12 +109,23 @@ static uint32_t Color(unsigned rgb15)
            ((g << 3 | g >> 2) << 8) | (b << 3 | b >> 2);
 }
 
-enum { kSceneryFrames = 64 };
+enum {
+#ifdef __ANDROID__
+    kSceneryFrames = 16,
+    kMaxSceneryCacheBytes = 16u * 1024u * 1024u,
+#else
+    kSceneryFrames = 48,
+    kMaxSceneryCacheBytes = 48u * 1024u * 1024u,
+#endif
+    kSceneryNativeBytes = 256u * 256u,
+    kSceneryHdBytes = 1024u * 1024u,
+    kSceneryFrameBytes = kSceneryNativeBytes + kSceneryHdBytes,
+};
 typedef struct SceneryFrame {
     uint64_t hash;
     uint64_t last_use;
-    uint8_t native[256 * 256];
     float luma[32];
+    uint8_t *native;
     uint8_t *hd;
     bool valid;
 } SceneryFrame;
@@ -126,17 +141,21 @@ static struct {
     float seen[32];    /* the luma of the previous update */
     uint8_t steady;    /* updates the luma has held still (kSettle) */
     SceneryFrame frames[kSceneryFrames];
+    size_t cache_bytes;
     uint64_t use_clock;
 } scenery;
 
 static void FreeSceneryFrames(void)
 {
     for (unsigned i = 0; i < kSceneryFrames; ++i) {
+        free(scenery.frames[i].native);
         free(scenery.frames[i].hd);
+        scenery.frames[i].native = NULL;
         scenery.frames[i].hd = NULL;
         scenery.frames[i].valid = false;
         scenery.frames[i].last_use = 0;
     }
+    scenery.cache_bytes = 0;
     scenery.use_clock = 0;
     scenery.hd = NULL;
     scenery.view.hd = NULL;
@@ -628,39 +647,56 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     if (!hd) return &scenery.view;
     /* Backdrops often loop through animated frames. Compare a 64-bit hash
      * first, then verify the complete decoded image and settled luma, never
-     * trusting a hash alone. Retaining up to 32 lazily allocated index images
-     * eliminates cache thrashing on multi-frame animated skies while costing
-     * only 1 MiB per distinct frame used. */
+     * trusting a hash alone. Retaining lazily allocated frames up to
+     * kSceneryFrames / kMaxSceneryCacheBytes (48 MiB desktop, 16 MiB Android;
+     * ~1.06 MiB per distinct frame) eliminates cache thrashing on multi-frame
+     * animated skies while strictly bounding memory usage. */
     uint64_t hash = HashBytes(UINT64_C(0xcbf29ce484222325), scenery.luma, 32 * sizeof(*scenery.luma));
     hash = HashBytes(hash, scenery.native, sizeof(scenery.native));
     ++scenery.use_clock;
+    const bool can_grow = scenery.cache_bytes + kSceneryFrameBytes <= kMaxSceneryCacheBytes;
     SceneryFrame *victim = NULL;
     for (unsigned i = 0; i < kSceneryFrames; ++i) {
         SceneryFrame *frame = &scenery.frames[i];
-        if (frame->valid && frame->hash == hash &&
+        if (frame->valid && frame->native && frame->hd && frame->hash == hash &&
             !memcmp(frame->luma, scenery.luma, sizeof(frame->luma)) &&
-            !memcmp(frame->native, scenery.native, sizeof(frame->native))) {
+            !memcmp(frame->native, scenery.native, kSceneryNativeBytes)) {
             frame->last_use = scenery.use_clock;
             scenery.view.hd = scenery.hd = frame->hd;
             scenery.hd_valid = true;
             ++state.stats.scenery_cache_hits;
             return &scenery.view;
         }
+        const bool allocated = frame->native != NULL && frame->hd != NULL;
+        if (!allocated && !can_grow) continue;
         if (!victim || (!frame->valid && victim->valid) ||
             (frame->valid && victim->valid && frame->last_use < victim->last_use))
             victim = frame;
     }
     SceneryFrame *frame = victim;
-    if (!frame->hd) frame->hd = malloc(1024 * 1024);
-    if (!frame->hd) {
-        /* Allocation failure must never expose the previous frame's art. */
+    if (!frame) {
         FreeSceneryFrames();
         return &scenery.view;
+    }
+    if (!frame->native || !frame->hd) {
+        uint8_t *native_buf = frame->native ? frame->native : malloc(kSceneryNativeBytes);
+        uint8_t *hd_buf = frame->hd ? frame->hd : malloc(kSceneryHdBytes);
+        if (!native_buf || !hd_buf) {
+            if (!frame->native) free(native_buf);
+            if (!frame->hd) free(hd_buf);
+            /* Allocation failure must never expose the previous frame's art. */
+            FreeSceneryFrames();
+            return &scenery.view;
+        }
+        if (!frame->native) scenery.cache_bytes += kSceneryNativeBytes;
+        if (!frame->hd) scenery.cache_bytes += kSceneryHdBytes;
+        frame->native = native_buf;
+        frame->hd = hd_buf;
     }
     /* Partial updates are relative to the image shown last, which may be a
      * different cache entry. Seed the replacement before changing its area. */
     if (!enlarge_all && frame->hd != scenery.hd)
-        memcpy(frame->hd, scenery.hd, 1024 * 1024);
+        memcpy(frame->hd, scenery.hd, kSceneryHdBytes);
     frame->valid = false;
     scenery.hd = frame->hd;
     SceneryJob job = {
@@ -682,7 +718,7 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     const unsigned rows = (unsigned)((job.y1 - job.y0 + kSceneryTileHeight - 1) / kSceneryTileHeight);
     ++state.stats.scenery_enlargements;
     KdcParallelFor(rows * SceneryColumns(&job), EnlargeScenery, &job);
-    memcpy(frame->native, scenery.native, sizeof(frame->native));
+    memcpy(frame->native, scenery.native, kSceneryNativeBytes);
     memcpy(frame->luma, scenery.luma, sizeof(frame->luma));
     frame->hash = hash;
     frame->last_use = scenery.use_clock;

@@ -21,9 +21,9 @@ int KdcOrbitDrawHd(uint8_t *dst, size_t pitch, const uint8_t *field,
  * view is still ready, so the PPU's own HD tile composition would not be
  * shown. A declined draw clears it, so the next frame keeps its HD tiles. */
 bool KdcOrbitComposing(void);
-/* True when the upcoming HD orbit composition will overwrite the whole HD
- * surface without reading the native software PPU framebuffer. */
-bool KdcOrbitCanSkipNativeRaster(void);
+/* True when the upcoming HD orbit composition is guaranteed to overwrite the
+ * whole HD surface at width x height without reading the native PPU buffer. */
+bool KdcOrbitCanSkipNativeRaster(int width, int height);
 void KdcOrbitNoteNativeRasterSkipped(bool skipped);
 
 #endif

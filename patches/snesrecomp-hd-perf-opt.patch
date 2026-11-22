@@ -1,3 +1,69 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index df0962b2..9a3c890c 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -431,12 +431,9 @@ void snes_beam_frame_driver_run_frame(void) {
+   }
+ }
+ 
+-void snes_beam_frame_driver_draw_ppu_frame(void) {
+-  snes_beam_frame_driver_draw_ppu_frame_observed(NULL, NULL);
+-}
+-
+-void snes_beam_frame_driver_draw_ppu_frame_observed(
+-    SnesBeamRasterObserver *observer, void *context) {
++static void draw_ppu_frame_internal(bool pixels,
++                                    SnesBeamRasterObserver *observer,
++                                    void *context) {
+   int line;
+ 
+   /* The field's register state as of its start, then each line's journal
+@@ -450,7 +447,10 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+      * line's entries take effect on this one. */
+     ppu_rasterApplyLine(g_ppu, line - 1);
+     (void)ppu_rasterTakeHdmaen(&hdmaen);
+-    ppu_runLine(g_ppu, line);
++    if (pixels)
++      ppu_runLine(g_ppu, line);
++    else
++      ppu_runLineState(g_ppu, line);
+     if (observer)
+       observer(g_ppu, (unsigned)line, context);
+     /* HDMA runs in the H-blank after this line; it lands on the next. */
+@@ -458,6 +458,19 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+   ppu_rasterRenderEnd(g_ppu);
+ }
+ 
++void snes_beam_frame_driver_draw_ppu_frame(void) {
++  draw_ppu_frame_internal(true, NULL, NULL);
++}
++
++void snes_beam_frame_driver_draw_ppu_frame_state_only(void) {
++  draw_ppu_frame_internal(false, NULL, NULL);
++}
++
++void snes_beam_frame_driver_draw_ppu_frame_observed(
++    SnesBeamRasterObserver *observer, void *context) {
++  draw_ppu_frame_internal(true, observer, context);
++}
++
+ void snes_beam_frame_driver_reset(void) {
+   s_resume_pc = 0;
+   s_wai_halted = false;
+diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
+index dd327d37..551f570f 100644
+--- a/runner/src/beam_frame_driver.h
++++ b/runner/src/beam_frame_driver.h
+@@ -20,6 +20,9 @@
+ 
+ void snes_beam_frame_driver_run_frame(void);
+ void snes_beam_frame_driver_draw_ppu_frame(void);
++/* Walk the field's raster journal using ppu_runLineState (skipping pixel
++ * rasterization) when a host compositor will replace the whole output frame. */
++void snes_beam_frame_driver_draw_ppu_frame_state_only(void);
+ /* Observe the display state that actually produced each visible line, after
+  * raster journal writes and before H-blank HDMA. The PPU is read-only and the
+  * callback must not advance the machine or change guest memory/registers.
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
 index 317a706c..55296b68 100644
 --- a/runner/src/desktop/host_main.c

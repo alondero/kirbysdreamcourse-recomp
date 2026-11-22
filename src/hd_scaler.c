@@ -86,7 +86,6 @@ void KdcXbrScaleRegion(const uint8_t *src, int width, int height, int stride,
     static const uint16_t kFxUMask[4] = {0xc880u, 0x008eu, 0x0113u, 0x7100u};
 
     for (int y = y0; y < y1; ++y) {
-        const bool inner_y = y >= 2 && y < height - 2;
         const uint8_t *row_m2 = src + (size_t)Clamp(y - 2, height) * stride;
         const uint8_t *row_m1 = src + (size_t)Clamp(y - 1, height) * stride;
         const uint8_t *row_0  = src + (size_t)y * stride;
@@ -105,8 +104,8 @@ void KdcXbrScaleRegion(const uint8_t *src, int width, int height, int stride,
                     for (unsigned sx = 0; sx < scale; ++sx) out[sx] = E;
                 continue;
             }
-            const int xm2 = (inner_y && x >= 2) ? x - 2 : Clamp(x - 2, width);
-            const int xp2 = (inner_y && x < width - 2) ? x + 2 : Clamp(x + 2, width);
+            const int xm2 = x >= 2 ? x - 2 : 0;
+            const int xp2 = x + 2 < width ? x + 2 : width - 1;
             const uint8_t A1 = row_m2[xm1], B1 = row_m2[x], C1 = row_m2[xp1];
             const uint8_t A = row_m1[xm1], C = row_m1[xp1];
             const uint8_t G = row_p1[xm1], I = row_p1[xp1];

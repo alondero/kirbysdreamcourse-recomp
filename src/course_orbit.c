@@ -29,6 +29,11 @@ static bool native_raster_skipped;
 static unsigned focus_player = ~0u;
 static bool high_refresh;
 static bool orbit_controls = true;
+static bool composed;
+static unsigned composed_scale;
+static int composed_width, composed_height;
+static KdcCourseGeometry prepared_geometry;
+static bool prepared_geometry_valid;
 
 typedef struct Presentation {
     KdcCourseCamera camera;
@@ -172,6 +177,10 @@ void KdcOrbitReset(void)
     focus_ready = false;
     focus_player = ~0u;
     native_raster_skipped = false;
+    composed = false;
+    composed_scale = 0;
+    composed_width = composed_height = 0;
+    prepared_geometry_valid = false;
     current.valid = previous.valid = continuous = false;
 }
 
@@ -192,6 +201,7 @@ static double BallHeight(unsigned player)
 
 void KdcOrbitInput(int horizontal, int vertical, bool reset)
 {
+    prepared_geometry_valid = false;
     if (!g_snes || !g_snes->ppu || !KdcIsCourse(g_snes->ppu)) {
         KdcOrbitReset();
         return;
@@ -395,12 +405,19 @@ static bool MeshPush(MeshVertex a, MeshVertex b, MeshVertex c, unsigned cell, in
     return true;
 }
 
+static bool MeshMatches(const KdcCourseGeometry *geometry)
+{
+    const size_t cells = (size_t)geometry->width * geometry->height;
+    return mesh.valid && mesh.width == geometry->width && mesh.height == geometry->height &&
+        mesh.origin_x == geometry->origin_x && mesh.origin_y == geometry->origin_y &&
+        !memcmp(mesh.shape, g_ram + 0x6b90, cells) &&
+        !memcmp(mesh.elevation, g_ram + 0x7390, cells);
+}
+
 static bool MeshUpdate(const KdcCourseGeometry *geometry)
 {
     const size_t cells = (size_t)geometry->width * geometry->height;
-    if (mesh.valid && mesh.width == geometry->width && mesh.height == geometry->height &&
-        mesh.origin_x == geometry->origin_x && mesh.origin_y == geometry->origin_y &&
-        !memcmp(mesh.shape, g_ram + 0x6b90, cells) && !memcmp(mesh.elevation, g_ram + 0x7390, cells))
+    if (MeshMatches(geometry))
         return true;
     mesh.valid = false;
     mesh.count = mesh.wall_count = 0;
@@ -475,6 +492,14 @@ static bool MeshUpdate(const KdcCourseGeometry *geometry)
             }
         }
     }
+    const unsigned max_band_refs = mesh.count * kMaxBands;
+    if (max_band_refs > mesh.band_capacity) {
+        const unsigned capacity = max_band_refs > 1024 ? max_band_refs : 1024;
+        uint32_t *band_faces = realloc(mesh.band_faces, capacity * sizeof(*band_faces));
+        if (!band_faces) return false;
+        mesh.band_faces = band_faces;
+        mesh.band_capacity = capacity;
+    }
     mesh.width = geometry->width; mesh.height = geometry->height;
     mesh.origin_x = geometry->origin_x; mesh.origin_y = geometry->origin_y;
     memcpy(mesh.shape, g_ram + 0x6b90, cells);
@@ -517,8 +542,7 @@ static bool ProjectFaces(Render *render)
                          (pz.depth - o.depth) * v->z;
         }
         const double area = Edge(p[0], p[1], p[2].x, p[2].y);
-        /* Vertical walls are outward-facing on area > 0; cull back-facing walls. */
-        if (triangle->kind != kMeshTop ? area <= 0.000001 : fabs(area) < 0.000001) continue;
+        if (fabs(area) < 0.000001) continue;
         Face *face = &mesh.faces[count];
         face->left = (int)fmax(0, floor(fmin(p[0].x, fmin(p[1].x, p[2].x))));
         face->right = (int)fmin(width - 1, ceil(fmax(p[0].x, fmax(p[1].x, p[2].x))));
@@ -1550,23 +1574,37 @@ static bool Ready(void)
         PPU_brightness(g_snes->ppu) == 15 && PPU_mosaicSize(g_snes->ppu) <= 1;
 }
 
-/* Whether the latest presentation used KdcOrbitDraw's composition. */
-static bool composed;
+static bool CanCompose(int width, int height)
+{
+    return Ready() && width >= 1 && width <= kPpuBufWidth && height >= 1 && height <= 240;
+}
 
 bool KdcOrbitComposing(void)
 {
     return composed && Ready();
 }
 
-bool KdcOrbitCanSkipNativeRaster(void)
+bool KdcOrbitCanSkipNativeRaster(int width, int height)
 {
-    if (!KdcOrbitComposing() || !KdcHdEnabled() || !KdcHdUiEnabled()) return false;
-    if (high_refresh &&
-        (KdcReadWord(g_ram, 0xabb2) != map_id || KdcReadWord(g_ram, 0x1803) != focus_player))
+    prepared_geometry_valid = false;
+    if (!composed || composed_scale <= 1 || composed_width != width || composed_height != height)
+        return false;
+    if (!KdcHdEnabled() || !KdcHdUiEnabled() || !CanCompose(width, height))
+        return false;
+    if (high_refresh && (!current.valid || current.width != width || current.height != height ||
+        KdcReadWord(g_ram, 0xabb2) != map_id || KdcReadWord(g_ram, 0x1803) != focus_player))
         return false;
     KdcCourseGeometry geometry;
-    return KdcCourseGeometryInit(&geometry, g_ram, sizeof(g_ram),
-                                 g_snes->cart->rom, g_snes->cart->romImageSize);
+    if (!KdcCourseGeometryInit(&geometry, g_ram, sizeof(g_ram),
+                               g_snes->cart->rom, g_snes->cart->romImageSize))
+        return false;
+    /* Fail closed unless the mesh and band-face buffer are already built for
+     * this geometry so ProjectFaces cannot fail realloc on the skipped frame. */
+    if (!MeshMatches(&geometry) || mesh.band_capacity < mesh.count * kMaxBands)
+        return false;
+    prepared_geometry = geometry;
+    prepared_geometry_valid = true;
+    return true;
 }
 
 void KdcOrbitNoteNativeRasterSkipped(bool skipped)
@@ -1611,8 +1649,12 @@ void KdcOrbitCapture(unsigned frame, int width, int height)
     if (KdcReadWord(g_ram, 0xabb2) != map_id ||
         KdcReadWord(g_ram, 0x1803) != focus_player) return;
     Render render = {.width = width, .height = height, .ppu = g_snes->ppu};
-    if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
-            g_snes->cart->rom, g_snes->cart->romImageSize)) return;
+    if (prepared_geometry_valid) {
+        render.geometry = prepared_geometry;
+    } else if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
+            g_snes->cart->rom, g_snes->cart->romImageSize)) {
+        return;
+    }
     current.camera = ViewCamera(&render);
     current.frame = frame;
     current.map = KdcReadWord(g_ram, 0xabb2);
@@ -1809,19 +1851,20 @@ static void ReportProfile(double prepared, double drawn)
 static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
                 int width, int height, double alpha, unsigned scale)
 {
-    if (!scale || scale > kKdcHdScale || !camera.active || !focus_ready || !dst || width < 1 || width > kPpuBufWidth ||
-        height < 1 || height > 240 || pitch < (size_t)width * scale * 4 ||
-        !g_snes || !g_snes->ppu || !g_snes->cart || !KdcIsCourse(g_snes->ppu)) return 0;
-    /* Preserve original fades, forced blank and mosaic transitions until
-     * the fully visible course returns. Camera state is retained. */
-    if (PPU_forcedBlank(g_snes->ppu) || PPU_brightness(g_snes->ppu) != 15 ||
-        PPU_mosaicSize(g_snes->ppu) > 1) return 0;
+    const bool have_prepared = prepared_geometry_valid;
+    prepared_geometry_valid = false;
+    if (!scale || scale > kKdcHdScale || !dst || pitch < (size_t)width * scale * 4 ||
+        !CanCompose(width, height)) return 0;
     const double started = Milliseconds();
     Render render = {.pixels = dst, .pitch = pitch, .width = width, .height = height,
                      .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled(), .scale = scale,
                      .vram = PpuRenderVram(g_snes->ppu), .field = field};
-    if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
-        g_snes->cart->rom, g_snes->cart->romImageSize)) return 0;
+    if (have_prepared) {
+        render.geometry = prepared_geometry;
+    } else if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
+        g_snes->cart->rom, g_snes->cart->romImageSize)) {
+        return 0;
+    }
     render.camera = ViewCamera(&render);
     if (high_refresh) {
         if (!current.valid || current.width != width || current.height != height) return 0;
@@ -1886,16 +1929,28 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
     return 1;
 }
 
+static int RecordDraw(int drawn, int width, int height, unsigned scale)
+{
+    composed = drawn != 0;
+    if (composed) {
+        composed_scale = scale;
+        composed_width = width;
+        composed_height = height;
+    } else {
+        composed_scale = 0;
+        composed_width = composed_height = 0;
+    }
+    return composed;
+}
+
 int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
                   int width, int height, double alpha)
 {
-    composed = Draw(dst, pitch, field, width, height, alpha, 1) != 0;
-    return composed;
+    return RecordDraw(Draw(dst, pitch, field, width, height, alpha, 1), width, height, 1);
 }
 
 int KdcOrbitDrawHd(uint8_t *dst, size_t pitch, const uint8_t *field,
                   int width, int height, double alpha, unsigned scale)
 {
-    composed = Draw(dst, pitch, field, width, height, alpha, scale) != 0;
-    return composed;
+    return RecordDraw(Draw(dst, pitch, field, width, height, alpha, scale), width, height, scale);
 }

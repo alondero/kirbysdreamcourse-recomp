@@ -172,7 +172,8 @@ void GameDrawPpuFrame(void)
      * full buffer-supported budget here, including very wide displays. */
     PpuSetExtraSpace(g_snes->ppu, g_ws_extra);
     KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
-    const bool skip_raster = !state_dump_enabled && KdcOrbitCanSkipNativeRaster();
+    const int frame_width = 256 + 2 * g_ws_extra;
+    const bool skip_raster = !state_dump_enabled && KdcOrbitCanSkipNativeRaster(frame_width, 224);
     if (skip_raster) {
         PpuSetExtraObjects(g_snes->ppu, NULL, 0);
         PpuSetExtraObjectProvider(g_snes->ppu, NULL, NULL);
@@ -184,17 +185,9 @@ void GameDrawPpuFrame(void)
                         g_snes->cart ? g_snes->cart->romImageSize : 0);
     if (skip_raster) {
         /* Orbit HD with Modernized HD UI overwrites 100% of g_hd_surface and
-         * never reads g_my_pixels. Still walk the raster journal with
+         * never reads g_my_pixels. Reuse the beam driver's raster walk with
          * ppu_runLineState so mid-frame HUD/window detection stays exact. */
-        snes_set_hdma_beam_enabled(g_snes, false);
-        ppu_rasterRenderBegin(g_snes->ppu);
-        for (int line = 1; line <= 224; ++line) {
-            uint8_t hdmaen;
-            ppu_rasterApplyLine(g_snes->ppu, line - 1);
-            (void)ppu_rasterTakeHdmaen(&hdmaen);
-            ppu_runLineState(g_snes->ppu, line);
-        }
-        ppu_rasterRenderEnd(g_snes->ppu);
+        snes_beam_frame_driver_draw_ppu_frame_state_only();
     } else {
         snes_beam_frame_driver_draw_ppu_frame();
     }
