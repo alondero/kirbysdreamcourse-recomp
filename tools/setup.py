@@ -35,6 +35,7 @@ PATCHES = (
     "manual-joypad-strobe-experiment", "autojoy-phase-experiment", "spc-indexed-write-state-experiment",
     "hud-presentation", "hd-tiles", "hd-tile-context", "hd-present", "hd-tile-perf", "hd-composition",
     "presentation-budget", "hd-hitches", "hd-rgba", "bridge-diagnostic-cache", "transition-pacing",
+    "hd-perf-opt",
 )
 STATE_OPTIONS = (
     "STATE", "RASTER_STATE", "FIELD_STATE", "DSP_STATE", "BEAM_HDMA_STATE",

@@ -25,6 +25,7 @@ static KdcCourseCamera camera = {.zoom = 1};
 static unsigned map_id = ~0u;
 static double focus_height;
 static bool focus_ready;
+static bool native_raster_skipped;
 static unsigned focus_player = ~0u;
 static bool high_refresh;
 static bool orbit_controls = true;
@@ -63,12 +64,17 @@ typedef struct Texture {
     const uint32_t *colors;
 } Texture;
 
+enum { kBandRows = 8, kMaxBands = 32 }; /* native rows per band: one BG3 character row */
+
 /* A projected terrain triangle. Barycentric weights, depth and texture
  * coordinates are all a*x + b*y + c at the centre of output pixel (x,y). */
 typedef struct Face {
     int left, right, top, bottom; /* inclusive pixel bounds */
     double weight[3][3];
+    double inv_slope[3];          /* 1 / weight[k][0] when weight[k][0] != 0 */
+    int8_t slope_sign[3];         /* +1, -1, 0 */
     double depth[3], u[3], v[3];
+    double sharp_u, sharp_v;
     uint32_t color;               /* flat, or shown where the texture is clear */
     bool textured;
 } Face;
@@ -100,12 +106,16 @@ typedef struct Render {
     KdcCourseGeometry geometry;
     KdcCourseCamera camera;
     bool hd;
+    bool hd_hud;
     const KdcTerrain *terrain;
     Texture texture;
     bool smooth;   /* antialiased texture sampling */
     int samples;   /* per axis, when one pixel spans several texels */
     const Face *faces;
     unsigned face_count;
+    const uint32_t *band_faces;
+    const unsigned *band_offset;
+    unsigned band_count;
     const KdcScenery *scenery; /* NULL without the course scenery signature */
     uint32_t backdrop;
     const uint8_t *field;
@@ -161,6 +171,7 @@ void KdcOrbitReset(void)
     focus_height = 0;
     focus_ready = false;
     focus_player = ~0u;
+    native_raster_skipped = false;
     current.valid = previous.valid = continuous = false;
 }
 
@@ -358,6 +369,9 @@ static struct Mesh {
     double (*centers)[2], (*walls)[2];
     unsigned wall_count;
     Face *faces;
+    uint32_t *band_faces;
+    unsigned band_capacity;
+    unsigned band_offset[kMaxBands + 1];
 } mesh;
 
 static bool MeshPush(MeshVertex a, MeshVertex b, MeshVertex c, unsigned cell, int kind)
@@ -503,7 +517,8 @@ static bool ProjectFaces(Render *render)
                          (pz.depth - o.depth) * v->z;
         }
         const double area = Edge(p[0], p[1], p[2].x, p[2].y);
-        if (fabs(area) < 0.000001) continue;
+        /* Vertical walls are outward-facing on area > 0; cull back-facing walls. */
+        if (triangle->kind != kMeshTop ? area <= 0.000001 : fabs(area) < 0.000001) continue;
         Face *face = &mesh.faces[count];
         face->left = (int)fmax(0, floor(fmin(p[0].x, fmin(p[1].x, p[2].x))));
         face->right = (int)fmin(width - 1, ceil(fmax(p[0].x, fmax(p[1].x, p[2].x))));
@@ -511,15 +526,22 @@ static bool ProjectFaces(Render *render)
         face->bottom = (int)fmin(height - 1, ceil(fmax(p[0].y, fmax(p[1].y, p[2].y))));
         if (face->left > face->right || face->top > face->bottom) continue;
         /* weight[k] is the barycentric weight of vertex k at a pixel centre. */
+        const double inv_area = 1.0 / area;
         for (unsigned k = 0; k < 2; ++k) {
             const KdcCameraPoint a = p[(k + 1) % 3], c = p[(k + 2) % 3];
-            const double wx = (c.y - a.y) / area, wy = -(c.x - a.x) / area;
+            const double wx = (c.y - a.y) * inv_area, wy = -(c.x - a.x) * inv_area;
             face->weight[k][0] = wx;
             face->weight[k][1] = wy;
-            face->weight[k][2] = (-a.x * (c.y - a.y) + a.y * (c.x - a.x)) / area + 0.5 * (wx + wy);
+            face->weight[k][2] = (-a.x * (c.y - a.y) + a.y * (c.x - a.x)) * inv_area + 0.5 * (wx + wy);
         }
         for (unsigned k = 0; k < 3; ++k)
             face->weight[2][k] = (k == 2) - face->weight[0][k] - face->weight[1][k];
+        for (unsigned k = 0; k < 3; ++k) {
+            const double slope = face->weight[k][0];
+            if (slope > 0) { face->slope_sign[k] = 1; face->inv_slope[k] = -1.0 / slope; }
+            else if (slope < 0) { face->slope_sign[k] = -1; face->inv_slope[k] = -1.0 / slope; }
+            else { face->slope_sign[k] = 0; face->inv_slope[k] = 0.0; }
+        }
         double value[3][3];
         for (unsigned k = 0; k < 3; ++k) {
             value[0][k] = p[k].depth;
@@ -531,6 +553,14 @@ static bool ProjectFaces(Render *render)
             for (unsigned k = 0; k < 3; ++k)
                 plane[n][k] = value[n][0] * face->weight[0][k] + value[n][1] * face->weight[1][k] +
                               value[n][2] * face->weight[2][k];
+        double sharp_u = 1.0 / hypot(face->u[0], face->u[1]);
+        double sharp_v = 1.0 / hypot(face->v[0], face->v[1]);
+        if (!(sharp_u > 1)) sharp_u = 1;
+        if (!(sharp_v > 1)) sharp_v = 1;
+        if (!(sharp_u < 64)) sharp_u = 64;
+        if (!(sharp_v < 64)) sharp_v = 64;
+        face->sharp_u = sharp_u;
+        face->sharp_v = sharp_v;
         if (triangle->kind == kMeshTop) {
             if (triangle->cell != last_cell) {
                 last_cell = triangle->cell;
@@ -545,8 +575,40 @@ static bool ProjectFaces(Render *render)
         face->textured = triangle->kind != kMeshWallFlat && texture->texels;
         ++count;
     }
+    const int band_h = kBandRows * render->scale;
+    const unsigned bands = (unsigned)((height + band_h - 1) / band_h);
+    unsigned band_counts[kMaxBands] = {0};
+    unsigned total_refs = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned b0 = (unsigned)(mesh.faces[i].top / band_h);
+        unsigned b1 = (unsigned)(mesh.faces[i].bottom / band_h);
+        if (b1 >= bands) b1 = bands - 1;
+        for (unsigned b = b0; b <= b1; ++b) { ++band_counts[b]; ++total_refs; }
+    }
+    if (total_refs > mesh.band_capacity) {
+        const unsigned capacity = total_refs > 1024 ? total_refs * 2 : 1024;
+        uint32_t *grown = realloc(mesh.band_faces, capacity * sizeof(*grown));
+        if (!grown) return false;
+        mesh.band_faces = grown;
+        mesh.band_capacity = capacity;
+    }
+    unsigned cursor[kMaxBands];
+    mesh.band_offset[0] = 0;
+    for (unsigned b = 0; b < bands; ++b) {
+        cursor[b] = mesh.band_offset[b];
+        mesh.band_offset[b + 1] = mesh.band_offset[b] + band_counts[b];
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned b0 = (unsigned)(mesh.faces[i].top / band_h);
+        unsigned b1 = (unsigned)(mesh.faces[i].bottom / band_h);
+        if (b1 >= bands) b1 = bands - 1;
+        for (unsigned b = b0; b <= b1; ++b) mesh.band_faces[cursor[b]++] = i;
+    }
     render->faces = mesh.faces;
     render->face_count = count;
+    render->band_faces = mesh.band_faces;
+    render->band_offset = mesh.band_offset;
+    render->band_count = bands;
     return true;
 }
 
@@ -565,56 +627,33 @@ static inline uint32_t Texel(const Texture *t, double u, double v, uint32_t fall
     return color ? color : fallback;
 }
 
-/* Antialiased nearest sampling: flat areas keep their exact colour; a texel
- * boundary becomes a one-pixel ramp at any angle or magnification, instead
- * of the uneven steps point sampling leaves on a rotated edge. Aligned 1:1
- * sampling returns the texels unchanged. */
-static inline uint32_t SmoothTexel(const Texture *t, double u, double v, double sharp_u,
-                                   double sharp_v, uint32_t fallback)
-{
-    const double a = u - 0.5, b = v - 0.5;
-    const int x = Floor(a), y = Floor(b);
-    if ((unsigned)x >= (unsigned)(t->width - 1) || (unsigned)y >= (unsigned)(t->height - 1))
-        return Texel(t, u, v, fallback);
-    const uint8_t *texel = t->texels + (size_t)y * t->stride + x;
-    const unsigned t00 = texel[0], t10 = texel[1], t01 = texel[t->stride], t11 = texel[t->stride + 1];
-    if (t00 == t10 && t00 == t01 && t00 == t11) return t00 ? t->colors[t00] : fallback;
-    double fx = (a - x - 0.5) * sharp_u + 0.5, fy = (b - y - 0.5) * sharp_v + 0.5;
-    fx = fx < 0 ? 0 : fx > 1 ? 1 : fx;
-    fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
-    const unsigned wx = (unsigned)(fx * 256 + 0.5), wy = (unsigned)(fy * 256 + 0.5);
-    const uint32_t c00 = t00 ? t->colors[t00] : fallback, c10 = t10 ? t->colors[t10] : fallback;
-    const uint32_t c01 = t01 ? t->colors[t01] : fallback, c11 = t11 ? t->colors[t11] : fallback;
-    return Mix(Mix(c00, c10, wx), Mix(c01, c11, wx), wy);
-}
-
-/* Rasterize the faces that reach rows [y0,y1). */
-static void TerrainRows(const Render *render, int y0, int y1)
+/* Rasterize the faces binned into this band, covering rows [y0,y1). */
+static void TerrainRows(const Render *render, unsigned band, int y0, int y1)
 {
     const Texture *texture = &render->texture;
     const int samples = render->samples;
-    for (unsigned i = 0; i < render->face_count; ++i) {
-        const Face *face = &render->faces[i];
-        if (face->bottom < y0 || face->top >= y1) continue;
+    const unsigned ref_begin = band < render->band_count ? render->band_offset[band] : 0;
+    const unsigned ref_end = band < render->band_count ? render->band_offset[band + 1] : 0;
+    for (unsigned r = ref_begin; r < ref_end; ++r) {
+        const Face *face = &render->faces[render->band_faces[r]];
         const int top = face->top > y0 ? face->top : y0;
         const int bottom = face->bottom < y1 - 1 ? face->bottom : y1 - 1;
-        /* Output pixels per texel along each texture axis; above one, the
-         * ramp between texels narrows to stay a single pixel wide. */
-        double sharp_u = 1 / hypot(face->u[0], face->u[1]), sharp_v = 1 / hypot(face->v[0], face->v[1]);
-        if (!(sharp_u > 1)) sharp_u = 1;
-        if (!(sharp_v > 1)) sharp_v = 1;
-        if (!(sharp_u < 64)) sharp_u = 64;
-        if (!(sharp_v < 64)) sharp_v = 64;
+        const double sharp_u = face->sharp_u, sharp_v = face->sharp_v;
         for (int y = top; y <= bottom; ++y) {
             /* The span of pixel centres inside all three edges. */
             double low = face->left, high = face->right;
             bool empty = false;
             for (unsigned k = 0; k < 3; ++k) {
-                const double slope = face->weight[k][0];
                 const double base = face->weight[k][1] * y + face->weight[k][2] + 0.000001;
-                if (slope > 0) low = fmax(low, -base / slope);
-                else if (slope < 0) high = fmin(high, -base / slope);
-                else if (base < 0) empty = true;
+                if (face->slope_sign[k] > 0) {
+                    const double edge = base * face->inv_slope[k];
+                    if (edge > low) low = edge;
+                } else if (face->slope_sign[k] < 0) {
+                    const double edge = base * face->inv_slope[k];
+                    if (edge < high) high = edge;
+                } else if (base < 0) {
+                    empty = true;
+                }
             }
             if (empty || !(low <= high + 1)) continue;
             int x0 = (int)ceil(low - 1e-9), x1 = (int)floor(high + 1e-9);
@@ -626,10 +665,11 @@ static void TerrainRows(const Render *render, int y0, int y1)
             double depth = face->depth[0] * x0 + face->depth[1] * y + face->depth[2];
             const double depth_step = face->depth[0];
             if (!face->textured) {
+                const uint32_t color = face->color;
                 for (int x = x0; x <= x1; ++x, depth += depth_step) {
                     if (depth < depth_row[x]) continue;
                     depth_row[x] = (float)depth;
-                    row[x] = face->color;
+                    row[x] = color;
                 }
                 continue;
             }
@@ -644,23 +684,64 @@ static void TerrainRows(const Render *render, int y0, int y1)
                 for (int x = x0; x <= x1; ++x, depth += depth_step, u += u_step, v += v_step) {
                     if (depth < depth_row[x]) continue;
                     depth_row[x] = (float)depth;
-                    unsigned r = 0, g = 0, blue = 0;
+                    unsigned red = 0, g = 0, blue = 0;
                     for (int j = 0; j < samples; ++j) {
                         for (int k = 0; k < samples; ++k) {
                             const double dx = (k + 0.5) / samples - 0.5, dy = (j + 0.5) / samples - 0.5;
                             const uint32_t sample = Texel(texture, u + dx * face->u[0] + dy * face->u[1],
                                 v + dx * face->v[0] + dy * face->v[1], face->color);
-                            r += (sample >> 16) & 255; g += (sample >> 8) & 255; blue += sample & 255;
+                            red += (sample >> 16) & 255; g += (sample >> 8) & 255; blue += sample & 255;
                         }
                     }
                     const unsigned n = (unsigned)(samples * samples);
-                    row[x] = 0xff000000u | (r / n) << 16 | (g / n) << 8 | blue / n;
+                    row[x] = 0xff000000u | (red / n) << 16 | (g / n) << 8 | blue / n;
                 }
             } else if (render->smooth) {
+                const uint32_t fallback = face->color;
+                const unsigned tw1 = (unsigned)(texture->width - 1);
+                const unsigned th1 = (unsigned)(texture->height - 1);
+                const size_t tstride = (size_t)texture->stride;
+                const uint8_t *texels = texture->texels;
+                const uint32_t *tcolors = texture->colors;
+                int last_tx = INT32_MIN, last_ty = INT32_MIN;
+                uint32_t last_flat = 0;
+                bool last_is_flat = false;
                 for (int x = x0; x <= x1; ++x, depth += depth_step, u += u_step, v += v_step) {
                     if (depth < depth_row[x]) continue;
                     depth_row[x] = (float)depth;
-                    row[x] = SmoothTexel(texture, u, v, sharp_u, sharp_v, face->color);
+                    const double a = u - 0.5, b = v - 0.5;
+                    const int tx = Floor(a), ty = Floor(b);
+                    if (tx == last_tx && ty == last_ty && last_is_flat) {
+                        row[x] = last_flat;
+                        continue;
+                    }
+                    if ((unsigned)tx < tw1 && (unsigned)ty < th1) {
+                        const uint8_t *texel = texels + (size_t)ty * tstride + tx;
+                        const unsigned t00 = texel[0], t10 = texel[1];
+                        const unsigned t01 = texel[tstride], t11 = texel[tstride + 1];
+                        last_tx = tx; last_ty = ty;
+                        if (t00 == t10 && t00 == t01 && t00 == t11) {
+                            last_is_flat = true;
+                            last_flat = t00 ? tcolors[t00] : fallback;
+                            row[x] = last_flat;
+                            continue;
+                        }
+                        last_is_flat = false;
+                        double fx = (a - tx - 0.5) * sharp_u + 0.5;
+                        double fy = (b - ty - 0.5) * sharp_v + 0.5;
+                        fx = fx < 0 ? 0 : fx > 1 ? 1 : fx;
+                        fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
+                        const unsigned wx = (unsigned)(fx * 256 + 0.5);
+                        const unsigned wy = (unsigned)(fy * 256 + 0.5);
+                        const uint32_t c00 = t00 ? tcolors[t00] : fallback;
+                        const uint32_t c10 = t10 ? tcolors[t10] : fallback;
+                        const uint32_t c01 = t01 ? tcolors[t01] : fallback;
+                        const uint32_t c11 = t11 ? tcolors[t11] : fallback;
+                        row[x] = Mix(Mix(c00, c10, wx), Mix(c01, c11, wx), wy);
+                    } else {
+                        last_is_flat = false;
+                        row[x] = Texel(texture, u, v, fallback);
+                    }
                 }
             } else {
                 for (int x = x0; x <= x1; ++x, depth += depth_step, u += u_step, v += v_step) {
@@ -679,70 +760,111 @@ static bool SceneryLayout(const Ppu *ppu)
     return ppu->bgXsc[2] == 0x3c && PPU_bgTileAdr(ppu, 2) == 0x4000 && !PPU_bigTiles(ppu, 2);
 }
 
-/* Backdrop, clean scenery and an empty depth buffer for native rows
- * [row0,row1). The scenery does not depend on the camera. */
+static void ClearDepthRows(const Render *render, int y0, int y1)
+{
+    for (int y = y0; y < y1; ++y) {
+        float *depth = render->depth + (size_t)y * render->width;
+        for (int x = 0; x < render->width; ++x) depth[x] = -FLT_MAX;
+    }
+}
+
+/* Fill backdrop and clean scenery only where terrain did not write depth,
+ * avoiding full-screen overdraw of scenery pixels hidden beneath the course. */
 static void BackgroundRows(const Render *render, int row0, int row1)
 {
     const int scale = render->scale, native_width = render->width / scale;
     const int extra = (native_width - 256) / 2;
     const KdcScenery *scenery = render->scenery;
     const uint16_t scroll = render->ppu->hScroll[2];
-    for (int y = row0 * scale; y < row1 * scale; ++y) {
-        float *depth = render->depth + (size_t)y * render->width;
-        for (int x = 0; x < render->width; ++x) depth[x] = -FLT_MAX;
-    }
-    for (int row = row0; row < row1; ++row) {
-        uint32_t *out = (uint32_t *)(render->pixels + (size_t)row * scale * render->pitch);
-        if (!scenery) {
-            for (int sy = 0; sy < scale; ++sy) {
-                uint32_t *line = (uint32_t *)((uint8_t *)out + (size_t)sy * render->pitch);
-                for (int x = 0; x < render->width; ++x) line[x] = render->backdrop;
-            }
-            continue;
+    const uint32_t backdrop = render->backdrop;
+    if (!scenery) {
+        for (int y = row0 * scale; y < row1 * scale; ++y) {
+            uint32_t *line = (uint32_t *)(render->pixels + (size_t)y * render->pitch);
+            const float *depth = render->depth + (size_t)y * render->width;
+            for (int x = 0; x < render->width; ++x)
+                if (depth[x] == -FLT_MAX) line[x] = backdrop;
         }
+        return;
+    }
+    struct BgRun { int x_base, px_count; uint16_t col; uint8_t first, run, flip; } runs[128];
+    unsigned run_count = 0;
+    for (int x = 0; x < native_width && run_count < 128;) {
+        const int screen_x = x - extra;
+        const int first = (screen_x + (scroll & 7)) & 7;
+        int run = 8 - first;
+        if (run > native_width - x) run = native_width - x;
+        bool flip;
+        const unsigned column = KdcReflectedColumn(screen_x, scroll, &flip) & 31;
+        runs[run_count++] = (struct BgRun){
+            .x_base = x * scale, .px_count = run * scale,
+            .col = (uint16_t)column, .first = (uint8_t)first,
+            .run = (uint8_t)run, .flip = (uint8_t)flip,
+        };
+        x += run;
+    }
+    const bool enlarged = scenery->hd && scale > 1;
+    const uint32_t *colors = scenery->colors;
+    for (int row = row0; row < row1; ++row) {
+        uint8_t *out_base = render->pixels + (size_t)row * scale * render->pitch;
         const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
-        const bool enlarged = scenery->hd && scale > 1;
-        for (int x = 0; x < native_width;) {
-            const int screen_x = x - extra;
-            const int first = (screen_x + (scroll & 7)) & 7;
-            int run = 8 - first;
-            if (run > native_width - x) run = native_width - x;
-            /* The clean map's opposite edges do not join. As in the native
-             * widescreen margins, reflect whole tiles outside the field. */
-            bool flip;
-            const unsigned column = KdcReflectedColumn(screen_x, scroll, &flip) & 31;
-            for (int sy = 0; sy < scale; ++sy) {
-                uint32_t *line = (uint32_t *)((uint8_t *)out + (size_t)sy * render->pitch) + x * scale;
-                if (enlarged) {
-                    const uint8_t *source = scenery->hd +
-                        (size_t)(v * 4 + (unsigned)((2 * sy + 1) * 4 / (2 * scale))) * 1024 + column * 32;
-                    if (scale == kKdcTerrainScale) {
-                        /* At the texture's own scale each output pixel is
-                         * the next texel. Avoid two runtime divisions per
-                         * pixel over the entire HD backdrop. */
-                        const int start = flip ? 31 - first * scale : first * scale;
-                        const int step = flip ? -1 : 1;
-                        for (int i = 0; i < run * scale; ++i) {
-                            const unsigned index = source[start + i * step];
-                            line[i] = index ? scenery->colors[index] : render->backdrop;
+        if (enlarged && scale == kKdcTerrainScale) {
+            for (int sy = 0; sy < kKdcTerrainScale; ++sy) {
+                const float *depth_line = render->depth + (size_t)(row * kKdcTerrainScale + sy) * render->width;
+                uint32_t *pixel_line = (uint32_t *)(out_base + (size_t)sy * render->pitch);
+                const uint8_t *src_line = scenery->hd + (size_t)(v * 4 + (unsigned)sy) * 1024;
+                for (unsigned ri = 0; ri < run_count; ++ri) {
+                    const struct BgRun *r = &runs[ri];
+                    const float *depth = depth_line + r->x_base;
+                    uint32_t *line = pixel_line + r->x_base;
+                    const uint8_t *source = src_line + r->col * 32;
+                    const int px_count = r->px_count;
+                    if (!r->flip) {
+                        const uint8_t *s = source + r->first * 4;
+                        for (int i = 0; i < px_count; ++i) {
+                            if (depth[i] != -FLT_MAX) continue;
+                            const unsigned idx = s[i];
+                            line[i] = idx ? colors[idx] : backdrop;
                         }
-                        continue;
-                    }
-                    for (int i = 0; i < run * scale; ++i) {
-                        const int tx = (first + i / scale) * 4 + (2 * (i % scale) + 1) * 4 / (2 * scale);
-                        const unsigned index = source[flip ? 31 - tx : tx];
-                        line[i] = index ? scenery->colors[index] : render->backdrop;
-                    }
-                } else {
-                    const uint8_t *source = scenery->native + (size_t)v * 256 + column * 8;
-                    for (int i = 0; i < run; ++i) {
-                        const unsigned index = source[flip ? 7 - (first + i) : first + i];
-                        const uint32_t color = index ? scenery->colors[index] : render->backdrop;
-                        for (int sx = 0; sx < scale; ++sx) line[i * scale + sx] = color;
+                    } else {
+                        const uint8_t *s = source + (31 - r->first * 4);
+                        for (int i = 0; i < px_count; ++i) {
+                            if (depth[i] != -FLT_MAX) continue;
+                            const unsigned idx = s[-i];
+                            line[i] = idx ? colors[idx] : backdrop;
+                        }
                     }
                 }
             }
-            x += run;
+            continue;
+        }
+        for (unsigned ri = 0; ri < run_count; ++ri) {
+            const struct BgRun *r = &runs[ri];
+            for (int sy = 0; sy < scale; ++sy) {
+                const float *depth = render->depth + (size_t)(row * scale + sy) * render->width + r->x_base;
+                uint32_t *line = (uint32_t *)(out_base + (size_t)sy * render->pitch) + r->x_base;
+                if (enlarged) {
+                    const uint8_t *source = scenery->hd +
+                        (size_t)(v * 4 + (unsigned)((2 * sy + 1) * 4 / (2 * scale))) * 1024 + r->col * 32;
+                    for (int i = 0; i < r->px_count; ++i) {
+                        if (depth[i] != -FLT_MAX) continue;
+                        const int tx = (r->first + i / scale) * 4 + (2 * (i % scale) + 1) * 4 / (2 * scale);
+                        const unsigned index = source[r->flip ? 31 - tx : tx];
+                        line[i] = index ? colors[index] : backdrop;
+                    }
+                } else {
+                    const uint8_t *source = scenery->native + (size_t)v * 256 + r->col * 8;
+                    for (int i = 0; i < r->run; ++i) {
+                        bool any_empty = false;
+                        for (int sx = 0; sx < scale; ++sx)
+                            if (depth[i * scale + sx] == -FLT_MAX) { any_empty = true; break; }
+                        if (!any_empty) continue;
+                        const unsigned index = source[r->flip ? 7 - (r->first + i) : r->first + i];
+                        const uint32_t color = index ? colors[index] : backdrop;
+                        for (int sx = 0; sx < scale; ++sx)
+                            if (depth[i * scale + sx] == -FLT_MAX) line[i * scale + sx] = color;
+                    }
+                }
+            }
         }
     }
 }
@@ -835,6 +957,55 @@ static void HudWindowRows(const Render *render, int row0, int row1)
     }
 }
 
+static const uint32_t *hud_art_table[8192];
+static uint64_t hud_art_stamp[8192];
+static uint64_t hud_art_gen;
+
+static void WarmHudTile(const Render *render, uint16_t tile)
+{
+    const unsigned key = (((tile >> 10) & 7u) << 10) | (tile & 0x3ffu);
+    if (hud_art_stamp[key] == hud_art_gen) return;
+    hud_art_stamp[key] = hud_art_gen;
+    hud_art_table[key] = HdArtTileLookup(render, (0x4000u + (tile & 0x3ffu) * 8u) & 0x7fffu,
+                                         false, ((tile >> 10) & 7u) * 4u, 2);
+}
+
+static void PrepareHudArt(const Render *render)
+{
+    if (!render->hd_hud) return;
+    if (!render->scenery && !KdcHudActive(render->ppu)) return;
+    if (render->ppu->bgXsc[2] != 0x3c || PPU_bgTileAdr(render->ppu, 2) != 0x4000) return;
+    ++hud_art_gen;
+    for (unsigned i = 0; i < 1024; ++i) {
+        const uint16_t tile = render->vram[0x3c00 + i];
+        if (tile != KdcReadWord(g_ram, 0xdadc + 2 * i)) WarmHudTile(render, tile);
+    }
+    /* Relocated HUD frame tiles that KdcHudSample may read directly. */
+    static const uint8_t fixed_cells[][2] = {
+        {3, 22}, {2, 22}, {29, 22}, {29, 26}, {2, 23}, {29, 23},
+        {4, 21}, {27, 21}, {5, 26}, {26, 26}, {5, 21},
+    };
+    for (unsigned i = 0; i < sizeof(fixed_cells) / sizeof(fixed_cells[0]); ++i)
+        WarmHudTile(render, render->vram[0x3c00 + fixed_cells[i][1] * 32 + fixed_cells[i][0]]);
+    WarmHudTile(render, 0x34e7);
+    WarmHudTile(render, 0x74e7);
+}
+
+static inline uint32_t FastUiBlend(uint32_t background, uint32_t ink)
+{
+    const unsigned a = ink >> 24;
+    if (a == 255u) return ink;
+    if (!a) return background;
+    const unsigned inv = 255u - a;
+    unsigned r = ((ink >> 16) & 255u) * a + ((background >> 16) & 255u) * inv + 128u;
+    unsigned g = ((ink >> 8) & 255u) * a + ((background >> 8) & 255u) * inv + 128u;
+    unsigned b = (ink & 255u) * a + (background & 255u) * inv + 128u;
+    r = (r + (r >> 8)) >> 8;
+    g = (g + (g >> 8)) >> 8;
+    b = (b + (b >> 8)) >> 8;
+    return 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
 static void HudBg3HdRows(const Render *render, int row0, int row1)
 {
     if (!render->scenery && !KdcHudActive(render->ppu)) return;
@@ -843,23 +1014,69 @@ static void HudBg3HdRows(const Render *render, int row0, int row1)
     const int extra = (native_width - 256) / 2;
     const uint16_t scroll = render->ppu->hScroll[2];
     const bool edge_hud = KdcHudActive(render->ppu);
+    const bool multi = KdcReadWord(g_ram, 0x17ff) == 1;
+    const int inset = extra > 96 ? extra - 96 : 0;
+    const int hud_left = -extra + inset + 12;
+    const int hud_right = 256 + extra - inset - 12 - 32;
+    const int star_shift0 = hud_left - (multi ? 16 : 20);
+    const int star_shift1 = hud_right - 208;
     for (int row = row0; row < row1; ++row) {
         const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
-        for (int x = 0; x < native_width; ++x) {
+        const int y_line = row + 1;
+        /* In edge_hud mode, widescreen margins outside the card/star rows are
+         * always clean scenery and never contain HUD tiles. */
+        const bool in_cards = y_line >= kKdcHudCardY0 && y_line < kKdcHudCardY1;
+        const bool in_stars = multi && y_line >= 8 && y_line < 168;
+        const bool in_top_strip = multi && y_line >= kKdcHudMultiTopY0 && y_line < kKdcHudMultiTopY1;
+        const bool margin_has_hud = edge_hud && (in_cards || in_stars);
+        const int x_begin = (edge_hud && !margin_has_hud && extra > 0) ? extra : 0;
+        const int x_end = (edge_hud && !margin_has_hud && extra > 0) ? extra + 256 : native_width;
+        for (int x = x_begin; x < x_end; ++x) {
             const int screen_x = x - extra;
             uint16_t tile;
             int px, py;
             if (edge_hud) {
-                bool flip;
-                unsigned col_c = KdcReflectedColumn(screen_x, 0, &flip) & 31;
-                uint16_t clean = KdcReadWord(g_ram, 0xdadc + 2 * ((((row + 1) >> 3) & 31) * 32 + col_c)) ^
-                                 (flip ? 0x4000 : 0);
-                tile = (screen_x >= 0 && screen_x < 256) ?
-                    render->vram[0x3c00 + (((row + 1) >> 3) & 31) * 32 + (screen_x >> 3)] : clean;
-                px = screen_x & 7;
-                py = (row + 1) & 7;
-                KdcHudSample(render->ppu, 2, screen_x, row + 1, &tile, &px, &py, NULL);
-                if (tile == clean) continue;
+                /* On 2P star rows (outside cards/top-strip), only the four
+                 * 16px star columns are relocated; every other pixel outside
+                 * [0,256) is clean, and clean 8px tiles inside [0,256) skip. */
+                bool relocated_x = in_cards ||
+                    (in_top_strip && screen_x >= kKdcHudMultiTopX0 && screen_x < kKdcHudMultiTopX1) ||
+                    (in_stars && ((screen_x >= 8 && screen_x < 24) ||
+                                  (screen_x >= 232 && screen_x < 248) ||
+                                  (screen_x >= 8 + star_shift0 && screen_x < 24 + star_shift0) ||
+                                  (screen_x >= 232 + star_shift1 && screen_x < 248 + star_shift1)));
+                if (in_cards && !in_top_strip) {
+                    /* Outside [0,256), only the left/right card boxes can be non-clean. */
+                    const bool in_card_x = multi
+                        ? ((screen_x >= hud_left + 32 && screen_x < hud_left + 116) ||
+                           (screen_x >= hud_right - 84 && screen_x < hud_right))
+                        : ((screen_x >= hud_left - 4 && screen_x < hud_left + 116) ||
+                           (screen_x >= hud_right - 84 && screen_x < hud_right + 36));
+                    if (!in_card_x && (screen_x < 0 || screen_x >= 256)) continue;
+                    if (!in_card_x && y_line >= (multi ? 168 : 176)) continue; /* suppressed original band */
+                }
+                if (!relocated_x) {
+                    if (screen_x < 0 || screen_x >= 256) continue;
+                    const unsigned index = (((unsigned)y_line >> 3) & 31u) * 32u + ((unsigned)screen_x >> 3);
+                    tile = render->vram[0x3c00 + index];
+                    if (tile == KdcReadWord(g_ram, 0xdadc + 2 * index)) {
+                        x += 7 - (screen_x & 7);
+                        continue;
+                    }
+                    px = screen_x & 7;
+                    py = y_line & 7;
+                } else {
+                    bool flip;
+                    unsigned col_c = KdcReflectedColumn(screen_x, 0, &flip) & 31;
+                    uint16_t clean = KdcReadWord(g_ram, 0xdadc + 2 * ((((row + 1) >> 3) & 31) * 32 + col_c)) ^
+                                     (flip ? 0x4000 : 0);
+                    tile = (screen_x >= 0 && screen_x < 256) ?
+                        render->vram[0x3c00 + (((row + 1) >> 3) & 31) * 32 + (screen_x >> 3)] : clean;
+                    px = screen_x & 7;
+                    py = y_line & 7;
+                    KdcHudSample(render->ppu, 2, screen_x, y_line, &tile, &px, &py, NULL);
+                    if (tile == clean) continue;
+                }
             } else {
                 if (screen_x < 0 || screen_x >= 256) continue;
                 const unsigned u = (unsigned)(screen_x + scroll) & 255;
@@ -872,8 +1089,8 @@ static void HudBg3HdRows(const Render *render, int row0, int row1)
                 px = (int)(u & 7);
                 py = (int)(v & 7);
             }
-            const uint32_t *art = HdArtTileLookup(render, (0x4000 + (tile & 0x3ff) * 8) & 0x7fff,
-                                                 false, ((tile >> 10) & 7) * 4, 2);
+            const unsigned key = (((tile >> 10) & 7u) << 10) | (tile & 0x3ffu);
+            const uint32_t *art = hud_art_stamp[key] == hud_art_gen ? hud_art_table[key] : NULL;
             if (!art) {
                 const unsigned pixel = TilePixel(render->vram, tile, 0x4000, px & 7, py & 7, 2);
                 if (!pixel) continue;
@@ -885,18 +1102,37 @@ static void HudBg3HdRows(const Render *render, int row0, int row1)
                 }
                 continue;
             }
-            const int col = (tile & 0x4000) ? (7 - (px & 7)) : (px & 7);
-            const int r = (tile & 0x8000) ? (7 - (py & 7)) : (py & 7);
-            for (int sy = 0; sy < scale; ++sy) {
-                uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch) +
-                                 x * scale;
-                const int sub_y = (tile & 0x8000) ? (scale - 1 - sy) : sy;
-                const int ty = (r * scale + sub_y) * kKdcHdScale / scale;
-                for (int sx = 0; sx < scale; ++sx) {
-                    const int sub_x = (tile & 0x4000) ? (scale - 1 - sx) : sx;
-                    const int tx = (col * scale + sub_x) * kKdcHdScale / scale;
-                    const unsigned pixel = art[ty * (8 * kKdcHdScale) + tx];
-                    line[sx] = KdcHdUiBlend(line[sx], pixel);
+            const bool hflip = (tile & 0x4000) != 0;
+            const bool vflip = (tile & 0x8000) != 0;
+            const int col = hflip ? (7 - (px & 7)) : (px & 7);
+            const int r = vflip ? (7 - (py & 7)) : (py & 7);
+            if (scale == kKdcHdScale) {
+                const int base_x = col * kKdcHdScale;
+                const int base_y = r * kKdcHdScale;
+                for (int sy = 0; sy < kKdcHdScale; ++sy) {
+                    uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * kKdcHdScale + sy) * render->pitch) +
+                                     x * kKdcHdScale;
+                    const int ty = base_y + (vflip ? (kKdcHdScale - 1 - sy) : sy);
+                    const uint32_t *art_row = art + ty * (8 * kKdcHdScale) + base_x;
+                    if (!hflip) {
+                        for (int sx = 0; sx < kKdcHdScale; ++sx)
+                            line[sx] = FastUiBlend(line[sx], art_row[sx]);
+                    } else {
+                        for (int sx = 0; sx < kKdcHdScale; ++sx)
+                            line[sx] = FastUiBlend(line[sx], art_row[kKdcHdScale - 1 - sx]);
+                    }
+                }
+            } else {
+                for (int sy = 0; sy < scale; ++sy) {
+                    uint32_t *line = (uint32_t *)(render->pixels + (size_t)(row * scale + sy) * render->pitch) +
+                                     x * scale;
+                    const int sub_y = vflip ? (scale - 1 - sy) : sy;
+                    const int ty = (r * scale + sub_y) * kKdcHdScale / scale;
+                    for (int sx = 0; sx < scale; ++sx) {
+                        const int sub_x = hflip ? (scale - 1 - sx) : sx;
+                        const int tx = (col * scale + sub_x) * kKdcHdScale / scale;
+                        line[sx] = FastUiBlend(line[sx], art[ty * (8 * kKdcHdScale) + tx]);
+                    }
                 }
             }
         }
@@ -997,10 +1233,11 @@ static uint32_t PieceColor(const Render *render, const Piece *piece,
     unsigned pixel;
     if (art) {
         /* The enlarged character, at the continuous flipped position. */
-        const double tx = attr & 0x4000 ? nextafter(size - source_x, 0) : source_x;
-        const double ty = attr & 0x8000 ? nextafter(size - source_y, 0) : source_y;
-        return art[((unsigned)(ty * kKdcHdScale) & (8 * kKdcHdScale - 1)) * (8 * kKdcHdScale) +
-                    ((unsigned)(tx * kKdcHdScale) & (8 * kKdcHdScale - 1))];
+        const unsigned tx = ((unsigned)(source_x * kKdcHdScale)) & (8 * kKdcHdScale - 1);
+        const unsigned ty = ((unsigned)(source_y * kKdcHdScale)) & (8 * kKdcHdScale - 1);
+        const unsigned fx = (attr & 0x4000) ? (8 * kKdcHdScale - 1 - tx) : tx;
+        const unsigned fy = (attr & 0x8000) ? (8 * kKdcHdScale - 1 - ty) : ty;
+        return art[fy * (8 * kKdcHdScale) + fx];
     } else {
         unsigned view_tile = size <= 16 ? sprite->view_tiles[(sy >> 3) * (size / 8) + (sx >> 3)] : 0;
         if (view_tile && view_tile + 32 <= g_snes->cart->romImageSize) {
@@ -1049,26 +1286,35 @@ static void DecalRows(const Render *render, const Piece *piece, int band0, int b
     const double tolerance = 1.5; /* elevation steps from the anchor plane */
     const int y0 = piece->y0 > band0 ? piece->y0 : band0;
     const int y1 = piece->y1 < band1 ? piece->y1 : band1;
+    const double (*m)[3] = piece->inverse;
+    const double ox = piece->native[0] + sprite->offset_x;
+    const double oy = piece->native[1] + sprite->offset_y;
     for (int y = y0; y < y1; ++y) {
         uint32_t *row = (uint32_t *)(render->pixels + (size_t)y * render->pitch);
         const float *depth_row = render->depth + (size_t)y * render->width;
-        for (int x = piece->x0; x < piece->x1; ++x) {
+        const double py = y + 0.5;
+        const double x0_c = piece->x0 + 0.5;
+        double plane_sx = piece->plane[0][0] + piece->plane[1][0] * x0_c + piece->plane[2][0] * py - ox;
+        double plane_sy = piece->plane[0][1] + piece->plane[1][1] * x0_c + piece->plane[2][1] * py - oy;
+        double inv_z  = m[0][2] + m[1][2] * x0_c + m[2][2] * py;
+        double inv_sx = m[0][0] + m[1][0] * x0_c + m[2][0] * py - ox;
+        double inv_sy = m[0][1] + m[1][1] * x0_c + m[2][1] * py - oy;
+        for (int x = piece->x0; x < piece->x1; ++x,
+             plane_sx += piece->plane[1][0], plane_sy += piece->plane[1][1],
+             inv_z += m[1][2], inv_sx += m[1][0], inv_sy += m[1][1]) {
             const float depth = depth_row[x];
-            const double px = x + 0.5, py = y + 0.5;
             double sx, sy;
             if (depth == -FLT_MAX) {
                 /* Over the void (a ball leaving the course) keep the plane. */
-                sx = piece->plane[0][0] + piece->plane[1][0] * px + piece->plane[2][0] * py;
-                sy = piece->plane[0][1] + piece->plane[1][1] * px + piece->plane[2][1] * py;
+                sx = plane_sx;
+                sy = plane_sy;
             } else {
-                const double (*m)[3] = piece->inverse;
-                const double z = m[0][2] + m[1][2] * px + m[2][2] * py + m[3][2] * depth;
+                const double z = inv_z + m[3][2] * depth;
                 if (fabs(z - sprite->z) > tolerance) continue;
-                sx = m[0][0] + m[1][0] * px + m[2][0] * py + m[3][0] * depth;
-                sy = m[0][1] + m[1][1] * px + m[2][1] * py + m[3][1] * depth;
+                sx = inv_sx + m[3][0] * depth;
+                sy = inv_sy + m[3][1] * depth;
             }
-            const uint32_t color = Filtered(render, piece, sx - piece->native[0] - sprite->offset_x,
-                                            sy - piece->native[1] - sprite->offset_y, piece->step);
+            const uint32_t color = Filtered(render, piece, sx, sy, piece->step);
             if (color) row[x] = color;
         }
     }
@@ -1077,7 +1323,8 @@ static void DecalRows(const Render *render, const Piece *piece, int band0, int b
 /* An upright billboard (world), or a screen-anchored piece. */
 static void BodyRows(const Render *render, const Piece *piece, bool world, int band0, int band1)
 {
-    const double scale = piece->scale;
+    const double inv_scale = 1.0 / piece->scale;
+    const double step_f = inv_scale / piece->samples;
     const int y0 = piece->y0 > band0 ? piece->y0 : band0;
     const int y1 = piece->y1 < band1 ? piece->y1 : band1;
     for (int y = y0; y < y1; ++y) {
@@ -1086,15 +1333,16 @@ static void BodyRows(const Render *render, const Piece *piece, bool world, int b
         /* Upright billboard above its anchor. Rows the original image
          * draws below the anchor (hole, shadows, feet) lie in front of
          * it on the ground plane instead of being buried beneath it. */
-        const double below = (y + 0.5 - piece->point.y) / scale;
+        const double below = (y + 0.5 - piece->point.y) * inv_scale;
         const double depth = piece->point.depth + (below >= 0 ? 2 * below : -0.5 * below) + 0.25;
-        for (int x = piece->x0; x < piece->x1; ++x) {
-            const uint32_t color = Filtered(render, piece, (x + 0.5 - piece->left) / scale,
-                (y + 0.5 - piece->top) / scale, 1 / scale / piece->samples);
+        const double sy_src = (y + 0.5 - piece->top) * inv_scale;
+        double sx_src = (piece->x0 + 0.5 - piece->left) * inv_scale;
+        for (int x = piece->x0; x < piece->x1; ++x, sx_src += inv_scale) {
+            const uint32_t color = Filtered(render, piece, sx_src, sy_src, step_f);
             if (!color) continue;
             /* Compare at buffer precision: equal depths keep OBJ order. */
             if (world && (float)depth < depth_row[x]) continue;
-            row[x] = world ? color : KdcHdUiBlend(row[x], color);
+            row[x] = world ? color : FastUiBlend(row[x], color);
             if (world) depth_row[x] = (float)depth;
         }
     }
@@ -1310,6 +1558,22 @@ bool KdcOrbitComposing(void)
     return composed && Ready();
 }
 
+bool KdcOrbitCanSkipNativeRaster(void)
+{
+    if (!KdcOrbitComposing() || !KdcHdEnabled() || !KdcHdUiEnabled()) return false;
+    if (high_refresh &&
+        (KdcReadWord(g_ram, 0xabb2) != map_id || KdcReadWord(g_ram, 0x1803) != focus_player))
+        return false;
+    KdcCourseGeometry geometry;
+    return KdcCourseGeometryInit(&geometry, g_ram, sizeof(g_ram),
+                                 g_snes->cart->rom, g_snes->cart->romImageSize);
+}
+
+void KdcOrbitNoteNativeRasterSkipped(bool skipped)
+{
+    native_raster_skipped = skipped;
+}
+
 static bool Nearby(const KdcOrbitSprite *a, const KdcOrbitSprite *b)
 {
     return fabs(a->x - b->x) <= 4 && fabs(a->y - b->y) <= 4 && fabs(a->z - b->z) <= 32;
@@ -1463,8 +1727,6 @@ static void ReportDraw(double alpha)
 }
 
 
-enum { kBandRows = 8 }; /* native rows per band: one BG3 character row */
-
 static void DrawBand(void *context, unsigned index)
 {
     const Render *render = context;
@@ -1472,14 +1734,15 @@ static void DrawBand(void *context, unsigned index)
     const int row0 = (int)index * kBandRows;
     const int row1 = row0 + kBandRows < native_height ? row0 + kBandRows : native_height;
     const int y0 = row0 * render->scale, y1 = row1 * render->scale;
+    ClearDepthRows(render, y0, y1);
+    TerrainRows(render, index, y0, y1);
     BackgroundRows(render, row0, row1);
-    TerrainRows(render, y0, y1);
     for (unsigned i = 0; i < render->decal_count; ++i) DecalRows(render, &render->decals[i], y0, y1);
     for (unsigned i = 0; i < render->body_count; ++i) BodyRows(render, &render->bodies[i], true, y0, y1);
-    if (render->hd && render->scale > 1 && KdcHdUiEnabled()) {
+    if (render->hd_hud) {
         HudWindowRows(render, row0, row1);
         for (unsigned i = 0; i < render->screen_count; ++i) BodyRows(render, &render->screen[i], false, y0, y1);
-        /* The foreground BG3 pass follows the parallel bands on the host thread. */
+        HudBg3HdRows(render, row0, row1);
     } else {
         HudRows(render, row0, row1);
         for (unsigned i = 0; i < render->screen_count; ++i) BodyRows(render, &render->screen[i], false, y0, y1);
@@ -1613,11 +1876,12 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
     render.backdrop = Color(render.ppu->cgram[0]);
     if (SceneryLayout(render.ppu))
         render.scenery = KdcSceneryUpdate(render.ppu, g_ram, render.hd && scale > 1);
+    render.hd_hud = render.hd && KdcHdUiEnabled() && (scale > 1 || native_raster_skipped);
     if (!ProjectFaces(&render)) return 0;
     PreparePieces(&render);
+    PrepareHudArt(&render);
     const double prepared = Milliseconds();
     KdcParallelFor((unsigned)((height + kBandRows - 1) / kBandRows), DrawBand, &render);
-    if (render.hd && scale > 1 && KdcHdUiEnabled()) HudBg3HdRows(&render, 0, height);
     ReportProfile(prepared - started, Milliseconds() - prepared);
     return 1;
 }

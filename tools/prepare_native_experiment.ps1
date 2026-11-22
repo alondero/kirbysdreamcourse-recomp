@@ -160,6 +160,7 @@ $patches += 'snesrecomp-hd-hitches.patch'
 $patches += 'snesrecomp-hd-rgba.patch'
 $patches += 'snesrecomp-bridge-diagnostic-cache.patch'
 $patches += 'snesrecomp-transition-pacing.patch'
+$patches += 'snesrecomp-hd-perf-opt.patch'
 foreach ($patchName in $patches) {
     $patch = Join-Path $root "patches/$patchName"
     $check = Invoke-NativeCommand -FilePath 'git' -ArgumentList @('-C', $framework, 'apply', '--check', $patch) -Quiet

@@ -90,6 +90,11 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_RGBA_API
 if(NOT KDC_HD_RGBA_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-rgba.patch after the HD hitches patch")
 endif()
+file(STRINGS "${SNESRECOMP_ROOT}/runner/src/snes/ppu.h" KDC_HD_PERF_OPT_API
+    REGEX "PpuSetHdRgbaAddressKey" LIMIT_COUNT 1)
+if(NOT KDC_HD_PERF_OPT_API)
+    message(FATAL_ERROR "Apply patches/snesrecomp-hd-perf-opt.patch after the transition pacing patch")
+endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.h" KDC_PRESENTATION_BUDGET_API
      REGEX "snes_host_clock_presentation_allowed" LIMIT_COUNT 1)
 if(NOT KDC_PRESENTATION_BUDGET_API)

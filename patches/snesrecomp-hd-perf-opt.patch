@@ -1,0 +1,463 @@
+diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
+index 317a706c..55296b68 100644
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -1506,14 +1506,21 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+                             g_present_alpha, (unsigned)scale);
+   if (hd_composed) {
+     /* Retain a native-size backdrop for debug captures and the overlay. */
+-    for (int y = 0; y < h; ++y)
+-      for (int x = 0; x < w; ++x)
+-        memcpy(g_hd_native + (size_t)y * native_pitch + x * 4,
+-               (uint8_t *)g_hd_surface + ((size_t)y * scale * w * scale + x * scale) * 4, 4);
++    const size_t hd_stride = (size_t)w * (size_t)scale;
++    uint32_t *nat = (uint32_t *)g_hd_native;
++    for (int y = 0; y < h; ++y) {
++      const uint32_t *src = g_hd_surface + (size_t)y * (size_t)scale * hd_stride;
++      uint32_t *out = nat + (size_t)y * (size_t)w;
++      for (int x = 0; x < w; ++x) out[x] = src[x * scale];
++    }
+     /* Write the texture mapping sequentially; never read it back. */
+-    for (int y = 0; y < h * scale; ++y)
+-      memcpy(dst + (size_t)y * pitch, g_hd_surface + (size_t)y * w * scale,
+-             (size_t)w * scale * 4u);
++    const size_t row_bytes = hd_stride * 4u;
++    if (pitch == row_bytes) {
++      memcpy(dst, g_hd_surface, (size_t)h * (size_t)scale * row_bytes);
++    } else {
++      for (int y = 0; y < h * scale; ++y)
++        memcpy(dst + (size_t)y * pitch, g_hd_surface + (size_t)y * hd_stride, row_bytes);
++    }
+     debug_server_note_composed_frame(g_hd_native, (unsigned)native_pitch, w, h);
+     return;
+   }
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index e45e8972..0110c986 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -243,9 +243,10 @@ void interp_bridge_clear_idle_polls(void) {
+     s_idle_poll_now = 0;
+ }
+ 
+-static int bridge_is_idle_poll(uint32_t pc24) {
++static inline int bridge_is_idle_poll(uint32_t pc24) {
+     const uint32_t key = pc24 & 0x7FFFFFu;
+-    for (int i = 0; i < s_idle_poll_count; i++)
++    if (s_idle_poll_pcs[0] == key) return 1;
++    for (int i = 1; i < s_idle_poll_count; i++)
+         if (s_idle_poll_pcs[i] == key) return 1;
+     return 0;
+ }
+@@ -1679,11 +1680,13 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+         unsigned repeats, idle_repeats;
+     } QuiescentState;
+     QuiescentState qring[64];
+-    memset(qring, 0, sizeof qring);
+     /* What each step cost, parallel to qring, for replaying a declared idle
+      * poll's cycle (interp_bridge_set_idle_poll). Recorded on every step, so
+      * a poll declared while a run is live never replays a stale entry. */
+-    struct { uint64_t master; uint8_t cyc, open_bus; } idle_cost[64];
++    struct {
++        uint64_t master;
++        uint8_t cyc, open_bus, cont_reads, bus_master, bus_cycles;
++    } idle_cost[64];
+     /* The quiescent detector's candidates, bucketed by a hash of every field
+      * both matchers compare (PC, registers, flags, widths, write epoch and
+      * idle-live read epoch). The ordinary matcher still compares its full
+@@ -2108,7 +2111,6 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+             now.continuous_read_epoch=s_interp_continuous_read_epoch;
+             now.idle_live_epoch=s_interp_idle_live_epoch;
+             now.volatile_read_epoch=s_interp_volatile_read_epoch;
+-            int idle_seen = 0;
+             unsigned qb;
+             {
+                 const uint64_t k = 0x9E3779B97F4A7C15ull;
+@@ -2126,6 +2128,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                 h *= k;
+                 qb = (unsigned)(h >> 58);
+             }
++            QuiescentState *best_idle = NULL;
++            QuiescentState *first_cont = NULL;
+             for (uint64_t qm = qbucket[qb]; qm; qm &= qm - 1) {
+                 QuiescentState *old=&qring[bridge_ctz64(qm)];
+                 if (!(old->step && steps-old->step<=256 &&
+@@ -2137,107 +2141,118 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                       old->xf==now.xf && old->e==now.e &&
+                       old->write_epoch==now.write_epoch))
+                     continue;
+-                /* A declared idle poll's cycle: same state, no write, no
+-                 * volatile read, and no live read but the declared poll's.
+-                 * Replay it to the deadline (docs/IDLE_POLL.md). Every guard
+-                 * that fails leaves the run to the detector below, exactly
+-                 * as if nothing were declared. */
+-                if (s_idle_poll_count && !idle_seen &&
++                if (s_idle_poll_count &&
+                     old->idle_live_epoch==now.idle_live_epoch &&
+                     old->volatile_read_epoch==now.volatile_read_epoch) {
+-                    idle_seen = 1;
+-                    now.idle_repeats=old->idle_repeats+1;
+-                    if (now.idle_repeats>=2 && s_lle_master_deadline &&
+-                        bridge_idle_replay_allowed(&in, steps - old->step)) {
+-                        const long first = old->step;
+-                        const long period = steps - old->step;
+-                        int idle = 0, irq_unmasked = 0;
+-                        for (long j = 0; j < period; j++) {
+-                            const QuiescentState *state = &qring[(first + j) & 63];
+-                            idle |= bridge_is_idle_poll(state->pc);
+-                            irq_unmasked |= !state->i;
+-                        }
+-                        /* Equal endpoint flags do not prove I stayed set:
+-                         * SEI / poll / CLI can recur at a masked phase while
+-                         * an armed timer is observable elsewhere in the cycle. */
+-                        if (idle && !(irq_unmasked &&
+-                            (g_snes->hIrqEnabled || g_snes->vIrqEnabled))) {
+-                            const int apu_pending =
+-                                rtl_apu_extended_frame_timing() ||
+-                                !interp_bridge_use_absolute_apu_timeline(
+-                                    rtl_apu_frame_timeline_active(),
+-                                    cart_has_sa1(g_snes->cart), false);
+-                            const QuiescentState *at = &qring[first & 63];
+-                            int capped = 0;
+-                            for (long j = 0;; j++) {
+-                                const long e = (first + j % period) & 63;
+-                                at = &qring[e];
+-                                /* The checks the interpreted loop makes before
+-                                 * each step, in its order: the step cap, then
+-                                 * the deadline. */
+-                                if (steps + j >= step_cap) { capped = 1; break; }
+-                                if (cpu->master_cycles >= s_lle_master_deadline)
+-                                    break;
+-                                g_interp_bridge_steps++;
+-                                cpu->cycles += idle_cost[e].cyc;
+-                                cpu->master_cycles += idle_cost[e].master;
+-                                snes_refresh_charge();
+-                                cpu->open_bus = idle_cost[e].open_bus;
+-                                if (apu_pending) {
+-                                    s_apu_pending_master += idle_cost[e].master;
+-                                    if (s_apu_pending_master >= bridge_bounce_flush_thresh()) {
+-                                        cpu->coprocessor_master_cycles = cpu->master_cycles;
+-                                        snes_sync_master_clock(g_snes, cpu->master_cycles);
+-                                        bridge_apu_flush(cpu);
+-                                    }
++                    if (!best_idle || old->step > best_idle->step)
++                        best_idle = old;
++                }
++                if (!first_cont && old->continuous_read_epoch==now.continuous_read_epoch) {
++                    first_cont = old;
++                    if (!s_idle_poll_count) break;
++                }
++            }
++            /* A declared idle poll's cycle: same state, no write, no
++             * volatile read, and no live read but the declared poll's.
++             * Replay it to the deadline (docs/IDLE_POLL.md). Every guard
++             * that fails leaves the run to the detector below, exactly
++             * as if nothing were declared. */
++            if (best_idle) {
++                QuiescentState *old = best_idle;
++                now.idle_repeats=old->idle_repeats+1;
++                if (now.idle_repeats>=2 && s_lle_master_deadline &&
++                    bridge_idle_replay_allowed(&in, steps - old->step)) {
++                    const long first = old->step;
++                    const long period = steps - old->step;
++                    int idle = 0, irq_unmasked = 0;
++                    for (long j = 0; j < period; j++) {
++                        const QuiescentState *state = &qring[(first + j) & 63];
++                        idle |= bridge_is_idle_poll(state->pc);
++                        irq_unmasked |= !state->i;
++                    }
++                    /* Equal endpoint flags do not prove I stayed set:
++                     * SEI / poll / CLI can recur at a masked phase while
++                     * an armed timer is observable elsewhere in the cycle. */
++                    if (idle && !(irq_unmasked &&
++                        (g_snes->hIrqEnabled || g_snes->vIrqEnabled))) {
++                        const int apu_pending =
++                            rtl_apu_extended_frame_timing() ||
++                            !interp_bridge_use_absolute_apu_timeline(
++                                rtl_apu_frame_timeline_active(),
++                                cart_has_sa1(g_snes->cart), false);
++                        const QuiescentState *at = &qring[first & 63];
++                        int capped = 0;
++                        for (long j = 0;; j++) {
++                            const long e = (first + j % period) & 63;
++                            at = &qring[e];
++                            /* The checks the interpreted loop makes before
++                             * each step, in its order: the step cap, then
++                             * the deadline. */
++                            if (steps + j >= step_cap) { capped = 1; break; }
++                            if (cpu->master_cycles >= s_lle_master_deadline)
++                                break;
++                            g_interp_bridge_steps++;
++                            cpu->cycles += idle_cost[e].cyc;
++                            cpu->master_cycles += idle_cost[e].master;
++                            snes_refresh_charge();
++                            cpu->open_bus = idle_cost[e].open_bus;
++                            s_interp_continuous_read_epoch += idle_cost[e].cont_reads;
++                            s_interp_bus_master = idle_cost[e].bus_master;
++                            s_interp_bus_cycles = idle_cost[e].bus_cycles;
++                            if (apu_pending) {
++                                s_apu_pending_master += idle_cost[e].master;
++                                if (s_apu_pending_master >= bridge_bounce_flush_thresh()) {
++                                    cpu->coprocessor_master_cycles = cpu->master_cycles;
++                                    snes_sync_master_clock(g_snes, cpu->master_cycles);
++                                    bridge_apu_flush(cpu);
+                                 }
+                             }
+-                            in.k = at->k; in.pc = (uint16_t)at->pc;
+-                            in.a = at->a; in.x = at->x; in.y = at->y;
+-                            in.sp = at->sp; in.dp = at->dp; in.db = at->db;
+-                            in.c = at->c; in.z = at->z; in.v = at->v; in.n = at->n;
+-                            in.i = at->i; in.d = at->d; in.mf = at->mf;
+-                            in.xf = at->xf; in.e = at->e;
+-                            cpu->coprocessor_master_cycles = cpu->master_cycles;
+-                            snes_sync_master_clock(g_snes, cpu->master_cycles);
+-                            if (g_snes->cart)
+-                                cart_sync_coprocessors(g_snes->cart, cpu->master_cycles);
+-                            if (capped) {
+-                                steps = step_cap;
+-                                goto idle_replay_step_cap;
+-                            }
+-                            lle_resume_set(at->pc, INTERP_RESUME_SITE_DEADLINE, in.sp);
+-                            sync_interp_to_cpu(&in, cpu);
+-                            bridge_apu_flush(cpu);
+-                            return 1;
+                         }
+-                    }
+-                }
+-                if (old->continuous_read_epoch==now.continuous_read_epoch) {
+-                    now.repeats=old->repeats+1;
+-                    if (now.repeats>=2) {
+-                        /* Stable CPU/memory state is a genuine cooperative
+-                         * wait.  The owning scheduler advances idle hardware
+-                         * to the next timer comparator or vblank and resumes
+-                         * here after servicing that event.  Burning the poll
+-                         * inside the interpreter until any enabled timer fired
+-                         * made a single host frame consume many guest frames
+-                         * and could starve rendering.  Live MMIO polls are not
+-                         * mistaken for this path: continuous_read_epoch changes
+-                         * on every such read. */
+-                        lle_resume_set(pc_before,
+-                                       INTERP_RESUME_SITE_QUIESCENT, in.sp);
+-                        s_lle_quiescent_yield = 1;
+-                        /* Flush accumulated SPC time BEFORE yielding so the
+-                         * SPC700 processes any pending port writes (Star Ocean
+-                         * boot handshake: CPU writes to $2140-$2143 and polls
+-                         * $2140 for response; without this flush the SPC stays
+-                         * frozen and the game hangs at $C8F425). */
++                        in.k = at->k; in.pc = (uint16_t)at->pc;
++                        in.a = at->a; in.x = at->x; in.y = at->y;
++                        in.sp = at->sp; in.dp = at->dp; in.db = at->db;
++                        in.c = at->c; in.z = at->z; in.v = at->v; in.n = at->n;
++                        in.i = at->i; in.d = at->d; in.mf = at->mf;
++                        in.xf = at->xf; in.e = at->e;
++                        cpu->coprocessor_master_cycles = cpu->master_cycles;
++                        snes_sync_master_clock(g_snes, cpu->master_cycles);
++                        if (g_snes->cart)
++                            cart_sync_coprocessors(g_snes->cart, cpu->master_cycles);
++                        if (capped) {
++                            steps = step_cap;
++                            goto idle_replay_step_cap;
++                        }
++                        lle_resume_set(at->pc, INTERP_RESUME_SITE_DEADLINE, in.sp);
++                        sync_interp_to_cpu(&in, cpu);
+                         bridge_apu_flush(cpu);
+-                        sync_interp_to_cpu(&in,cpu);
+                         return 1;
+                     }
+-                    break;
++                }
++            }
++            if (first_cont) {
++                QuiescentState *old = first_cont;
++                now.repeats=old->repeats+1;
++                if (now.repeats>=2) {
++                    /* Stable CPU/memory state is a genuine cooperative
++                     * wait.  The owning scheduler advances idle hardware
++                     * to the next timer comparator or vblank and resumes
++                     * here after servicing that event.  Burning the poll
++                     * inside the interpreter until any enabled timer fired
++                     * made a single host frame consume many guest frames
++                     * and could starve rendering.  Live MMIO polls are not
++                     * mistaken for this path: continuous_read_epoch changes
++                     * on every such read. */
++                    lle_resume_set(pc_before,
++                                   INTERP_RESUME_SITE_QUIESCENT, in.sp);
++                    s_lle_quiescent_yield = 1;
++                    /* Flush accumulated SPC time BEFORE yielding so the
++                     * SPC700 processes any pending port writes (Star Ocean
++                     * boot handshake: CPU writes to $2140-$2143 and polls
++                     * $2140 for response; without this flush the SPC stays
++                     * frozen and the game hangs at $C8F425). */
++                    bridge_apu_flush(cpu);
++                    sync_interp_to_cpu(&in,cpu);
++                    return 1;
+                 }
+             }
+             {
+@@ -2717,6 +2732,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+         if (g_interp_bridge_pc_hook)
+             g_interp_bridge_pc_hook(pc_before & 0xFFFFFFu,
+                                     in.mf ? 1 : 0, in.xf ? 1 : 0);
++        const uint64_t _cont_before = s_interp_continuous_read_epoch;
+         if (s_idle_poll_count) s_idle_poll_now = bridge_is_idle_poll(pc_before);
+         int _cyc = interp816_runOpcode(&in);   /* executes the opcode; pushes/pops frames */
+         s_idle_poll_now = 0;
+@@ -2783,6 +2799,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+             idle_cost[steps & 63].master = _master;
+             idle_cost[steps & 63].cyc = (uint8_t)_cyc;
+             idle_cost[steps & 63].open_bus = cpu->open_bus;
++            idle_cost[steps & 63].cont_reads = (uint8_t)(s_interp_continuous_read_epoch - _cont_before);
++            idle_cost[steps & 63].bus_master = (uint8_t)s_interp_bus_master;
++            idle_cost[steps & 63].bus_cycles = (uint8_t)s_interp_bus_cycles;
+         }
+ 
+         /* Env-gated per-instruction cycle watch (SNESRECOMP_CYC_WATCH="lo-hi"
+@@ -3002,8 +3021,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                             return 1;
+                         }
+                         if (s_lle_unwind_owner_depth == s_interp_bridge_depth) {
+-                            if (getenv("SNESRECOMP_YIELD_STACK_DIAG") &&
+-                                snes_frame_counter >= 5390) {
++                            if (snes_frame_counter >= 5390 &&
++                                getenv("SNESRECOMP_YIELD_STACK_DIAG")) {
+                                 fprintf(stderr,
+                                         "[yield_stack] frame=%d bounce=$%06X "
+                                         "sp_pre=$%04X sp_unwind=$%04X "
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index 69e1ab39..2ea1e2dd 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -1179,6 +1179,7 @@ typedef struct PpuHdCellMemo {
+ struct PpuHdTiles {
+   PpuHdTileFill *fill;
+   PpuHdRgbaFill *rgba_fill;
++  bool rgba_address_key;
+   PpuHdTileContextPolicy *context_policy;
+   void *context;
+   PpuHdLinePolicy *policy;
+@@ -1314,6 +1315,16 @@ bool PpuSetHdRgbaSource(Ppu *ppu, PpuHdRgbaFill *fill) {
+     PpuHdTilesClearCache(ppu->hdTiles);
+     ppu->hdTiles->rgba_fill = fill;
+   }
++  ppu->hdTiles->rgba_address_key = fill != NULL;
++  return true;
++}
++
++bool PpuSetHdRgbaAddressKey(Ppu *ppu, bool enabled) {
++  if (!ppu || !ppu->hdTiles) return false;
++  if (ppu->hdTiles->rgba_address_key != enabled) {
++    PpuHdTilesClearCache(ppu->hdTiles);
++    ppu->hdTiles->rgba_address_key = enabled;
++  }
+   return true;
+ }
+ 
+@@ -1491,6 +1502,34 @@ static void PpuHdSummarise(const PpuHdTileQuery *q, PpuHdImage *image) {
+     }
+ }
+ 
++static void PpuHdSummariseRgba(const PpuHdTileQuery *q, PpuHdImage *image,
++                               const uint32_t *rgba) {
++  const unsigned s = q->scale, side = 8 * s;
++  image->opaque = image->clear = image->same = 0;
++  for (unsigned r = 0; r < 8; ++r)
++    for (unsigned c = 0; c < 8; ++c) {
++      unsigned w = q->words[r];
++      unsigned native = (w >> (7 - c) & 1) | (w >> (15 - c) & 1) << 1;
++      if (q->bpp == 4) {
++        w = q->words[8 + r];
++        native |= (w >> (7 - c) & 1) << 2 | (w >> (15 - c) & 1) << 3;
++      }
++      bool opaque = true, clear = true;
++      for (unsigned y = 0; y < s; ++y)
++        for (unsigned x = 0; x < s; ++x) {
++          const unsigned a = rgba[(r * s + y) * side + c * s + x] >> 24;
++          opaque &= a == 255u;
++          clear &= a == 0u;
++        }
++      const uint64_t bit = 1ull << (r * 8 + c);
++      if (opaque) image->opaque |= bit;
++      if (clear) {
++        image->clear |= bit;
++        if (!native) image->same |= bit;
++      }
++    }
++}
++
+ /* Neighbour evidence follows the same tilemap/provider as the native BG.
+  * Store indices in the centre tile's unflipped coordinate system. A different
+  * palette or transparent neighbour cannot establish an opaque geometric edge. */
+@@ -1608,7 +1647,7 @@ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+     q.words[i] = vram[(rec->address + i) & 0x7fff];
+   for (unsigned i = 1; i < (1u << bpp); ++i)
+     q.colors[i] = ppu->cgram[(palette + i) & 0xff];
+-  if (t->rgba_fill) q.address = rec->address;
++  if (t->rgba_fill && t->rgba_address_key) q.address = rec->address;
+   q.bpp = (uint8_t)bpp;
+   q.layer = (uint8_t)source;
+   if (source < 2 && bpp == 4 && !(rec->flags & kPpuHdNoBorder) &&
+@@ -1633,6 +1672,7 @@ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+           if (image) {
+             image->rgba = 1;
+             memcpy(image->indices, rgba, samples * sizeof(uint32_t));
++            PpuHdSummariseRgba(&q, image, rgba);
+           }
+         }
+       }
+@@ -3462,10 +3502,14 @@ static uint32_t PpuHdPaintScreen(Ppu *p, const PpuHdCandidate *c, unsigned count
+     uint32_t rgb = stack[k].ink & 0xffffff;
+     if (main) rgb = PpuHdRgbMath(p, rgb, (stack[k].z >> 8) & 15, other, *sub_pixel, inside);
+     if (a == 255) { result = rgb; continue; }
+-    uint32_t mixed = 0;
+-    for (int shift = 0; shift <= 16; shift += 8)
+-      mixed |= ((((rgb >> shift & 255) * a + (result >> shift & 255) * (255-a) + 127) / 255) << shift);
+-    result = mixed;
++    const unsigned inv = 255u - a;
++    unsigned r = ((rgb >> 16) & 255u) * a + ((result >> 16) & 255u) * inv + 128u;
++    unsigned g = ((rgb >> 8) & 255u) * a + ((result >> 8) & 255u) * inv + 128u;
++    unsigned b = (rgb & 255u) * a + (result & 255u) * inv + 128u;
++    r = (r + (r >> 8)) >> 8;
++    g = (g + (g >> 8)) >> 8;
++    b = (b + (b >> 8)) >> 8;
++    result = (r << 16) | (g << 8) | b;
+   }
+   return result;
+ }
+@@ -3556,7 +3600,10 @@ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
+           c->rec = rec;
+           c->image = rec->entry ? t->entries[rec->entry - 1].image : NULL;
+           any_image |= c->image != NULL;
+-          rgba |= c->image && c->image->rgba;
++          if (c->image && c->image->rgba) {
++            const uint64_t bit = 1ull << ((rec->row & 7u) * 8u + (rec->col & 7u));
++            if (!(c->image->same & bit)) rgba = true;
++          }
+           c->step = 0;
+         }
+       }
+@@ -3613,8 +3660,9 @@ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
+               uint32_t rgb = PpuHdPaintScreen(ppu, cand[0], count[0], sx, i,
+                   true, inside, other, &sub_pixel);
+               unsigned bright = ppu->inidisp & 15;
+-              row[sx] = (((rgb >> 16) * bright / 15) << 16) |
+-                  (((rgb >> 8 & 255) * bright / 15) << 8) | ((rgb & 255) * bright / 15);
++              row[sx] = bright == 15 ? rgb :
++                  ((((rgb >> 16) * bright / 15) << 16) |
++                   (((rgb >> 8 & 255) * bright / 15) << 8) | ((rgb & 255) * bright / 15));
+               continue;
+             }
+             uint16_t value[2] = {main, sub};
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index fbb8b031..425a5fc2 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -55,6 +55,10 @@ typedef bool PpuHdTileFill(const PpuHdTileQuery *query, uint8_t *indices,
+  * Returning false selects the indexed source for this query. */
+ typedef bool PpuHdRgbaFill(const PpuHdTileQuery *query, uint32_t *pixels);
+ bool PpuSetHdRgbaSource(Ppu *ppu, PpuHdRgbaFill *fill);
++/* Controls whether VRAM address is included in the HD tile cache key while an
++ * RGBA source is active (default true). Disabling when RGBA lookups are purely
++ * content-addressed restores full content-addressed tile deduplication. */
++bool PpuSetHdRgbaAddressKey(Ppu *ppu, bool enabled);
+ /* Optional cheap request for neighbour evidence before a content-cache lookup.
+  * The query has words, colours, bpp and layer; border is still zero. */
+ typedef bool PpuHdTileContextPolicy(const PpuHdTileQuery *query, void *context);

@@ -77,6 +77,16 @@ static void initialize_bounce_log(void)
     static int initialized;
     if (initialized) return;
     initialized = 1;
+    /* Kirby's Dream Course (USA) polls NMI-updated WRAM flags instead of
+     * executing WAI: $004D (incremented in NMI $80:81B5) and $0026 (cleared
+     * when NMI drains the VRAM DMA queue). Declaring these pure wait PCs lets
+     * the interpreter replay the loop to the next beam/HDMA deadline with
+     * exact cycle, refresh, open-bus and APU timing (docs/IDLE_POLL.md). */
+    interp_bridge_set_idle_poll(0x808471u);
+    interp_bridge_set_idle_poll(0x8084ccu);
+    interp_bridge_set_idle_poll(0x8084e5u);
+    interp_bridge_set_idle_poll(0x8086fcu);
+    interp_bridge_set_idle_poll(0x80878cu);
     KdcInitializeSprites();
     if (g_snes && g_snes->cart && g_snes->cart->rom)
         KdcCoursePackSetRom(g_snes->cart->rom, g_snes->cart->romImageSize);
@@ -151,15 +161,44 @@ void GameRunOneFrame(void)
 
 void GameDrawPpuFrame(void)
 {
+    static int state_dump_checked, state_dump_enabled;
+    if (!state_dump_checked) {
+        state_dump_checked = 1;
+        const char *dump = getenv("SNESRECOMP_STATE_DUMP");
+        const char *sprite_log = getenv("KDC_SPRITE_LOG");
+        state_dump_enabled = (dump && *dump && *dump != '0') || (sprite_log && *sprite_log);
+    }
     /* The pinned desktop host narrows the margin to uint8_t. Reapply the
      * full buffer-supported budget here, including very wide displays. */
     PpuSetExtraSpace(g_snes->ppu, g_ws_extra);
     KdcPrepareCourseView(g_snes->ppu, g_ram, g_ws_extra);
-    KdcPrepareSprites(g_snes->ppu, g_ram, g_ws_extra);
+    const bool skip_raster = !state_dump_enabled && KdcOrbitCanSkipNativeRaster();
+    if (skip_raster) {
+        PpuSetExtraObjects(g_snes->ppu, NULL, 0);
+        PpuSetExtraObjectProvider(g_snes->ppu, NULL, NULL);
+    } else {
+        KdcPrepareSprites(g_snes->ppu, g_ram, g_ws_extra);
+    }
     KdcPrepareHud(g_snes->ppu, g_ram, g_ws_extra, KdcHudEdges());
     KdcPrepareSelectSky(g_snes->ppu, g_snes->cart ? g_snes->cart->rom : NULL,
                         g_snes->cart ? g_snes->cart->romImageSize : 0);
-    snes_beam_frame_driver_draw_ppu_frame();
+    if (skip_raster) {
+        /* Orbit HD with Modernized HD UI overwrites 100% of g_hd_surface and
+         * never reads g_my_pixels. Still walk the raster journal with
+         * ppu_runLineState so mid-frame HUD/window detection stays exact. */
+        snes_set_hdma_beam_enabled(g_snes, false);
+        ppu_rasterRenderBegin(g_snes->ppu);
+        for (int line = 1; line <= 224; ++line) {
+            uint8_t hdmaen;
+            ppu_rasterApplyLine(g_snes->ppu, line - 1);
+            (void)ppu_rasterTakeHdmaen(&hdmaen);
+            ppu_runLineState(g_snes->ppu, line);
+        }
+        ppu_rasterRenderEnd(g_snes->ppu);
+    } else {
+        snes_beam_frame_driver_draw_ppu_frame();
+    }
+    KdcOrbitNoteNativeRasterSkipped(skip_raster);
     KdcPracticeCaptureFont(g_snes->ppu);
     KdcReportSprites(snes_frame_counter);
 }
