@@ -1,4 +1,4 @@
-# Kirby's Dream Course recompilation experiment
+﻿# Kirby's Dream Course recompilation experiment
 
 Experimental Windows, Linux and Android builds of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled executable, runtime dependencies and notices; they require your matching ROM at runtime.
 
