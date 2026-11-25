@@ -9,6 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef KDC_TERRAIN_BLOCK_CACHE_LIMIT
+#ifdef __ANDROID__
+#define KDC_TERRAIN_BLOCK_CACHE_LIMIT (16u * 1024u * 1024u)
+#else
+#define KDC_TERRAIN_BLOCK_CACHE_LIMIT (48u * 1024u * 1024u)
+#endif
+#endif
+
 enum {
     kRows = 1024,          /* rows of the three row tables at $8BB0/$93B0/$9BB0 */
     kMapBytes = 2 * 0x6800, /* both planes' packed tile words at $13000 */
@@ -17,11 +25,7 @@ enum {
     kStrip = 4,            /* character rows enlarged per parallel piece */
     kBlockCols = 8,        /* character columns per cached animated terrain block */
     kTerrainBlockSlots = 16,
-#ifdef __ANDROID__
-    kMaxTerrainBlockCacheBytes = 16u * 1024u * 1024u,
-#else
-    kMaxTerrainBlockCacheBytes = 48u * 1024u * 1024u,
-#endif
+    kMaxTerrainBlockCacheBytes = KDC_TERRAIN_BLOCK_CACHE_LIMIT,
     kReach = (kKdcHdImageReach + 7) / 8,
     /* Updates a palette's luma must hold still before the enlargement's edge
      * decisions follow it. Colours always come from the live palette; only
@@ -315,6 +319,33 @@ static size_t PackPaddedBlock(const KdcHdImage *image, int bx0, int by0, int bx1
     return offset;
 }
 
+/* Reserve a replacement's net bytes before allocating it. Each cache entry is
+ * owned by one strip worker, but the shared ceiling is not: without making the
+ * check and reservation one atomic step, parallel strips can all pass the check
+ * before any of them records its allocation. */
+static bool ReserveTerrainBlockBytes(size_t old_bytes, size_t new_bytes)
+{
+    size_t cur = atomic_load_explicit(&state.block_cache_bytes, memory_order_relaxed);
+    for (;;) {
+        if (cur < old_bytes || cur - old_bytes + new_bytes > kMaxTerrainBlockCacheBytes)
+            return false;
+        const size_t next = cur - old_bytes + new_bytes;
+        if (atomic_compare_exchange_weak_explicit(&state.block_cache_bytes, &cur, next,
+                                                  memory_order_relaxed, memory_order_relaxed))
+            return true;
+    }
+}
+
+static void ReleaseTerrainBlockBytes(size_t old_bytes, size_t new_bytes)
+{
+    if (new_bytes >= old_bytes)
+        atomic_fetch_sub_explicit(&state.block_cache_bytes, new_bytes - old_bytes,
+                                  memory_order_relaxed);
+    else
+        atomic_fetch_add_explicit(&state.block_cache_bytes, old_bytes - new_bytes,
+                                  memory_order_relaxed);
+}
+
 static bool EnlargeBlockCached(const Enlarge *job, unsigned strip_index, unsigned bcol,
                                int c0, int c1, int r0, int r1)
 {
@@ -359,25 +390,20 @@ static bool EnlargeBlockCached(const Enlarge *job, unsigned strip_index, unsigne
             const size_t old_bytes = (victim->padded ? victim->padded_bytes : 0) +
                                      (victim->hd ? victim->hd_bytes : 0);
             const size_t new_bytes = padded_bytes + hd_bytes;
-            const size_t cur = atomic_load_explicit(&state.block_cache_bytes, memory_order_relaxed);
-            if (cur - old_bytes + new_bytes <= kMaxTerrainBlockCacheBytes) {
-                uint8_t *np = malloc(padded_bytes);
-                uint8_t *nh = malloc(hd_bytes);
-                if (np && nh) {
-                    free(victim->padded);
-                    free(victim->hd);
-                    victim->padded = np;
-                    victim->hd = nh;
-                    victim->padded_bytes = padded_bytes;
-                    victim->hd_bytes = hd_bytes;
-                    atomic_fetch_add_explicit(&state.block_cache_bytes, new_bytes - old_bytes,
-                                              memory_order_relaxed);
-                } else {
-                    free(np);
-                    free(nh);
-                    return false;
-                }
+            if (!ReserveTerrainBlockBytes(old_bytes, new_bytes)) return false;
+            uint8_t *np = malloc(padded_bytes);
+            uint8_t *nh = malloc(hd_bytes);
+            if (np && nh) {
+                free(victim->padded);
+                free(victim->hd);
+                victim->padded = np;
+                victim->hd = nh;
+                victim->padded_bytes = padded_bytes;
+                victim->hd_bytes = hd_bytes;
             } else {
+                free(np);
+                free(nh);
+                ReleaseTerrainBlockBytes(old_bytes, new_bytes);
                 return false;
             }
         }
