@@ -64,7 +64,6 @@ int main(void)
     CHECK(calls > 1 && calls < 128, "unexpected progressive enlargement call count %u", calls);
     if (!terrain->hd) return 1;
 
-    terrain = KdcTerrainUpdate(&ppu, ram, true);
     const size_t source_pixels = (size_t)terrain->width * terrain->height;
     const size_t hd_bytes = source_pixels * kKdcTerrainScale * kKdcTerrainScale;
     uint8_t *expected = malloc(hd_bytes);

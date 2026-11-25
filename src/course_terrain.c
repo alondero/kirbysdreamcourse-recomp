@@ -62,7 +62,7 @@ static struct {
     uint16_t *words;       /* both planes' tile word for every grid cell */
     int columns, rows;     /* grid size in characters, including the border */
     int first_column, first_row;
-    bool valid, hd_valid, prewarm_active, prewarm_dirty;
+    bool valid, hd_valid, prewarm_active;
     unsigned prewarm_next_strip;
     uint8_t tables[3 * 2 * kRows];
     uint8_t map[kMapBytes];
@@ -185,7 +185,7 @@ void KdcTerrainReset(void)
     free(state.words);
     state.native = state.mask = state.hd = state.dirty = state.reach = NULL;
     state.words = NULL;
-    state.valid = state.hd_valid = state.prewarm_active = state.prewarm_dirty = false;
+    state.valid = state.hd_valid = state.prewarm_active = false;
     state.prewarm_next_strip = 0;
 }
 
@@ -559,11 +559,11 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         state.hd = NULL;
         state.view.hd = NULL;
         state.hd_valid = false;
-        state.prewarm_active = state.prewarm_dirty = false;
+        state.prewarm_active = false;
         state.prewarm_next_strip = 0;
     }
     if (!hd) luma_dirty = 0;
-    if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all && !state.prewarm_dirty)
+    if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all)
         return &state.view;
 
     uint8_t char_dirty[1024];
@@ -580,31 +580,29 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
 
     /* Enlarge what changed together with everything a change can reach. */
     const size_t cells = (size_t)state.columns * state.rows;
-    bool any = false;
+    bool any = false, repair = false;
     memset(state.reach, 0, cells);
-    if (!progressive_initial) state.prewarm_dirty = false;
     for (int row = 0; row < state.rows; ++row)
         for (int column = 0; column < state.columns; ++column) {
             uint8_t *dirty = &state.dirty[(size_t)row * state.columns + column];
             if (!*dirty) continue;
-            if (progressive_initial) {
-                if ((unsigned)(row / kStrip) < state.prewarm_next_strip) {
-                    state.prewarm_dirty = true;
-                } else {
-                    state.stats.composed_tiles += *dirty == 2;
-                    *dirty = 0;
-                }
-                any = true;
-                continue;
-            }
             state.stats.composed_tiles += *dirty == 2;
             *dirty = 0;
             any = true;
-            if (!hd || enlarge_all) continue;
+            if (!hd || (enlarge_all && !progressive_initial)) continue;
             const int c0 = column > kReach ? column - kReach : 0;
             const int c1 = column + kReach < state.columns - 1 ? column + kReach : state.columns - 1;
             const int r0 = row > kReach ? row - kReach : 0;
-            const int r1 = row + kReach < state.rows - 1 ? row + kReach : state.rows - 1;
+            int r1 = row + kReach < state.rows - 1 ? row + kReach : state.rows - 1;
+            if (progressive_initial) {
+                /* Strips not built yet are enlarged fresh with current data,
+                 * so only the part of the change's reach that overlaps an
+                 * already-completed strip needs repairing. */
+                const int built = (int)state.prewarm_next_strip * kStrip - 1;
+                if (r1 > built) r1 = built;
+                if (r0 > r1) continue;
+            }
+            repair = true;
             for (int r = r0; r <= r1; ++r)
                 memset(state.reach + (size_t)r * state.columns + c0, 1, (size_t)(c1 - c0 + 1));
         }
@@ -616,7 +614,15 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         if (!state.hd) return &state.view; /* drawn from the source image */
         if (progressive_initial) {
             state.prewarm_active = true;
-            if (ProgressiveEnlargeStep()) {
+            const bool complete = ProgressiveEnlargeStep();
+            if (repair) {
+                const uint64_t scaled = EnlargeMarked(state.reach);
+                if (state.block_cache)
+                    state.stats.scaled_tiles += scaled;
+                else
+                    for (size_t i = 0; i < cells; ++i) state.stats.scaled_tiles += state.reach[i];
+            }
+            if (complete) {
                 state.prewarm_active = false;
                 state.prewarm_next_strip = 0;
                 state.hd_valid = true;
