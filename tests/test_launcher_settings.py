@@ -41,7 +41,7 @@ class LauncherSettingsTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual((Path(directory) / 'kdc-widescreen.cfg').read_text().strip(), '21:9')
                     self.assertEqual((Path(directory) / 'kdc-hd.cfg').read_text().strip(), '0')
-                    self.assertEqual((Path(directory) / 'kdc-hd-ui.cfg').read_text().strip(), 'original')
+                    self.assertFalse((Path(directory) / 'kdc-hd-ui.cfg').exists())
                     self.assertEqual((Path(directory) / 'kdc-transitions.cfg').read_text().strip(), '1')
                     self.assertEqual((Path(directory) / 'kdc-courses.cfg').read_text().strip(), '1')
                     reloaded = subprocess.run(args + ['reload', 'check'], capture_output=True,
@@ -55,7 +55,6 @@ class LauncherSettingsTest(unittest.TestCase):
                     self.assertEqual((Path(directory) / 'kdc-presentation.cfg').read_text().strip(), '1 144')
                     (Path(directory) / 'kdc-presentation.cfg').unlink()
                     (Path(directory) / 'kdc-hd.cfg').unlink()
-                    (Path(directory) / 'kdc-hd-ui.cfg').unlink()
                     # A wrong expected hash must fail even in a release build.
                     args[2] = '0' * 64
                     result = subprocess.run(args, capture_output=True, text=True, cwd=directory)

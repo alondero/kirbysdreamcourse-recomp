@@ -15,8 +15,6 @@ bool KdcHighRefreshEnabled(void);
 int KdcPresentationFps(void);
 /* The saved HD textures choice (kdc-hd.cfg); off unless enabled. */
 bool KdcHdTexturesEnabled(void);
-/* The saved HD UI replacement choice (kdc-hd-ui.cfg); modernized by default. */
-bool KdcHdUiOptionEnabled(void);
 bool KdcFasterTransitionsEnabled(void);
 bool KdcExtraCoursesEnabled(void);
 

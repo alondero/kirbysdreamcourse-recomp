@@ -6,7 +6,7 @@
 #include "course_hud.h"
 #include "course_terrain.h"
 #include "hd_textures.h"
-#include "hd_ui.h"
+#include "hd_pack.h"
 #include "host_parallel.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
@@ -282,7 +282,7 @@ static const uint32_t *HdArtTileLookup(const Render *render, unsigned address, b
         bool rom, valid;
         PpuHdTileQuery query;
         uint32_t pixels[side * side];
-        bool ui;
+        bool pack;
     } cache[count];
     unsigned hash = address ^ (palette << 17) ^ (rom ? 0x55555555u : 0) ^ (bpp << 25);
     hash ^= hash >> 16; hash *= 0x7feb352du; hash ^= hash >> 15;
@@ -303,15 +303,16 @@ static const uint32_t *HdArtTileLookup(const Render *render, unsigned address, b
      * an expensive rescale on every alternating source pixel. */
     if (!entry) return NULL;
     if (!same || entry->generation != art_generation) {
-        PpuHdTileQuery q = {.bpp = bpp, .layer = bpp == 2 ? 2 : 4, .scale = kKdcHdScale};
+        PpuHdTileQuery q = {.bpp = bpp, .layer = bpp == 2 ? 2 : 4, .scale = kKdcHdScale,
+                            .address = rom ? 0 : (uint16_t)address};
         for (unsigned i = 0; i < bpp * 4; ++i)
             q.words[i] = rom ? g_snes->cart->rom[address + 2 * i] |
                 (uint16_t)g_snes->cart->rom[address + 2 * i + 1] << 8 :
                 PpuRenderVram(render->ppu)[(address + i) & 0x7fff];
         for (unsigned i = 1; i < (1u << bpp); ++i) q.colors[i] = render->ppu->cgram[palette + i];
-        const bool ui = KdcHdUiEnabled();
-        if (!same || ui != entry->ui || memcmp(&q, &entry->query, sizeof(q))) {
-            if (!ui || !KdcHdUiRgba(&q, entry->pixels)) {
+        const bool pack = KdcHdPackAvailable();
+        if (!same || pack != entry->pack || memcmp(&q, &entry->query, sizeof(q))) {
+            if (!pack || !KdcHdPackTile(&q, entry->pixels)) {
                 uint8_t indices[side * side];
                 if (!KdcHdSmoothTile(&q, indices, NULL))
                     KdcHdNearestTile(&q, indices, NULL);
@@ -319,7 +320,7 @@ static const uint32_t *HdArtTileLookup(const Render *render, unsigned address, b
                 for (unsigned k = 1; k < (1u << bpp); ++k) colors[k] = Color(q.colors[k]);
                 for (unsigned k = 0; k < side * side; ++k) entry->pixels[k] = colors[indices[k]];
             }
-            entry->ui = ui;
+            entry->pack = pack;
             entry->query = q;
         }
         entry->address = address; entry->palette = palette; entry->bpp = bpp;
@@ -1481,7 +1482,7 @@ static void PreparePieces(Render *render)
             }
             if (piece->x0 >= piece->x1 || piece->y0 >= piece->y1) continue;
             const unsigned cells = (unsigned)((size / 8) * (size / 8));
-            if (enlarge && (sprite->world || KdcHdUiEnabled()) &&
+            if (enlarge && (sprite->world || KdcHdPackAvailable()) &&
                 cells_used + cells <= sizeof(art_cells) / sizeof(art_cells[0])) {
                 /* Cells are indexed in the character's own (flipped) space. */
                 for (unsigned cell = 0; cell < cells; ++cell) {
@@ -1589,7 +1590,7 @@ bool KdcOrbitCanSkipNativeRaster(int width, int height)
     prepared_geometry_valid = false;
     if (!composed || composed_scale <= 1 || composed_width != width || composed_height != height)
         return false;
-    if (!KdcHdEnabled() || !KdcHdUiEnabled() || !CanCompose(width, height))
+    if (!KdcHdEnabled() || !KdcHdPackAvailable() || !CanCompose(width, height))
         return false;
     if (high_refresh && (!current.valid || current.width != width || current.height != height ||
         KdcReadWord(g_ram, 0xabb2) != map_id || KdcReadWord(g_ram, 0x1803) != focus_player))
@@ -1919,7 +1920,7 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
     render.backdrop = Color(render.ppu->cgram[0]);
     if (SceneryLayout(render.ppu))
         render.scenery = KdcSceneryUpdate(render.ppu, g_ram, render.hd && scale > 1);
-    render.hd_hud = render.hd && KdcHdUiEnabled() && (scale > 1 || native_raster_skipped);
+    render.hd_hud = render.hd && KdcHdPackAvailable() && (scale > 1 || native_raster_skipped);
     if (!ProjectFaces(&render)) return 0;
     PreparePieces(&render);
     PrepareHudArt(&render);

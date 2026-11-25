@@ -27,7 +27,7 @@ class OrbitRendererTest(unittest.TestCase):
             executable = Path(directory) / 'course_orbit_render_test.exe'
             sources = [root / "src/course_camera.c", root / "src/course_geometry.c",
                        root / "src/course_sprite_view.c", root / "src/hd_tile_source.c",
-                       root / "src/hd_scaler.c", root / "src/hd_ui.c", root / "src/hd_pack.c", root / "src/course_checker.c",
+                       root / "src/hd_scaler.c", root / "src/course_checker.c",
                        root / "src/course_terrain.c", root / "src/hd_image.c",
                        root / "src/host_parallel.c"]
             if not embedded:

@@ -1,9 +1,11 @@
 # HD textures
 
 HD textures redraw the course at four times the native resolution. Terrain,
-scenery and world sprites use the live game palette. The checker edges are
-reconstructed geometrically. Modernized interface art uses RGBA samples
-tinted from the same live palettes. Both renderers change presentation only.
+scenery and world sprites use the live game palette. Checkerboard edges are
+reconstructed geometrically from the live character data; other indexed art
+uses the palette-locked scaler. Authored interface replacements are supplied
+only by an external texture pack. There is no built-in redrawn interface
+artwork. Both renderers change presentation only.
 
 ## Enabling
 
@@ -11,71 +13,25 @@ Enable **HD textures** on the launcher's **Mods** page. It is off by default
 and can be changed during play. The choice is saved in `kdc-hd.cfg` beside
 the executable.
 
-The mod's **HUD, menus and fonts** option chooses how interface art is
-drawn while HD textures are on:
+Without an interface pack, live course terrain (BG1/BG2), course scenery
+(BG3), course sprites and orbit/high-refresh terrain are scaled at 4x. The
+title, menus, course select, scorecards and the HUD keep their original
+pixels. Lines using mosaic, interlace, pseudo-hires or 16x16 characters, and
+any pixel the exactness check cannot reproduce, also stay native.
 
-- **Modernized** (default): HUD, menu and font characters are replaced by
-  redrawn 4x artwork (see [Modernized interface](#modernized-interface)).
-- **Original (pixel sharp)**: the interface stays native, as in the table
-  below.
+### Interface texture packs
 
-The option is saved in `kdc-hd-ui.cfg` (`modern` or `original`).
-`KDC_HD_UI=1`/`0` overrides it for tests.
+A texture pack is a separate, game-derived mod authored outside this
+repository. Packs are never committed or distributed with the project. When
+HD textures are on, the game loads the file named by `KDC_HD_PACK`, or
+`kdc-hd-ui.pack` in the working directory. Installing the pack is the opt-in:
+there is no built-in modern/original interface-art option and no procedural
+replacement artwork in this repository.
 
-What changes and what stays pixel sharp with **Original** interface art:
-
-| Scaled at 4x | Kept native (nearest-scaled) |
-| --- | --- |
-| Live course terrain (BG1/BG2) | Title, menus, course select and scorecards |
-| Course scenery (BG3) | The HUD: its BG3 panel and screen-anchored sprites |
-| Course sprites, including widescreen margins | Lines using mosaic, interlace, pseudo-hires or 16x16 characters |
-| Orbit/high-refresh terrain, scenery and world sprites | Screen-anchored orbit HUD sprites |
-| | Any pixel the exactness check below cannot reproduce |
-
-With **Modernized** interface art, the title, menus, course select,
-scorecards and HUD (BG3 panel and screen-anchored sprites, in both the PPU
-and orbit renderers) are also drawn at 4x.
-
-## Modernized interface
-
-The Modernized setting draws recognized interface elements into the 4x surface
-using straight-alpha RGBA tiles. A 2bpp character can now have a translucent
-edge and hundreds of intermediate colours. The game identifies artwork by the
-bitplane hash. The title and menu headers also use the VRAM address because
-several cells have identical bitplanes and different positions in the design.
-
-| Artwork | Presentation |
-| --- | --- |
-| Title | Hand-lettered two-line logo, illustrated Kirby and typeset credits |
-| Menus | Aileron outlines fitted to the game's cells, rounded text boxes, Members List and Name Entry headers |
-| Course HUD | HOLE and SHOT labels, segmented counters, Mini Kirby, tomatoes, player and CPU banners, energy capsules and frames |
-| Portraits | Continuous 128x128 illustrations with the player's live palette and ability-specific artwork |
-| Aiming | Shaded spin dial, bar markings, guide numerals, stars and OB! lettering |
-
-The artwork lives in `src/hd_ui.c`. The font outlines can be regenerated with
-`python tools/generate_ui_font.py` using Pillow 12.2.0 and fontTools.
-`patches/snesrecomp-hd-rgba.patch` adds an optional tile source to the PPU.
-It resolves translucent samples against lower-priority layers, using the
-current colour window, colour math and scanline brightness. The orbit renderer
-uses the same RGBA artwork for sprites and the foreground BG3 pass. Course
-terrain continues to use the indexed source. Unrecognized menu tiles retain
-the game's artwork. The widescreen Edge HUD presentation overlay can still
-select native scanlines in the PPU renderer.
-
-The ROM-free policy test checks half-transparent ink against a known backdrop.
-The opt-in real-ROM suite (`KDC_TEST_HD=1`) checks the original title and
-portrait against native output and the modern portrait against the 4bpp colour
-limit. Captures belong in ignored `local/`.
-
-### Texture packs
-
-A texture pack replaces the drawn artwork with art authored outside this
-repository. Pack art is derived from the game, so packs are never committed or
-distributed with the project. With Modernized art selected, the game loads the
-file named by `KDC_HD_PACK`, or `kdc-hd-ui.pack` in the working directory.
-While a pack is loaded it is the only interface art source. Characters the pack
-does not cover keep the game's own pixels, and the practice menu expands those
-portrait characters 4x. Without a pack, the drawn artwork above is used.
+While a pack is loaded, interface lines participate in HD rendering so pack
+characters can be replaced. Characters the pack does not cover use the
+ordinary indexed HD scaler. Without a pack, interface art remains pixel
+sharp as described above.
 
 A pack stores palette indices, not colours. Each 4x sample holds up to three
 (palette index, weight) pairs, and the sum of the weights is the sample's
@@ -251,9 +207,11 @@ $env:KDC_TEST_HD = '1'; python -m unittest tests.test_hd_textures_runtime
 ```
 
 It captures developer start `normal:1:1` at frame 380 and the title screen
-at frame 300, with HD off and on. It requires that course art changes, that
-the HUD portrait box stays native, and that the title screen stays native.
-Captures are written under ignored `local/` and deleted afterwards.
+at frame 300, with HD off and on. Without a pack it requires that course art
+changes, that the HUD portrait box stays native, and that the title screen
+stays native. If `KDC_TEST_HD_PACK` names a private pack, it also checks that
+HUD and menu artwork gain pack-authored detail. Captures are written under
+ignored `local/` and deleted afterwards.
 
 ### Procedural checker validation, 2026-11-07
 

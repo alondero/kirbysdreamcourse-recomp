@@ -3,7 +3,7 @@
 #include "practice.h"
 #include "course_pack.h"
 #include "hd_textures.h"
-#include "hd_ui.h"
+#include "hd_pack.h"
 #include "course_hud.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
@@ -59,6 +59,24 @@ static void RoundedBox(Canvas *c, int x, int y, int w, int h, uint32_t color)
     }
 }
 
+static unsigned Div255(unsigned v)
+{
+    v += 128u;
+    return (v + (v >> 8)) >> 8;
+}
+
+static uint32_t Blend(uint32_t background, uint32_t ink)
+{
+    const unsigned a = ink >> 24;
+    if (a == 255u) return ink;
+    if (!a) return background;
+    const unsigned inv = 255u - a;
+    const unsigned r = Div255(((ink >> 16) & 255u) * a + ((background >> 16) & 255u) * inv);
+    const unsigned g = Div255(((ink >> 8) & 255u) * a + ((background >> 8) & 255u) * inv);
+    const unsigned b = Div255((ink & 255u) * a + (background & 255u) * inv);
+    return 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
 static void BlitArt(Canvas *c, int x, int y, const uint32_t pixels[1024])
 {
     x=(c->left+x)*4;
@@ -67,7 +85,7 @@ static void BlitArt(Canvas *c, int x, int y, const uint32_t pixels[1024])
         if (y+j<0 || y+j>=c->height) continue;
         uint32_t *row=c->pixels+(size_t)(y+j)*c->stride;
         for (int i=0;i<32;++i) if (x+i>=0 && x+i<c->stride)
-            row[x+i]=KdcHdUiBlend(row[x+i],pixels[j*32+i]);
+            row[x+i]=Blend(row[x+i],pixels[j*32+i]);
     }
 }
 
@@ -92,19 +110,6 @@ static void DrawExtraGlyph(Canvas *c, int x, int y, char ch, uint32_t color)
 static void Text(Canvas *c, int x, int y, const char *s, uint32_t color)
 {
     int scale = c->scale ? c->scale : 1;
-    if (scale==4) {
-        static struct { uint32_t color, pixels[1024]; } glyphs[128];
-        for (; *s; ++s, x+=8) {
-            unsigned ch=(unsigned char)*s;
-            if (ch>=128 || ch==' ') continue;
-            if (glyphs[ch].color!=color) {
-                KdcHdUiGlyph(ch,color,glyphs[ch].pixels);
-                glyphs[ch].color=color;
-            }
-            BlitArt(c,x,y,glyphs[ch].pixels);
-        }
-        return;
-    }
     if (!font_ready) {
         snes_ovl_draw_text(c->pixels, c->stride, c->height, (c->left + x) * scale, y * scale, s, color, scale);
         return;
@@ -185,7 +190,7 @@ static void Ability(Canvas *c, int x, int y, unsigned ability)
                 unsigned source=RomWord(strip+3)|(RomByte(strip+5)<<16);
                 unsigned addr=source+((i/8)*4+i%4)*32;
                 for (unsigned k=0;k<16;++k) q.words[k]=RomWord(addr+2*k);
-                if (!KdcHdUiRgba(&q,tiles[i])) NearestTile(&q,tiles[i]);
+                if (!KdcHdPackTile(&q,tiles[i])) NearestTile(&q,tiles[i]);
             }
             cached=(int)ability;
         }
@@ -360,7 +365,7 @@ void KdcPracticeDraw(uint8_t *dst, size_t pitch, int width, int height)
 
 void KdcPracticeDrawHd(uint8_t *dst, size_t pitch, int width, int height, unsigned scale)
 {
-    if (scale == 4 && KdcHdUiEnabled()) {
+    if (scale == 4 && KdcHdPackAvailable()) {
         if (!KdcPracticeVisible() || width < 256 || height < 224 || pitch < (size_t)width * scale * 4) return;
         Canvas c = {(uint32_t *)dst, (int)(pitch / 4), height * (int)scale, (width - 256) / 2, (int)scale};
         DrawPracticeCanvas(&c);
