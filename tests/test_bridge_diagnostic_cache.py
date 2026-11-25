@@ -18,6 +18,7 @@ class BridgeDiagnosticCacheTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / 'bridge-cache-test.exe'
             command = [compiler, '-std=c11', '-O1', '-DSNESRECOMP_TIER2_TEST=1',
+                       '-DSNESRECOMP_APU_HANDOFF_CACHE_PROBE=1',
                        f'-I{source}', f'-I{source / "snes"}',
                        str(framework / 'tests/interp816/bridge_test.c'),
                        str(source / 'snes/interp816.c'), str(source / 'sha256.c'),
