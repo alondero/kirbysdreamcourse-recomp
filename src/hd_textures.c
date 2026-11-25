@@ -1,6 +1,5 @@
 #include "hd_textures.h"
 #include "hd_pack.h"
-#include "hd_ui.h"
 #include "hd_scaler.h"
 #include "course_checker.h"
 #include "course_hud.h"
@@ -26,26 +25,13 @@ bool KdcHdEnabled(void)
     return KdcHdTexturesEnabled();
 }
 
-bool KdcHdUiEnabled(void)
-{
-    /* Queried per tile: read the override once. */
-    static int forced = -2;
-    if (forced == -2) {
-        const char *value = getenv("KDC_HD_UI");
-        forced = value && *value
-            ? strcmp(value, "0") != 0 && strcmp(value, "original") != 0
-            : -1;
-    }
-    return forced >= 0 ? forced != 0 : KdcHdUiOptionEnabled();
-}
-
 static bool course_active;
 
-/* With modern UI enabled the RGBA source gets first refusal. Menu artwork
- * without an authored replacement keeps its native pixels. */
+/* With an interface pack installed its RGBA artwork gets first refusal.
+ * Characters without pack coverage use the ordinary indexed HD source. */
 static bool HdCourseTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 {
-    return course_active && KdcHdSmoothTile(q, indices, context);
+    return (course_active || KdcHdPackAvailable()) && KdcHdSmoothTile(q, indices, context);
 }
 
 /* Most background spans are empty or uniform. Do not fetch neighbours for
@@ -109,14 +95,15 @@ static void Keep(int x0, int x1, int first_x, unsigned count, uint8_t *keep_nati
     }
 }
 
-/* Scope: live course terrain, scenery and sprites. Menus, course select and
- * scorecards keep their native art, as does the HUD: its BG3 panel spans
- * (the same rule the orbit camera uses) and its screen-anchored sprites. */
+/* Scope: live course terrain, scenery and sprites. Without an interface pack,
+ * menus, course select and scorecards keep their native art, as does the HUD:
+ * its BG3 panel spans (the same rule the orbit camera uses) and its
+ * screen-anchored sprites. Installing a pack opts interface art into HD. */
 static bool HdLinePolicy(const Ppu *ppu, unsigned line, int first_x, unsigned count,
                          uint8_t *keep_native, void *context)
 {
     (void)context;
-    if (KdcHdUiEnabled()) return true;
+    if (KdcHdPackAvailable()) return true;
     if (!course_active) return false;
     /* Re-collect on line 1 (first drawn scanline) as well as frame changes so
      * tests or hosts that re-render without incrementing snes_frame_counter
@@ -148,39 +135,34 @@ unsigned KdcHdScale(void)
 {
     static Ppu *bound;
     static PpuHdTileFill *bound_fill;
-    static bool bound_ui;
+    static bool bound_pack;
     const bool want = KdcHdEnabled();
-    const bool ui = KdcHdUiEnabled();
+    const bool pack = want && KdcHdPackAvailable();
     Ppu *ppu = g_snes ? g_snes->ppu : NULL;
     const char *source = getenv("KDC_HD_SOURCE");
     PpuHdTileFill *fill = source && !strcmp(source, "nearest") ? KdcHdNearestTile : HdCourseTile;
     if (!want) fill = NULL;
     const bool next_course = ppu && KdcIsCourse(ppu);
-    if (ppu && next_course != course_active && ui) PpuInvalidateHdTiles(ppu);
+    if (ppu && next_course != course_active && pack) PpuInvalidateHdTiles(ppu);
     course_active = next_course;
     /* The PPU lives for the whole process; rebinding only follows the setting. */
-    if (ppu != bound || fill != bound_fill || ui != bound_ui) {
+    if (ppu != bound || fill != bound_fill || pack != bound_pack) {
         if (ppu && (!PpuSetHdTiles(ppu, fill, NULL) ||
-                    (fill && !PpuSetHdRgbaSource(ppu, ui && fill == HdCourseTile ? KdcHdUiRgba : NULL)) ||
+                    (fill && !PpuSetHdRgbaSource(ppu, pack && fill == HdCourseTile ? KdcHdPackTile : NULL)) ||
                     (fill && !PpuSetHdTileContextPolicy(ppu,
                         fill == HdCourseTile ? NeedsCheckerContext : NULL)) ||
                     !PpuSetHdTilePolicy(ppu, fill ? HdLinePolicy : NULL, NULL)))
             fill = NULL;
         bound = ppu;
         bound_fill = fill;
-        bound_ui = ui;
+        bound_pack = pack;
     }
-    /* When original UI is selected, lines outside courses stay native; while
+    /* Without an interface pack, lines outside courses stay native; while
      * the orbit view composes the frame the host presents that composition
      * instead of the tiles. Either way the tile work would be discarded, so
      * skip it. */
-    if (fill && ppu) {
-        /* Gameplay RGBA replacements (HUD/OBJ) are purely content-addressed
-         * unless a texture pack is active; disabling the VRAM address cache
-         * key during courses restores full tile deduplication. */
-        if (ui) PpuSetHdRgbaAddressKey(ppu, !course_active || KdcHdPackAvailable());
-        PpuPauseHdTiles(ppu, (!course_active && !ui) || KdcOrbitComposing());
-    }
+    if (fill && ppu)
+        PpuPauseHdTiles(ppu, (!course_active && !pack) || KdcOrbitComposing());
     /* Developer diagnostic: KDC_HD_STATS=1 prints cumulative counters. */
     static int reported = -1;
     if (fill && ppu && snes_frame_counter % 300 == 0 && snes_frame_counter != reported &&

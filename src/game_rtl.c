@@ -184,7 +184,7 @@ void GameDrawPpuFrame(void)
     KdcPrepareSelectSky(g_snes->ppu, g_snes->cart ? g_snes->cart->rom : NULL,
                         g_snes->cart ? g_snes->cart->romImageSize : 0);
     if (skip_raster) {
-        /* Orbit HD with Modernized HD UI overwrites 100% of g_hd_surface and
+        /* Orbit HD with an interface pack overwrites 100% of g_hd_surface and
          * never reads g_my_pixels. Reuse the beam driver's raster walk with
          * ppu_runLineState so mid-frame HUD/window detection stays exact. */
         snes_beam_frame_driver_draw_ppu_frame_state_only();

@@ -21,7 +21,9 @@ bool CountedArt(const PpuHdTileQuery *q, uint8_t *pixels, void *context)
 /* Unused host-facing paths still need symbols on Windows linkers. */
 bool KdcIsCourse(const Ppu *ppu) { (void)ppu; return true; }
 bool KdcHdEnabled(void) { return true; }
-bool KdcHdUiEnabled(void) { return false; }
+bool KdcHdPackAvailable(void) { return false; }
+bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *pixels)
+{ (void)q; (void)pixels; return false; }
 bool KdcHudActive(const Ppu *ppu) { (void)ppu; return false; }
 bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 { (void)ppu; (void)x; (void)y; return false; }

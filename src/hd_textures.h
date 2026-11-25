@@ -4,9 +4,11 @@
 #include <stdint.h>
 
 /* HD textures: reconstruct regular terrain edges analytically and re-draw
- * other 8x8 tiles at 4x with a palette-locked scaler. The PPU composes each HD subpixel
- * with the original priorities, windows, colour math and palettes; anything it
- * cannot reproduce stays native. Presentation only: guest state is unchanged.
+ * other 8x8 tiles at 4x with a palette-locked scaler. An optional external
+ * interface pack can add authored RGBA replacements; there is no built-in
+ * redrawn interface artwork. The PPU composes each HD subpixel with the
+ * original priorities, windows, colour math and palettes; anything it cannot
+ * reproduce stays native. Presentation only: guest state is unchanged.
  *
  * Off by default; the launcher Mods page stores it in kdc-hd.cfg. For
  * headless checks, KDC_HD=0/1 overrides it and KDC_HD_SOURCE=nearest selects
@@ -15,8 +17,6 @@ enum { kKdcHdScale = 4 };
 
 /* The launcher setting, or KDC_HD when set. */
 bool KdcHdEnabled(void);
-/* The launcher HD UI setting (kdc-hd-ui.cfg), or KDC_HD_UI when set. */
-bool KdcHdUiEnabled(void);
 
 /* Desktop host hook: binds or releases the tile source and returns the
  * presentation scale for the next frame. */

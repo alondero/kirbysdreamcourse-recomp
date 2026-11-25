@@ -16,7 +16,6 @@
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "CHECK %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 Snes *g_snes;
-bool KdcHdUiEnabled(void) { return true; }
 int snes_frame_counter = 1;
 uint8 *g_sram;
 int g_sram_size = 8192;

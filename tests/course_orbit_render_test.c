@@ -36,8 +36,14 @@ void PpuSetBackgroundSample(Ppu *p, bool (*sample)(const Ppu *, unsigned, int, i
 }
 static bool hd_enabled;
 bool KdcHdEnabled(void) { return hd_enabled; }
-static bool hd_ui_enabled;
-bool KdcHdUiEnabled(void) { return hd_ui_enabled; }
+static bool hd_pack_enabled;
+bool KdcHdPackAvailable(void) { return hd_pack_enabled; }
+bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *out)
+{
+    (void)q;
+    (void)out;
+    return false;
+}
 bool KdcOrbitEnabled(void) { return true; }
 
 void KdcVisitOrbitSprites(const Ppu *value, const uint8_t *ram,
@@ -842,9 +848,9 @@ int main(void)
         assert(hd_pixels[i] == 0xdeadbeef);
     assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
     assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
-    /* Modernized UI: the HUD is composed at HD from its own tiles rather
+    /* Interface pack: the HUD is composed at HD from its own tiles rather
      * than copied from the native field, keeping BG3 and screen OBJ colours. */
-    hd_ui_enabled = true;
+    hd_pack_enabled = true;
     Fill(hd_pixels, sizeof(hd_pixels) / sizeof(*hd_pixels));
     assert(KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, (uint8_t *)native_field,
                          width, height, 1, 4));
@@ -854,7 +860,7 @@ int main(void)
         assert(hd_pixels[i] == 0xdeadbeef);
     assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
     assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
-    hd_ui_enabled = false;
+    hd_pack_enabled = false;
     assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, NULL, width, height, 1, 0));
     assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, NULL, width, height, 1, 5));
     assert(!KdcOrbitDrawHd((uint8_t *)hd_pixels, width * 4, NULL, width, height, 1, 4));

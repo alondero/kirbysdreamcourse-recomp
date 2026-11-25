@@ -20,7 +20,7 @@ class PracticeTest(unittest.TestCase):
                 compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
                 '-I', str(root / 'src'), '-I', str(framework / 'runner/src'),
                 str(root / 'tests/practice_test.c'), str(root / 'src/practice.c'),
-                str(root / 'src/practice_draw.c'), str(root / 'src/hd_ui.c'), str(root / 'src/hd_pack.c'),
+                str(root / 'src/practice_draw.c'), str(root / 'src/hd_pack.c'),
                 str(root / 'src/course_hud.c'), str(root / 'src/course_pack.c'),
                 str(root / 'src/dev_start.c'),
                 str(framework / 'runner/src/snes_overlay_draw.c'),

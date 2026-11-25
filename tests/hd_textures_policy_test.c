@@ -30,11 +30,10 @@ static uint32_t hd_buf[kHeight * kScale * kFullWidth * kScale];
 static int meter_sprite_x = 100;
 
 bool KdcHdTexturesEnabled(void) { return true; }
-static bool hd_ui_enabled = false;
-bool KdcHdUiOptionEnabled(void) { return hd_ui_enabled; }
 bool KdcCheckerNeedsContext(const uint16_t words[16]) { (void)words; return false; }
 bool KdcOrbitComposing(void) { return false; }
-bool KdcHdPackAvailable(void) { return false; }
+static bool pack_available;
+bool KdcHdPackAvailable(void) { return pack_available; }
 
 bool KdcHdNearestTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 {
@@ -49,7 +48,7 @@ bool KdcHdSmoothTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 }
 
 static bool use_rgba;
-bool KdcHdUiRgba(const PpuHdTileQuery *q, uint32_t *pixels)
+bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *pixels)
 {
     if (!use_rgba || q->layer != 2) return false;
     for (unsigned i = 0; i < 64 * q->scale * q->scale; ++i)
@@ -193,9 +192,8 @@ int main(void)
     assert(HdAt(102, 102) == hd_color);
     assert(HdAt(142, 102) == native_color);
 
-    /* 4. Modernized UI: HUD sprites and panel spans are no longer kept native. */
-    hd_ui_enabled = true;
-    assert(KdcHdUiEnabled());
+    /* 4. Installing an interface pack opts HUD sprites and panel spans into HD. */
+    pack_available = true;
     assert(KdcHdScale() == kScale);
     p->window1left = 128;
     p->window1right = 127;
