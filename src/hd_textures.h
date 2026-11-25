@@ -11,8 +11,8 @@
  * reproduce stays native. Presentation only: guest state is unchanged.
  *
  * Off by default; the launcher Mods page stores it in kdc-hd.cfg. For
- * headless checks, KDC_HD=0/1 overrides it and KDC_HD_SOURCE=nearest selects
- * the exact nearest-neighbour source used as the identity oracle. */
+ * headless checks, the process-scope KDC_HD=0/1 override and KDC_HD_SOURCE=nearest
+ * source are read once; nearest is the identity oracle. */
 enum { kKdcHdScale = 4 };
 
 /* The launcher setting, or KDC_HD when set. */

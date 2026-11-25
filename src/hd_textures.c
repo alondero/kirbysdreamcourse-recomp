@@ -20,8 +20,13 @@ extern int snes_frame_counter;
 
 bool KdcHdEnabled(void)
 {
-    const char *forced = getenv("KDC_HD");
-    if (forced && *forced) return *forced != '0';
+    static int forced = -1;
+    if (forced < 0) {
+        const char *value = getenv("KDC_HD");
+        forced = !value || !*value ? 0 : *value != '0' ? 1 : 2;
+    }
+    if (forced == 1) return true;
+    if (forced == 2) return false;
     return KdcHdTexturesEnabled();
 }
 
@@ -139,8 +144,12 @@ unsigned KdcHdScale(void)
     const bool want = KdcHdEnabled();
     const bool pack = want && KdcHdPackAvailable();
     Ppu *ppu = g_snes ? g_snes->ppu : NULL;
-    const char *source = getenv("KDC_HD_SOURCE");
-    PpuHdTileFill *fill = source && !strcmp(source, "nearest") ? KdcHdNearestTile : HdCourseTile;
+    static int nearest = -1;
+    if (nearest < 0) {
+        const char *source = getenv("KDC_HD_SOURCE");
+        nearest = source && !strcmp(source, "nearest");
+    }
+    PpuHdTileFill *fill = nearest ? KdcHdNearestTile : HdCourseTile;
     if (!want) fill = NULL;
     const bool next_course = ppu && KdcIsCourse(ppu);
     if (ppu && next_course != course_active && pack) PpuInvalidateHdTiles(ppu);
@@ -165,8 +174,9 @@ unsigned KdcHdScale(void)
         PpuPauseHdTiles(ppu, (!course_active && !pack) || KdcOrbitComposing());
     /* Developer diagnostic: KDC_HD_STATS=1 prints cumulative counters. */
     static int reported = -1;
-    if (fill && ppu && snes_frame_counter % 300 == 0 && snes_frame_counter != reported &&
-        getenv("KDC_HD_STATS")) {
+    static int stats = -1;
+    if (stats < 0) stats = getenv("KDC_HD_STATS") != NULL;
+    if (fill && ppu && snes_frame_counter % 300 == 0 && snes_frame_counter != reported && stats) {
         reported = snes_frame_counter;
         PpuHdTileStats s;
         PpuGetHdTileStats(ppu, &s);

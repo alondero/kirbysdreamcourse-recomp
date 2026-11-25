@@ -86,9 +86,10 @@ Baseline interpreter leaf samples include `_interp_run_core` (25.1%),
 `cart_getRomPtr` (5.6%). `interp816_runOpcode` is 29.6% **inclusive**, which
 also includes memory/hardware work. With bouncing enabled, baseline `getenv`
 leaf occupancy is 14.1%. After caching, it is 0% with bouncing off and 3.7%
-with bouncing on. The remaining bounce-time lookup includes the separate
-`SNESRECOMP_APU_HANDOFF` option; it is deliberately not cached here because
-the existing bridge tests change that timing policy within one process.
+with bouncing on. At that point the remaining bounce-time lookup included the
+separate `SNESRECOMP_APU_HANDOFF` option; it was not yet cached because the
+existing bridge tests changed that timing policy within one process. See the
+later process-configuration cache result below.
 
 The generated bucket includes entry guards and bookkeeping; its handful of
 samples cannot establish how many translated game instructions executed.
@@ -320,10 +321,9 @@ The bounce-on `getenv` samples split into 75 at `SNESRECOMP_APU_HANDOFF`
 in frame-boundary APU configuration. Bounce-off has 14 frame-boundary samples.
 There are no remaining sampled `SNESRECOMP_WLOG_STATE` lookups. Thus the
 remaining CRT cost is not solely the handoff setting. The yield diagnostic
-is queried before its frame-5390 gate even in this frame-1100 replay; moving
-that condition first is a possible separately measured follow-up. Handoff
-still changes within one process in the real bridge suite, so static caching
-would change its contract and was not attempted.
+is now queried after its frame-5390 gate. Handoff then still changed within
+one process in the real bridge suite, so static caching required an explicit
+probe path rather than changing that suite's contract.
 
 Synchronization appears in source-attributed SDL/APU lock/unlock leaves;
 these are nested work, not an additional subsystem percentage. The samples
@@ -478,3 +478,35 @@ The rejected candidate is preserved only under ignored `local/observer-filter`
 with its local patch and contract probe. The local framework was restored by
 reapplying the guarded bridge patches at the pin; its complete diff SHA-256
 matches the pre-experiment control, and its build was restored as well.
+
+
+## Process-configuration cache measurement
+
+The follow-up candidate caches the process-scope `SNESRECOMP_APU_HANDOFF`
+lookup for production bridge builds and caches the game-side `KDC_HD`,
+`KDC_HD_SOURCE` and `KDC_HD_STATS` settings. The ordinary tier-2 bridge test
+build retains live handoff lookup because that suite deliberately changes the
+variable within one process; `SNESRECOMP_APU_HANDOFF_CACHE_PROBE` selects the
+production caching behavior for the regression probe. The probe passes only
+when `SNESRECOMP_WLOG_STATE` and `SNESRECOMP_APU_HANDOFF` are each read once,
+and the HD policy probe passes only when each HD process setting is read once.
+Both probes failed before the change and pass after it.
+
+A paired bounce-on shot campaign compared the preserved pre-change executable
+with the candidate using one discarded warmup, two timed repetitions and two
+sampled repetitions per build. Individual unsampled guest means were
+3.977/3.248 ms for the control and 3.559/3.311 ms for the candidate; process
+CPU medians were 6.977 s and 6.820 s. The ordering effect is large enough
+that these four runs do not establish a whole-frame timing improvement. The
+attribution result is direct: guest `external:getenv` leaves fell from
+61/1974 samples (3.09%) to 6/1846 samples (0.325%). Caller attribution over
+all sampled stacks removed the 59 `_interp_run_core` handoff lookups and the
+three `KdcHdScale` lookups seen in the control. The candidate's few remaining
+samples were frame-boundary/configuration or startup diagnostic lookups, not
+the repeated bridge-entry handoff scan.
+
+All four validation processes and all four sampled processes matched CPU/WRAM
+traces, frame logs and final SRAM. Raw evidence remains in ignored
+`local/guest-profile-slc9fk_b`. This measurement supports removing the hot
+lookup; it does not prove a statistically significant mean-frame improvement
+from two repetitions.
