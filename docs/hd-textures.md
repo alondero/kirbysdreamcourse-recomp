@@ -463,6 +463,20 @@ Offline, from memory dumps of five courses, a full build of the enlarged
 terrain took 6 to 45 ms (hole 8-8's map is 2160x1216), done once per hole. A
 changed character used across the map took 2 to 9 ms.
 
+Large first-time terrain enlargements (at or above 128k source pixels) are no
+longer synchronous: construction is amortized one four-row strip per update,
+and the enlarged image is exposed only once every strip is complete, so
+rendering falls back to native-resolution sampling instead of ever showing a
+partially built image as final. Character changes during construction dirty
+the affected completed strips, which are repaired before exposure; the final
+image is required by test to match a fresh strip-by-strip enlargement exactly.
+Small courses keep the synchronous path. In the paired `orbit` benchmark the
+first-composition peak dropped from 12.5–17.2 ms to 8.8–9.7 ms, with warm
+means unchanged. The progressive steps do not run across the worker pool, so
+a single strip's serial cost still bounds the remaining spike; splitting the
+work further and deferring construction until the camera actually zooms in
+are follow-up work.
+
 `tools/benchmark_hd.py --scenario orbit` (deterministic course with the orbit
 camera, SDL dummy display, 2026-11-11, Ryzen 9 3900X), before and after:
 

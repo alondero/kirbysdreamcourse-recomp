@@ -1,6 +1,7 @@
 /* Reproduce the terrain block cache accounting race with real parallel workers.
- * The wrapped allocator holds the first cache allocation from every worker until
- * all workers have passed the old check-and-reserve window. The byte limit is
+ * Every cache allocation sleeps inside the wrapped allocator, stretching the
+ * window between the old byte check and its recording so concurrent workers
+ * overlap in it without any cross-thread synchronization. The byte limit is
  * reduced at compile time so the regression does not need a large course. */
 #include "course_terrain.h"
 #include "hd_image.h"
@@ -10,13 +11,24 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void StretchWindow(void) { Sleep(2); }
+#else
+#include <time.h>
+static void StretchWindow(void)
+{
+    const struct timespec pause = {.tv_nsec = 2 * 1000 * 1000};
+    nanosleep(&pause, NULL);
+}
+#endif
 
 static Ppu ppu;
 static uint8_t ram[0x20000];
 static atomic_bool observing;
-static atomic_uint arrived, release;
 static atomic_size_t observed_bytes;
-static _Thread_local bool waited;
+static _Thread_local bool in_image_update;
 
 extern void *__real_malloc(size_t size);
 extern void __real_free(void *ptr);
@@ -40,15 +52,9 @@ size_t KdcTerrainCachePressureBytes(void)
 
 int __wrap_KdcHdImageUpdate(const KdcHdImage *image, int x0, int y0, int x1, int y1)
 {
+    in_image_update = true;
     int result = __real_KdcHdImageUpdate(image, x0, y0, x1, y1);
-    if (atomic_load(&observing) && !waited) {
-        waited = true;
-        const unsigned expected = KdcParallelThreads();
-        if (atomic_fetch_add(&arrived, 1) + 1 >= expected)
-            atomic_store(&release, 1);
-        while (!atomic_load(&release)) {
-        }
-    }
+    in_image_update = false;
     return result;
 }
 
@@ -74,16 +80,20 @@ void *__wrap_malloc(size_t size)
 {
     void *result = __real_malloc(size);
     if (!result) return NULL;
-    TrackLock();
-    for (unsigned i = 0; i < 4096; ++i) {
-        if (!tracked[i].ptr) {
-            tracked[i].ptr = result;
-            tracked[i].size = size;
-            break;
+    const bool count = atomic_load(&observing) && !in_image_update;
+    if (count) StretchWindow();
+    if (count) {
+        TrackLock();
+        for (unsigned i = 0; i < 4096; ++i) {
+            if (!tracked[i].ptr) {
+                tracked[i].ptr = result;
+                tracked[i].size = size;
+                break;
+            }
         }
+        TrackUnlock();
+        atomic_fetch_add(&observed_bytes, size);
     }
-    TrackUnlock();
-    if (atomic_load(&observing)) atomic_fetch_add(&observed_bytes, size);
     return result;
 }
 
@@ -134,8 +144,14 @@ int main(void)
     }
     BuildCourse();
     KdcTerrainReset();
-    if (!KdcTerrainUpdate(&ppu, ram, true)) {
+    const KdcTerrain *terrain = KdcTerrainUpdate(&ppu, ram, true);
+    if (!terrain) {
         fprintf(stderr, "no terrain\n");
+        return 1;
+    }
+    for (unsigned i = 0; !terrain->hd && i < 128; ++i) terrain = KdcTerrainUpdate(&ppu, ram, true);
+    if (!terrain->hd) {
+        fprintf(stderr, "initial terrain enlargement did not complete\n");
         return 1;
     }
     ppu.vram[16] ^= 0x0001;

@@ -18,6 +18,7 @@ class CourseTerrainCachePressureTest(unittest.TestCase):
             executable = Path(directory) / 'course_terrain_cache_pressure_test.exe'
             result = subprocess.run([compiler, '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',
                                      '-DKDC_TERRAIN_BLOCK_CACHE_LIMIT=262144',
+                                     '-DKDC_TERRAIN_PROGRESSIVE_PIXELS=0x7fffffff',
                                      '-I', str(root / 'src'), '-I', str(source),
                                      str(root / 'tests/course_terrain_cache_pressure_test.c'),
                                      str(root / 'src/course_terrain.c'), str(root / 'src/hd_image.c'),
