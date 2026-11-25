@@ -90,6 +90,31 @@ class GuestProfileTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             profile.parse_timing(log.replace('stage=guest', 'stage=compose'), 350, 351)
 
+    def test_timing_summary_reports_variation_and_paired_overlap(self):
+        rows = [
+            dict(build='baseline', bounce=1, stages={'guest': {'mean_ms': 4.0}},
+                 process={'cpu_seconds': 8.0}),
+            dict(build='candidate', bounce=1, stages={'guest': {'mean_ms': 3.5}},
+                 process={'cpu_seconds': 7.0}),
+            dict(build='candidate', bounce=1, stages={'guest': {'mean_ms': 3.0}},
+                 process={'cpu_seconds': 6.5}),
+            dict(build='baseline', bounce=1, stages={'guest': {'mean_ms': 3.2}},
+                 process={'cpu_seconds': 6.4}),
+        ]
+        summary = profile.summarize_timings(rows)
+        baseline = summary['builds']['baseline']['bounce1']
+        candidate = summary['builds']['candidate']['bounce1']
+        self.assertEqual(baseline['runs'], 2)
+        self.assertEqual(baseline['guest_mean_ms']['median'], 3.6)
+        self.assertEqual(baseline['guest_mean_ms']['minimum'], 3.2)
+        self.assertEqual(candidate['process_cpu_seconds']['median'], 6.75)
+        comparison, = summary['paired']
+        self.assertEqual(comparison['bounce'], 1)
+        self.assertAlmostEqual(comparison['delta_ms'], -0.35)
+        self.assertAlmostEqual(comparison['delta_percent'], -0.35 / 3.6 * 100)
+        self.assertTrue(comparison['ranges_overlap'])
+        self.assertIn('inconclusive', comparison['assessment'])
+
     def test_samples_include_apu_tail_and_partition_nested_interpreter_work(self):
         functions = [(0x100, 'dsp_cycle'), (0x200, 'apu_cycle'),
                      (0x300, 'interp_bridge_run_ex2'), (0x400, 'cpu_runOpcode'),

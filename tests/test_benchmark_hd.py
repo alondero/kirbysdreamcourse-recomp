@@ -30,6 +30,22 @@ class HdBenchmarkTest(unittest.TestCase):
         self.assertEqual((stats['minimum'], stats['maximum']), (2, 6))
         self.assertEqual((stats['p25'], stats['p75']), (2, 6))
 
+    def test_paired_comparison_reports_median_delta_and_overlap(self):
+        results = [
+            dict(warmup=False, build='baseline', hd=1, mean_ms={'compose': 4.0, 'raster-capture': 2.0}),
+            dict(warmup=False, build='candidate', hd=1, mean_ms={'compose': 3.5, 'raster-capture': 2.1}),
+            dict(warmup=False, build='candidate', hd=1, mean_ms={'compose': 3.0, 'raster-capture': 2.2}),
+            dict(warmup=False, build='baseline', hd=1, mean_ms={'compose': 3.2, 'raster-capture': 1.9}),
+            dict(warmup=True, build='baseline', hd=1, mean_ms={'compose': 100.0, 'raster-capture': 20.0}),
+        ]
+        comparison = benchmark.paired_comparison(results)
+        compose = comparison['hd1']['mean_ms']['compose']
+        self.assertAlmostEqual(compose['baseline_median'], 3.6)
+        self.assertAlmostEqual(compose['candidate_median'], 3.25)
+        self.assertAlmostEqual(compose['delta_percent'], (3.25 - 3.6) / 3.6 * 100)
+        self.assertTrue(compose['ranges_overlap'])
+        self.assertIn('inconclusive', compose['assessment'])
+
     def test_diagnostic_windows_separate_entry_from_warm_draws(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'cost.csv'

@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import statistics
 import subprocess
 import tempfile
 import time
@@ -96,6 +97,46 @@ def summarize_samples(path, functions):
                 exclusive={name: dict(samples=count, percent=100 * count / guest)
                            for name, count in groups.most_common()},
                 leaf=leaves.most_common(), inclusive=inclusive.most_common())
+
+
+def value_stats(values):
+    return dict(count=len(values), median=statistics.median(values),
+                minimum=min(values), maximum=max(values))
+
+
+def summarize_timings(rows):
+    """Report run variation and whether paired build ranges overlap."""
+    grouped = {}
+    for row in rows:
+        grouped.setdefault((row['build'], row['bounce']), []).append(row)
+    builds = {}
+    for (build, bounce), group in sorted(grouped.items()):
+        guest = [row['stages']['guest']['mean_ms'] for row in group]
+        cpu = [row['process']['cpu_seconds'] for row in group
+               if row['process'].get('cpu_seconds') is not None]
+        entry = dict(runs=len(group), guest_mean_ms=value_stats(guest))
+        if cpu:
+            entry['process_cpu_seconds'] = value_stats(cpu)
+        builds.setdefault(build, {})[f'bounce{bounce}'] = entry
+    paired = []
+    for bounce in sorted({row['bounce'] for row in rows}):
+        baseline = builds.get('baseline', {}).get(f'bounce{bounce}')
+        candidate = builds.get('candidate', {}).get(f'bounce{bounce}')
+        if not baseline or not candidate:
+            continue
+        left = baseline['guest_mean_ms']
+        right = candidate['guest_mean_ms']
+        delta = right['median'] - left['median']
+        overlap = max(left['minimum'], right['minimum']) <= min(left['maximum'], right['maximum'])
+        paired.append(dict(
+            bounce=bounce, baseline_median_ms=left['median'], candidate_median_ms=right['median'],
+            baseline_range_ms=[left['minimum'], left['maximum']],
+            candidate_range_ms=[right['minimum'], right['maximum']],
+            delta_ms=delta, delta_percent=(delta / left['median'] * 100) if left['median'] else None,
+            ranges_overlap=overlap,
+            assessment=('inconclusive: baseline/candidate run ranges overlap' if overlap else
+                        'consistent direction: baseline/candidate run ranges do not overlap')))
+    return dict(builds=builds, paired=paired)
 
 
 def parse_timing(log, first, last):
@@ -396,6 +437,9 @@ def main():
                                               process=json.loads((case / 'process.json').read_text())))
                 save()
                 print(f'{case.name}: guest={stages["guest"]["mean_ms"]:.3f} ms', flush=True)
+    if results['timings']:
+        results['timing_summary'] = summarize_timings(results['timings'])
+        save()
     if sampler and 'sample' in args.modes:
         for repeat in range(args.repeat):
             for build, host in (builds if repeat % 2 == 0 else builds[::-1]):
@@ -436,6 +480,9 @@ def main():
                 results['validation'].append(dict(case=case.name, equal=True))
                 save()
                 print(f'{case.name}: sampled CPU/WRAM trace and SRAM equal', flush=True)
+    for row in results.get('timing_summary', {}).get('paired', []):
+        print(f'paired bounce{row["bounce"]} guest: median delta {row["delta_ms"]:+.3f} ms '
+              f'({row["delta_percent"]:+.1f}%); {row["assessment"]}', flush=True)
     if args.max_guest_ms is not None:
         assert all(row['stages']['guest']['mean_ms'] <= args.max_guest_ms
                    for row in results['timings']), 'Guest budget exceeded'
