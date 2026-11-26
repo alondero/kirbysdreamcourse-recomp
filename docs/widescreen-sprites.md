@@ -1,5 +1,9 @@
 # Widescreen sprite investigation
 
+The native queue and layout contracts, original-ROM probes and frozen
+enhancement comparisons for issue #83 are recorded in
+[Sprite queue and layout expansion](sprite-emission-contract.md).
+
 ## Wrapped camera correction (2026-11-04)
 
 Recovered pieces retained signed world coordinates, but their raster placement
