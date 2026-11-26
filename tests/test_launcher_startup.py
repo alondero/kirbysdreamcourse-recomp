@@ -20,7 +20,7 @@ class LauncherStartupTest(unittest.TestCase):
         if hashlib.sha256(cls.data).hexdigest() != '0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b':
             raise ValueError('Startup checks require the exact supported local ROM')
 
-    def run_host(self, image, route):
+    def run_host(self, image, route, **overrides):
         # All ROM-derived fixtures and captures stay in the ignored local tree.
         with tempfile.TemporaryDirectory(prefix='launcher-startup-', dir=self.root / 'local') as directory:
             case = Path(directory)
@@ -39,6 +39,7 @@ class LauncherStartupTest(unittest.TestCase):
                        SNESRECOMP_APU_BEAM_ELAPSED='1', SNESRECOMP_APU_HANDOFF='1',
                        SNESRECOMP_APU_ABSOLUTE_PREANCHOR='1', SNESRECOMP_LLE_BOUNCE='1',
                        KDC_FRAME_LOG=str(case / 'cpu.log'))
+            env.update(overrides)
             args = [str(executable)]
             if route == 'cached_skip':
                 (case / 'rom.cfg').write_text(str(rom))
@@ -55,6 +56,16 @@ class LauncherStartupTest(unittest.TestCase):
         result, cpu = self.run_host(self.data, 'explicit_skip')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(cpu.splitlines()), 1, result.stdout + result.stderr)
+
+    def test_missing_hd_pack_override_warns_once_only_with_hd_enabled(self):
+        warning = "[hd] texture pack 'missing.pack' could not be loaded"
+        for enabled in ('0', '1'):
+            with self.subTest(hd=enabled):
+                result, cpu = self.run_host(self.data, 'explicit_skip', KDC_HD=enabled,
+                                            KDC_HD_PACK='missing.pack')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(cpu.splitlines()), 1, result.stdout + result.stderr)
+                self.assertEqual(result.stderr.count(warning), int(enabled), result.stderr)
 
     def test_headered_and_modified_roms_are_refused_before_guest_execution(self):
         images = {'headered': bytes(512) + self.data,

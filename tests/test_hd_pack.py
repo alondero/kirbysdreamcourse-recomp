@@ -23,7 +23,9 @@ class HdPackTest(unittest.TestCase):
                             '-I', str(source), str(root / 'tests/hd_pack_test.c'),
                             str(root / 'src/hd_pack.c'), '-o', str(executable)],
                            check=True, capture_output=True)
-            result = subprocess.run([str(executable)], capture_output=True, text=True, cwd=root)
+            env = {key: value for key, value in os.environ.items() if key.upper() != 'KDC_HD_PACK'}
+            result = subprocess.run([str(executable)], capture_output=True, text=True,
+                                    cwd=directory, env=env)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
 

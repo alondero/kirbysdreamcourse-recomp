@@ -17,7 +17,8 @@ bool KdcHdPackLoadMemory(const void *data, size_t size);
 /* Load from a file; a missing file is not an error (returns false). */
 bool KdcHdPackLoadFile(const char *path);
 void KdcHdPackUnload(void);
-/* Loads the default pack once, on first use. */
+/* Probe and load the configured pack once, before rendering. */
+void KdcHdPackPrewarm(void);
 bool KdcHdPackAvailable(void);
 unsigned KdcHdPackCount(void);
 /* Fill 32x32 straight-alpha 0xAARRGGBB samples for the unflipped character.
