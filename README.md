@@ -1,6 +1,6 @@
-﻿# Kirby's Dream Course recompilation experiment
+﻿# Kirby's Dream Course Recompiled
 
-Experimental Windows, Linux and Android builds of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) and an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled executable, runtime dependencies and notices; they require your matching ROM at runtime.
+Pre-release Windows, Linux and Android builds of Kirby's Dream Course (USA), using [SNESRecomp](https://github.com/RetroPortingToolKit/snesrecomp) with an interpreter fallback. You must provide your own ROM. This source repository does not include the ROM, extracted game assets, generated game source, saves or recordings. Binary release packages contain the compiled executable, runtime dependencies and notices; they require your matching ROM at runtime.
 
 The supported image is the **headerless, 1 MiB USA ROM**, SHA-256 `0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b`. The build and launcher verify its hash. Do not share the ROM, extracted game assets or generated source.
 
@@ -40,14 +40,14 @@ Place your ROM at the project root as `Kirby's Dream Course (USA).sfc`, or pass 
 
 ```powershell
 ./tools/setup.ps1
-./tools/play_experimental.ps1
+./tools/play.ps1
 ```
 
 Setup finds a native Windows CMake on its own and ignores an MSYS build that shadows it on PATH. To override that choice, or to specify a ROM or an existing SDL3 source tree:
 
 ```powershell
 ./tools/setup.ps1 -Rom 'C:/path/to/your-game.sfc' -CMake 'C:/path/to/cmake.exe' -SdlSource 'C:/path/to/SDL3'
-./tools/play_experimental.ps1 -Rom 'C:/path/to/your-game.sfc'
+./tools/play.ps1 -Rom 'C:/path/to/your-game.sfc'
 ```
 
 Setup creates `local/guarded-framework`, `local/guarded` and `local/guarded-build`. Run it again to regenerate the game code and replace the executable in `local/guarded-build`; each run resets and cleans `local/guarded-framework` to the pinned revision, then reapplies its patches. Keep custom files and edits out of that generated checkout. Existing saves and settings beside the executable are retained. Generated files remain in ignored local directories. The play script sets the timing options and opens the graphical launcher; use `-Fallback` to select the interpreter, or `-NoLauncher` to start directly. The launcher also remembers **Skip launcher on boot**. `-Frames` runs skip the startup launcher. Settings and saves are stored beside the local executable. Default player-one keyboard controls are arrows, X for A, Z for B, Return for Start and Right Shift for Select.
@@ -114,12 +114,12 @@ limits.
 After building, use the developer shortcut to skip the menus:
 
 ```powershell
-./tools/play_experimental.ps1 -DevHole normal:3:7
-./tools/play_experimental.ps1 -DevHole extra:8:8
-./tools/play_experimental.ps1 -DevHole multi:2:4
-./tools/play_experimental.ps1 -DevHole multi-extra:4:8
-./tools/play_experimental.ps1 -DevHole demo:2
-./tools/play_experimental.ps1 -DevHole map:160
+./tools/play.ps1 -DevHole normal:3:7
+./tools/play.ps1 -DevHole extra:8:8
+./tools/play.ps1 -DevHole multi:2:4
+./tools/play.ps1 -DevHole multi-extra:4:8
+./tools/play.ps1 -DevHole demo:2
+./tools/play.ps1 -DevHole map:160
 ```
 
 Course and hole numbers start at 1. `demo:1` through `demo:4` select the attract-mode holes with human controls. `map:0` through `map:255` expose every ROM map-table slot, including unused and shared data; add `-DevTwoPlayer` to play a raw slot with two players. Some unused slots contain incomplete or placeholder layouts. Use `-DevHoleList` for syntax and `-Fallback` for interpreter testing.
@@ -165,6 +165,6 @@ how it works, validation and limits.
 See [guest runtime profiling](docs/guest-performance.md) for interpreter/AOT
 measurements, the bridge diagnostic cache, and the repeatable profiling tools.
 
-Recorded single-player runs completed courses one and two in native and fallback modes. A two-player smoke test completed one hole. The pinned reference and host still differ in startup and gameplay state; audio, timing, save-state compatibility and many paths remain under investigation. See [compatibility and evidence](docs/compatibility.md) and the repository issues. Native blocks fall back to the interpreter when they cannot safely execute.
+This is a pre-release build: single-player, two-player, hole practice and 1P vs CPU modes are playable in native and interpreter-fallback modes, with optional widescreen, orbit camera, HD textures and extra 2P courses. Some minor startup/gameplay state and audio differences against the pinned Snes9x reference remain, and save-state compatibility across builds is not yet guaranteed. See [compatibility and evidence](docs/compatibility.md) and the repository issues for verified coverage and open items. Native blocks fall back to the interpreter when they cannot safely execute.
 
 The framework is pinned to `147b55e252dcb3e7680a99c7c2f50e7183891844`. SNESRecomp and derived runtime work are subject to the [PolyForm Noncommercial license](LICENSE); third-party notices are in [THIRD_PARTY_ATTRIBUTION.md](THIRD_PARTY_ATTRIBUTION.md), and SDL's license is in [LICENSE.SDL3.txt](LICENSE.SDL3.txt). Game content is owned by its respective rights holders and is not supplied by this project.

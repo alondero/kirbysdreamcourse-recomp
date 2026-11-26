@@ -318,7 +318,7 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
              "still follow the original game's visibility rules.");
     out->enabled = state->pending_widescreen;
     out->option_count = 2;
-    out->channel = RECOMP_MOD_CHANNEL_EXPERIMENTAL;
+    out->channel = RECOMP_MOD_CHANNEL_STABLE;
     if (index == 1) {
         snprintf(out->id, sizeof(out->id), "orbit");
         snprintf(out->name, sizeof(out->name), "Orbit camera");

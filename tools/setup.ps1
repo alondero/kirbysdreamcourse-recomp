@@ -47,4 +47,4 @@ $options = @{ Rom = $romPath; CMake = $CMake; Name = 'guarded';
     BuildVersion = $BuildVersion; ReleaseDefaults = [bool]$ReleaseDefaults }
 if ($SdlSource) { $options.SdlSource = $SdlSource }
 & (Join-Path $PSScriptRoot 'prepare_guarded.ps1') @options
-Write-Host 'Build complete. Run: ./tools/play_experimental.ps1'
+Write-Host 'Build complete. Run: ./tools/play.ps1'

@@ -104,13 +104,13 @@ int main(int argc, char **argv)
     CHECK(!KdcExtraCoursesEnabled());
     CHECK(provider->feature_get(provider->ctx, 5, &feature));
     CHECK(!strcmp(feature.id, "extra-courses") && !feature.enabled && !feature.option_count);
-    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_STABLE);
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "extra-courses", 1));
     CHECK(!KdcExtraCoursesEnabled());
     CHECK(!KdcFasterTransitionsEnabled());
     CHECK(provider->feature_get(provider->ctx, 4, &feature));
     CHECK(!strcmp(feature.id, "faster-transitions") && !feature.enabled && !feature.option_count);
-    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_STABLE);
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "faster-transitions", 1));
     CHECK(!KdcFasterTransitionsEnabled());
     CHECK(!KdcHighRefreshEnabled());
@@ -131,19 +131,19 @@ int main(int argc, char **argv)
     CHECK(KdcWidescreenAspect() == 0);
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
     CHECK(!feature.enabled);
-    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_STABLE);
     CHECK(provider->package_get(provider->ctx, 0, &package));
     CHECK(!strcmp(feature.package_id, package.id));
     CHECK(provider->feature_get(provider->ctx, 1, &feature));
     CHECK(!strcmp(feature.id, "orbit") && feature.enabled && !feature.option_count);
-    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_STABLE);
     CHECK(KdcOrbitEnabled());
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(KdcOrbitEnabled()); /* staged, not applied */
     CHECK(provider->feature_get(provider->ctx, 3, &feature));
     CHECK(!strcmp(feature.id, "hd_textures") && !feature.enabled && !feature.option_count);
     CHECK(!strcmp(feature.package_id, package.id));
-    CHECK(feature.channel == RECOMP_MOD_CHANNEL_EXPERIMENTAL);
+    CHECK(feature.channel == RECOMP_MOD_CHANNEL_STABLE);
     CHECK(!KdcHdTexturesEnabled()); /* off by default */
     CHECK(!provider->feature_option_get(provider->ctx, "kdc.presentation", "hd_textures", 0, &option));
     CHECK(!provider->feature_choice_get(provider->ctx, "kdc.presentation", "hd_textures", "ui", 0, &choice));

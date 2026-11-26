@@ -1,6 +1,6 @@
 # Playable orbit camera
 
-The experimental camera rebuilds the course as a height mesh and draws the
+The orbit camera rebuilds the course as a height mesh and draws the
 original characters, enemies, aiming guide, shadows and effects at world
 anchors. Shot physics and SNES input remain unchanged. This is a separate
 presentation renderer, not a rotation of the finished framebuffer.
@@ -465,7 +465,7 @@ remain untested for this fix.
 
 ## Limits
 
-The renderer is experimental. The original game provides only projected
+The original game provides only projected
 terrain artwork; sampling it can duplicate an occluding surface onto another
 surface, and reconstructed cliff backs do not reproduce original textures.
 Characters remain original 2D billboards, not newly modeled characters.

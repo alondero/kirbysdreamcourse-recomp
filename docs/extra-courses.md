@@ -32,7 +32,7 @@ enable the 19 custom courses (152 holes) from **Grump's Dream Course**:
    [archive.org/details/grumps-dream-course](https://archive.org/details/grumps-dream-course)).
 3. Place the `.ips` file in a `courses/` directory beside the executable (for
    example `local/guarded-build/courses/GrumpsDreamCourse[1.01].ips`), or pass
-   `--course-pack <path>` (or `-CoursePack <path>` to `tools/play_experimental.ps1`).
+   `--course-pack <path>` (or `-CoursePack <path>` to `tools/play.ps1`).
 4. Enable **Extra 2P courses** on the launcher's **Mods** page (passing
    `--course-pack` enables it automatically for that launch).
 
@@ -60,7 +60,7 @@ enable the 19 custom courses (152 holes) from **Grump's Dream Course**:
 - Drop-in packs are discovered from `courses/` beside the executable (independent
   of the caller's working directory; `--course-pack-dir PATH` overrides this
   directory relative to the caller's working directory before the host anchors
-  its working directory, and `tools/play_experimental.ps1` uses it for
+  its working directory, and `tools/play.ps1` uses it for
   `-DevHole pack:*` / `pack-2p:*` launches to preserve the selected install's
   catalog while isolating `local/dev-play/saves`), while explicit
   `--course-pack PATH` arguments resolve relative to the caller's working

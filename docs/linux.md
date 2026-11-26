@@ -37,14 +37,14 @@ directories are required; use `--name other-name` for a separate development
 build. `--release-defaults` sets the same guarded runtime defaults used by the
 Windows release. To select interpreter fallback, set
 `SNESRECOMP_LLE_BOUNCE=0`. A plain development build without release defaults
-requires the timing switches documented in `tools/play_experimental.ps1`.
+requires the timing switches documented in `tools/play.ps1`.
 
 From a clean checkout, the full release command is:
 
 ```bash
-python3 tools/build_release.py --version v0.1.2-experimental --rom /private/Kirby.sfc
+python3 tools/build_release.py --version v0.1.2 --rom /private/Kirby.sfc
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 .agents/skills/release/scripts/release.py smoke-linux --archive local/releases/v0.1.2-experimental/kirbysdreamcourse-recomp-linux-x64.zip --rom /private/Kirby.sfc
+python3 .agents/skills/release/scripts/release.py smoke-linux --archive local/releases/v0.1.2/kirbysdreamcourse-recomp-linux-x64.zip --rom /private/Kirby.sfc
 ```
 
 Packaging checks ELF architecture, reviewed system dependencies, absence of

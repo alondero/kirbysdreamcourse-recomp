@@ -1,4 +1,4 @@
-Kirby's Dream Course Recomp - experimental Windows x64 build
+Kirby's Dream Course Recomp - pre-release Windows x64 build
 
 1. Extract the ZIP into its own writable directory.
 2. Put your headerless Kirby's Dream Course (USA).sfc next to
@@ -26,11 +26,12 @@ To diagnose interpreter fallback, start it from PowerShell with:
   $env:SNESRECOMP_LLE_BOUNCE = '0'
   ./KirbyDreamCourseRecomp.exe
 
-This is experimental: recorded first/second courses and one two-player hole
-have been checked, but reference state/audio differences and untested paths
-remain. See the release notes and tagged compatibility document for evidence.
-Report the version from build-info.json, mode, settings and course/hole.
-Do not attach ROMs, saves or game-derived captures to public reports.
+This is a pre-release build: single-player, two-player, practice and CPU modes
+are playable, though minor reference state/audio differences and some untested
+paths remain. See the release notes and tagged compatibility document for
+details. Report the version from build-info.json, mode, settings and
+course/hole. Do not attach ROMs, saves or game-derived captures to public
+reports.
 
 Runtime and project licensing: LICENSE and THIRD_PARTY_ATTRIBUTION.md.
 Dependency notices: licenses/. The framework uses PolyForm Noncommercial 1.0.0.

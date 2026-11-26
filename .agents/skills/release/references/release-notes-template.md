@@ -6,7 +6,7 @@ distribution. Every claim must hold for the tagged commit and actual archive.
 Write separate notes only if the user explicitly requests a source release.
 
 ```markdown
-> Experimental Windows x64, Linux x64 and Android arm64 release for testing and feedback.
+> Pre-release Windows x64, Linux x64 and Android arm64 build.
 > <State the observed quality and the most relevant remaining limits.>
 
 ## You must supply your own ROM

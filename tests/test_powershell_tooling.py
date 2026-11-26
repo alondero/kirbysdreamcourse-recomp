@@ -29,6 +29,7 @@ class DeveloperSettingsTest(unittest.TestCase):
             source = root / 'build'
             tools.mkdir()
             source.mkdir()
+            shutil.copy2(TOOLS / 'play.ps1', tools)
             shutil.copy2(TOOLS / 'play_experimental.ps1', tools)
             # Exercise the real staging script without a ROM or a native host.
             (tools / 'invoke_native.ps1').write_text(
@@ -50,7 +51,7 @@ class DeveloperSettingsTest(unittest.TestCase):
                 "function Get-FileHash { param($LiteralPath, $Algorithm)\n"
                 "  return [pscustomobject]@{ Hash = "
                 "'0f984dc5fe8293f75e3b8fad98b0cb564706d9b1e3902b56415aa399c2d4df2b' }\n}\n"
-                f"& '{tools / 'play_experimental.ps1'}' -Rom game.sfc "
+                f"& '{tools / 'play.ps1'}' -Rom game.sfc "
                 "-Executable build/game.exe -DevHole normal:1:1\n")
             result, _ = probe(script)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -59,7 +60,8 @@ class DeveloperSettingsTest(unittest.TestCase):
                 self.assertTrue((destination / name).is_file(), name)
                 self.assertEqual((destination / name).read_text(), value)
                 (destination / name).write_text('developer choice\n')
-            result, _ = probe(script)
+            wrapper_script = script.replace(str(tools / 'play.ps1'), str(tools / 'play_experimental.ps1'))
+            result, _ = probe(wrapper_script)
             self.assertEqual(result.returncode, 0, result.stderr)
             for name, value in settings.items():
                 self.assertEqual((destination / name).read_text(), 'developer choice\n')

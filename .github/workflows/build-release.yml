@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
       prerelease:
-        description: Mark the published release experimental
+        description: Mark the published release as a pre-release
         type: boolean
         default: true
 
@@ -279,7 +279,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:LINUX_SOURCE_SHA -ne $env:SOURCE_SHA -or $env:LINUX_VERSION -ne $env:RELEASE_TAG) { throw 'Platform builds do not match.' }
           $title = "Kirby's Dream Course Recompiled $env:RELEASE_TAG (Windows, Linux & Android)"
-          $notes = "Experimental Windows x64, Linux x64 and Android arm64 builds from $env:SOURCE_SHA.`n`nOn Android install the APK and choose your ROM in the app. On desktop download the ZIP for your platform. Supply your own headerless Kirby's Dream Course (USA) ROM beside the executable. On Linux run start.sh; on Windows launch the EXE. Packages contain no cartridge ROM, extracted game assets or generated source files. Keep assets/, licenses/ and any DLLs in place. See README.txt and build-info.json in each ZIP. Compatibility limits are documented at the tagged docs/compatibility.md.`n"
+          $notes = "Pre-release Windows x64, Linux x64 and Android arm64 builds from $env:SOURCE_SHA.`n`nOn Android install the APK and choose your ROM in the app. On desktop download the ZIP for your platform. Supply your own headerless Kirby's Dream Course (USA) ROM beside the executable. On Linux run start.sh; on Windows launch the EXE. Packages contain no cartridge ROM, extracted game assets or generated source files. Keep assets/, licenses/ and any DLLs in place. See README.txt and build-info.json in each ZIP. Compatibility limits are documented at the tagged docs/compatibility.md.`n"
           [IO.File]::WriteAllText((Join-Path $PWD 'dist/release-notes.md'), $notes, [Text.UTF8Encoding]::new($false))
           # Assign the array directly: an if-expression unrolls a single-element
           # array into a string, and splatting that string passes one argument

@@ -1,4 +1,4 @@
-Kirby's Dream Course Recomp - experimental Linux x86-64 build
+Kirby's Dream Course Recomp - pre-release Linux x86-64 build
 
 1. Extract the ZIP into its own writable directory.
 2. Put your headerless Kirby's Dream Course (USA).sfc beside
@@ -32,10 +32,10 @@ Save states and rewind are unavailable during practice.
 The executable uses the guarded timing/native-dispatch defaults. To select
 interpreter fallback: SNESRECOMP_LLE_BOUNCE=0 ./start.sh
 
-Experimental: reference state/audio differences and untested paths remain.
-See the release notes and tagged docs/compatibility.md. Report the version
-from build-info.json, mode, settings and course/hole. Do not attach ROMs,
-saves or game-derived captures to public reports.
+Pre-release: minor reference state/audio differences and some untested paths
+remain. See the release notes and tagged docs/compatibility.md. Report the
+version from build-info.json, mode, settings and course/hole. Do not attach
+ROMs, saves or game-derived captures to public reports.
 
 Runtime/project licensing: LICENSE and THIRD_PARTY_ATTRIBUTION.md.
 Dependency notices: licenses/. Framework: PolyForm Noncommercial 1.0.0.
