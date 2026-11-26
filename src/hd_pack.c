@@ -98,15 +98,15 @@ bool KdcHdPackLoadFile(const char *path)
     return ok;
 }
 
-bool KdcHdPackAvailable(void)
+void KdcHdPackPrewarm(void)
 {
-    if (!g_pack.tried) {
-        const char *path = getenv("KDC_HD_PACK");
-        if (!KdcHdPackLoadFile(path && *path ? path : "kdc-hd-ui.pack") && path && *path)
-            fprintf(stderr, "[hd] texture pack '%s' could not be loaded\n", path);
-    }
-    return g_pack.count != 0;
+    if (g_pack.tried) return;
+    const char *path = getenv("KDC_HD_PACK");
+    if (!KdcHdPackLoadFile(path && *path ? path : "kdc-hd-ui.pack") && path && *path)
+        fprintf(stderr, "[hd] texture pack '%s' could not be loaded\n", path);
 }
+
+bool KdcHdPackAvailable(void) { return g_pack.count != 0; }
 
 unsigned KdcHdPackCount(void) { return g_pack.count; }
 

@@ -1,8 +1,13 @@
 /* Game-owned presentation settings for the shared launcher's Mods page.
  * Keep the existing config.ini setting authoritative, including old installs.
  */
+#if !defined(_WIN32) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
 #include "launcher_settings.h"
 #include "course_pack.h"
+#include "hd_pack.h"
+#include "hd_textures.h"
 #include "recomp_launcher.h"
 #include "common/sha256.h"
 
@@ -10,6 +15,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#include <wchar.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 typedef struct {
     bool *widescreen;
@@ -390,29 +405,133 @@ static int SetOption(void *ctx, const char *package, const char *feature,
     return 0;
 }
 
+typedef struct {
+    uint64_t size, volume, file_id;
+    int64_t modified, changed;
+#ifndef _WIN32
+    long modified_ns, changed_ns;
+#endif
+} RomFileStamp;
+
+static bool ReadRomFileStamp(FILE *file, RomFileStamp *stamp)
+{
+#ifdef _WIN32
+    HANDLE handle = (HANDLE)_get_osfhandle(_fileno(file));
+    BY_HANDLE_FILE_INFORMATION info;
+    FILE_BASIC_INFO times;
+    if (GetFileType(handle) != FILE_TYPE_DISK || !GetFileInformationByHandle(handle, &info) ||
+        !GetFileInformationByHandleEx(handle, FileBasicInfo, &times, sizeof(times))) return false;
+    *stamp = (RomFileStamp){
+        .size = (uint64_t)info.nFileSizeHigh << 32 | info.nFileSizeLow,
+        .volume = info.dwVolumeSerialNumber,
+        .file_id = (uint64_t)info.nFileIndexHigh << 32 | info.nFileIndexLow,
+        .modified = times.LastWriteTime.QuadPart,
+        .changed = times.ChangeTime.QuadPart,
+    };
+#else
+    struct stat info;
+    if (fstat(fileno(file), &info) != 0 || !S_ISREG(info.st_mode)) return false;
+    *stamp = (RomFileStamp){
+        .size = info.st_size,
+        .volume = info.st_dev,
+        .file_id = info.st_ino,
+        .modified = info.st_mtim.tv_sec,
+        .changed = info.st_ctim.tv_sec,
+        .modified_ns = info.st_mtim.tv_nsec,
+        .changed_ns = info.st_ctim.tv_nsec,
+    };
+#endif
+    return true;
+}
+
+static bool SameRomFileStamp(const RomFileStamp *a, const RomFileStamp *b)
+{
+#ifndef _WIN32
+    if (a->modified_ns != b->modified_ns || a->changed_ns != b->changed_ns) return false;
+#endif
+    return a->size == b->size && a->volume == b->volume && a->file_id == b->file_id &&
+           a->modified == b->modified && a->changed == b->changed;
+}
+
+#ifdef _WIN32
+typedef wchar_t RomPathChar;
+
+static RomPathChar *CanonicalRomPath(FILE *file)
+{
+    HANDLE handle = (HANDLE)_get_osfhandle(_fileno(file));
+    DWORD capacity = GetFinalPathNameByHandleW(handle, NULL, 0, FILE_NAME_NORMALIZED);
+    RomPathChar *path = capacity ? malloc((size_t)capacity * sizeof(*path)) : NULL;
+    if (!path) return NULL;
+    DWORD length = GetFinalPathNameByHandleW(handle, path, capacity, FILE_NAME_NORMALIZED);
+    if (length && length < capacity) return path;
+    free(path);
+    return NULL;
+}
+#else
+typedef char RomPathChar;
+#endif
+
+static bool SameRomPath(const RomPathChar *a, const RomPathChar *b)
+{
+#ifdef _WIN32
+    return wcscmp(a, b) == 0;
+#else
+    return strcmp(a, b) == 0;
+#endif
+}
+
 const char *KdcValidateRomPath(const char *rom, const char *expected_rom_hash)
 {
     /* Require the exact raw image at both launcher commit and host startup,
      * including paths that bypass the shared picker's normalized checks. */
     const size_t rom_size = 1048576;
+    const char *refusal = "The ROM must be the unmodified headerless 1 MiB Kirby's Dream Course "
+                          "USA image. The file is unavailable, or its size or SHA-256 does not match.";
     FILE *file = rom && *rom ? fopen(rom, "rb") : NULL;
-    unsigned char *bytes = file ? malloc(rom_size) : NULL;
-    int valid_size = bytes && fread(bytes, 1, rom_size, file) == rom_size &&
-                     fgetc(file) == EOF && !ferror(file);
-    if (file) fclose(file);
+    if (!file) return refusal;
+
+    /* The modal launcher and startup validate on the host thread. Keep the
+     * last digest in memory and stat the open file to detect edits and replacements. */
+    static struct {
+        RomPathChar *path;
+        RomFileStamp stamp;
+        char hash[65];
+    } cache;
+    RomFileStamp stamp;
+    RomPathChar *canonical = NULL;
+    if (ReadRomFileStamp(file, &stamp) && stamp.size == rom_size) {
+#ifdef _WIN32
+        canonical = CanonicalRomPath(file);
+#else
+        canonical = realpath(rom, NULL);
+#endif
+    }
     char hash_hex[65] = {0};
-    if (valid_size) {
-        uint8_t hash[32];
-        recompui_sha256_compute(bytes, rom_size, hash);
-        for (int i = 0; i < 32; ++i)
-            snprintf(hash_hex + i * 2, 3, "%02x", hash[i]);
+    if (canonical && cache.path && SameRomPath(cache.path, canonical) &&
+        SameRomFileStamp(&cache.stamp, &stamp)) {
+        memcpy(hash_hex, cache.hash, sizeof(hash_hex));
+    } else {
+        unsigned char *bytes = malloc(rom_size);
+        if (bytes && fread(bytes, 1, rom_size, file) == rom_size &&
+            fgetc(file) == EOF && !ferror(file)) {
+            uint8_t hash[32];
+            recompui_sha256_compute(bytes, rom_size, hash);
+            for (int i = 0; i < 32; ++i)
+                snprintf(hash_hex + i * 2, 3, "%02x", hash[i]);
+            RomFileStamp after;
+            if (canonical && ReadRomFileStamp(file, &after) && SameRomFileStamp(&stamp, &after)) {
+                free(cache.path);
+                cache.path = canonical;
+                canonical = NULL;
+                cache.stamp = stamp;
+                memcpy(cache.hash, hash_hex, sizeof(cache.hash));
+            }
+        }
+        free(bytes);
     }
-    free(bytes);
-    if (!valid_size || strcmp(hash_hex, expected_rom_hash)) {
-        return "The ROM must be the unmodified headerless 1 MiB Kirby's Dream Course "
-               "USA image. The file is unavailable, or its size or SHA-256 does not match.";
-    }
-    return NULL;
+    free(canonical);
+    fclose(file);
+    return *hash_hex && expected_rom_hash && !strcmp(hash_hex, expected_rom_hash) ? NULL : refusal;
 }
 
 static int Commit(void *ctx, const char *rom)
@@ -467,6 +586,7 @@ static int Commit(void *ctx, const char *rom)
             return 0;
         }
         hd = state->pending_hd;
+        if (KdcHdEnabled()) KdcHdPackPrewarm();
     }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */

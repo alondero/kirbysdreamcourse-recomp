@@ -130,6 +130,27 @@ int main(void)
     /* A missing file is not an error and loads nothing. */
     assert(!KdcHdPackLoadFile("local/does-not-exist.pack"));
     assert(KdcHdPackCount() == 0);
+
+    const char *default_pack = "kdc-hd-ui.pack";
+    pack = BuildPack(&one, 1, &size);
+    FILE *file = fopen(default_pack, "wb");
+    assert(file && fwrite(pack, 1, size, file) == size && fclose(file) == 0);
+    KdcHdPackUnload();
+    assert(!KdcHdPackAvailable());
+    assert(!KdcHdPackTile(&q, px));
+    KdcHdPackPrewarm();
+    assert(KdcHdPackAvailable());
+    assert(remove(default_pack) == 0);
+    KdcHdPackPrewarm();
+    assert(KdcHdPackTile(&q, px));
+
+    KdcHdPackUnload();
+    KdcHdPackPrewarm();
+    file = fopen(default_pack, "wb");
+    assert(file && fwrite(pack, 1, size, file) == size && fclose(file) == 0);
+    KdcHdPackPrewarm();
+    assert(!KdcHdPackAvailable());
+    free(pack);
     puts("hd_pack_test: ok");
     return 0;
 }

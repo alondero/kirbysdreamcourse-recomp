@@ -1,5 +1,8 @@
 #include "launcher_settings.h"
+#include "hd_pack.h"
+#include "hd_textures.h"
 #include "recomp_launcher.h"
+#include "common/sha256.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +13,19 @@
         return 1; \
     } \
 } while (0)
+
+static unsigned rom_hashes, pack_prewarms;
+
+void __real_recompui_sha256_compute(const uint8_t *data, size_t size, uint8_t out[32]);
+
+void __wrap_recompui_sha256_compute(const uint8_t *data, size_t size, uint8_t out[32])
+{
+    ++rom_hashes;
+    __real_recompui_sha256_compute(data, size, out);
+}
+
+bool KdcHdEnabled(void) { return KdcHdTexturesEnabled(); }
+void KdcHdPackPrewarm(void) { ++pack_prewarms; }
 
 int main(int argc, char **argv)
 {
@@ -109,6 +125,7 @@ int main(int argc, char **argv)
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "hd_textures", "ui", "original"));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
     CHECK(!KdcHdTexturesEnabled()); /* staged, not applied */
+    CHECK(!pack_prewarms);
     CHECK(!provider->feature_get(provider->ctx, 6, &feature));
     CHECK(!provider->feature_get(provider->ctx, 0, NULL));
     CHECK(!provider->feature_enable(provider->ctx, "foreign", "widescreen", 1));
@@ -150,6 +167,11 @@ int main(int argc, char **argv)
     CHECK(!provider->commit(provider->ctx, argv[4])); /* same-size wrong hash */
     CHECK(!widescreen);
     CHECK(provider->commit(provider->ctx, rom));
+    CHECK(pack_prewarms == 1);
+    const unsigned hashes_after_commit = rom_hashes;
+    CHECK(!KdcValidateRomPath("./synthetic.sfc", hash));
+    CHECK(KdcValidateRomPath("synthetic.sfc", "different expected hash"));
+    CHECK(rom_hashes == hashes_after_commit);
     CHECK(widescreen);
     CHECK(KdcHudEdges());
     CHECK(!KdcOrbitEnabled());
@@ -180,5 +202,21 @@ int main(int argc, char **argv)
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "extra-courses", 1));
     CHECK(provider->commit(provider->ctx, rom));
     CHECK(KdcExtraCoursesEnabled());
+
+    /* Replace the ROM with a different image of the same size and mtime. */
+    CHECK(remove(rom) == 0);
+    CHECK(rename(argv[4], rom) == 0);
+    CHECK(KdcValidateRomPath(rom, hash));
+    CHECK(rom_hashes == hashes_after_commit + 1);
+    /* An in-place edit restores the expected bytes and updates the mtime. */
+    FILE *file = fopen(rom, "r+b");
+    CHECK(file && fseek(file, -1, SEEK_END) == 0 && fputc(0, file) == 0);
+    CHECK(fclose(file) == 0);
+    CHECK(!KdcValidateRomPath(rom, hash));
+    CHECK(rom_hashes == hashes_after_commit + 2);
+    file = fopen(rom, "ab");
+    CHECK(file && fputc(0, file) == 0 && fclose(file) == 0);
+    CHECK(KdcValidateRomPath(rom, hash));
+    CHECK(rom_hashes == hashes_after_commit + 2);
     return 0;
 }

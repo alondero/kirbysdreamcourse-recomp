@@ -21,10 +21,12 @@ class LauncherSettingsTest(unittest.TestCase):
             headered = Path(directory) / 'headered.sfc'
             headered.write_bytes(bytes(512) + data)
             modified = Path(directory) / 'modified.sfc'
-            modified.write_bytes(data[:-1] + b'\x01')
             for name, flags in (('debug', []), ('release', ['-DNDEBUG'])):
                 with self.subTest(configuration=name):
                     rom.write_bytes(data)
+                    modified.write_bytes(data[:-1] + b'\x01')
+                    for image in (rom, modified):
+                        os.utime(image, (1_600_000_000, 1_600_000_000))
                     executable = Path(directory) / f'launcher_settings_{name}.exe'
                     result = subprocess.run(
                         [compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', *flags,
@@ -32,7 +34,8 @@ class LauncherSettingsTest(unittest.TestCase):
                          str(root / 'tests/launcher_settings_test.c'),
                          str(root / 'src/launcher_settings.c'),
                          str(root / 'src/course_pack.c'),
-                         str(ui / 'src/common/sha256.c'), '-o', str(executable)],
+                         str(ui / 'src/common/sha256.c'), '-Wl,--wrap=recompui_sha256_compute',
+                         '-o', str(executable)],
                         capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     args = [str(executable), str(rom), hashlib.sha256(data).hexdigest(),

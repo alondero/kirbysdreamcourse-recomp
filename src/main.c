@@ -37,6 +37,7 @@
 #include "host_clock.h"
 #include "host_api.h"
 #include "host_paths.h"
+#include "hd_pack.h"
 #include "hd_textures.h"
 #include "practice.h"
 #include "widescreen.h"
@@ -105,6 +106,7 @@ static const char *ValidateRomPath(const char *path)
 
 static void OnRomLoaded(const uint8_t *rom, size_t size)
 {
+    if (KdcHdEnabled()) KdcHdPackPrewarm();
     KdcCoursePackSetRom(rom, size);
     if (KdcDevUsesCoursePack()) {
         /* Isolate direct CLI custom-pack starts (--dev-hole pack:*) from the
