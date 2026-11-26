@@ -1,0 +1,152 @@
+diff --git a/cpuexec.cpp b/cpuexec.cpp
+index 0494810..7d2bf3e 100644
+--- a/cpuexec.cpp
++++ b/cpuexec.cpp
+@@ -7,0 +8 @@
++#include "kdc_root_menu_probe.h"
+@@ -23,0 +25,103 @@ static inline void S9xReschedule (void);
++static FILE *root_trace;
++static FILE *root_memory;
++static unsigned root_frame;
++static unsigned root_snapshot;
++static unsigned root_previous_pc;
++static unsigned root_previous_opcode;
++static bool root_record;
++static bool root_previous_focus;
++
++static FILE *RootOpen(const char *key)
++{
++    const char *path = getenv(key);
++    if (!path || !*path)
++        return nullptr;
++    FILE *file = fopen(path, "wb");
++    if (!file)
++    {
++        perror(path);
++        abort();
++    }
++    return file;
++}
++
++void KdcRootMenuFrame()
++{
++    if (++root_frame == 1)
++    {
++        root_trace = RootOpen("KDC_ROOT_TRACE_FILE");
++        root_memory = RootOpen("KDC_ROOT_TRACE_MEMORY");
++    }
++    root_record = root_trace != nullptr;
++    if (root_record)
++        fprintf(root_trace, "frame %u\n", root_frame);
++}
++static void RootOpcode(unsigned opcode)
++{
++    if (!root_record)
++        return;
++    const unsigned pc = Registers.PBPC & 0xffffff;
++    const unsigned bank = pc >> 16;
++    const unsigned address = pc & 0xffff;
++    const bool bank3 = (bank & 0x1f) == 3 && (address >= 0x8000 || (bank & 0x40));
++    const unsigned offset = address | 0x8000;
++    const bool focus = bank3 && offset >= 0xb640 && offset < 0xbd30;
++    const unsigned canonical = pc & 0x7fffff;
++    const bool interrupt = canonical == 0xff06;
++    const bool callee = (canonical >= 0x008696 && canonical <= 0x0086e5) ||
++                        (canonical >= 0x008f5b && canonical <= 0x008f72) ||
++                        (canonical >= 0x01c7af && canonical <= 0x01c7e4);
++    if (focus || root_previous_focus || callee || interrupt || opcode == 0xcb)
++    {
++        unsigned snapshot = 0;
++        if (root_memory && bank3)
++        {
++            switch (offset)
++            {
++                case 0xb71c: case 0xb720: case 0xb742: case 0xb745: case 0xb74e:
++                case 0xb761: case 0xbb44: case 0xbb47: case 0xbbd8: case 0xbbeb:
++                    snapshot = ++root_snapshot;
++                    if (fwrite(Memory.RAM, 0x20000, 1, root_memory) != 1 ||
++                        fwrite(Memory.SRAM, 0x2000, 1, root_memory) != 1)
++                        abort();
++                    break;
++            }
++        }
++        const unsigned status = (Registers.P.W & ~(Negative | Overflow | Zero | Carry)) |
++            CheckNegative() | (CheckOverflow() ? Overflow : 0) |
++            (CheckZero() ? Zero : 0) | (CheckCarry() ? Carry : 0);
++        fprintf(root_trace, "pc %u %06x %02x %06x %02x %04x %04x %04x %04x %04x %02x %03x %d %d %u",
++                root_frame, pc, opcode, root_previous_pc, root_previous_opcode,
++                Registers.A.W, Registers.X.W, Registers.Y.W, Registers.S.W,
++                Registers.D.W, Registers.DB, status, CPU.V_Counter, CPU.Cycles, snapshot);
++        for (unsigned i = 1; i <= 8; ++i)
++        {
++            const unsigned address = static_cast<uint16>(Registers.S.W + i);
++            fprintf(root_trace, " %02x", address < 0x2000 ? Memory.RAM[address] : 0u);
++        }
++        fputc('\n', root_trace);
++    }
++    root_previous_focus = focus;
++    root_previous_pc = pc;
++    root_previous_opcode = opcode;
++}
++void KdcRootMenuMmio(unsigned address, unsigned value)
++{
++    if (root_record && root_frame >= 500)
++        fprintf(root_trace, "mmio %u %06x %d %d %04x %02x %u\n", root_frame,
++                root_previous_pc, CPU.V_Counter, CPU.Cycles, address, value, CPU.InDMAorHDMA);
++}
++
++void KdcRootMenuDma(unsigned channel)
++{
++    if (root_record && root_frame >= 500)
++    {
++        const SDMA &dma = DMA[channel];
++        fprintf(root_trace, "dma %u %06x %d %d %u %02x %04x %02x %04x %u %u %u %u %04x\n",
++                root_frame, root_previous_pc, CPU.V_Counter, CPU.Cycles, channel, dma.ABank,
++                dma.AAddress, dma.BAddress, dma.TransferBytes, dma.TransferMode,
++                dma.ReverseTransfer, dma.AAddressFixed, dma.AAddressDecrement, PPU.VMA.Address);
++    }
++}
++
++
+@@ -170,0 +275 @@ void S9xMainLoop (void)
++		RootOpcode(Op);
+diff --git a/dma.cpp b/dma.cpp
+index 95cb1a9..ed8e3c7 100644
+--- a/dma.cpp
++++ b/dma.cpp
+@@ -7,0 +8 @@
++#include "kdc_root_menu_probe.h"
+@@ -52,0 +54 @@ bool8 S9xDoDMA (uint8 Channel)
++    KdcRootMenuDma(Channel);
+diff --git a/kdc_root_menu_probe.h b/kdc_root_menu_probe.h
+new file mode 100644
+index 0000000..babdf26
+--- /dev/null
++++ b/kdc_root_menu_probe.h
+@@ -0,0 +1,8 @@
++#ifndef KDC_ROOT_MENU_PROBE_H
++#define KDC_ROOT_MENU_PROBE_H
++
++void KdcRootMenuFrame();
++void KdcRootMenuMmio(unsigned address, unsigned value);
++void KdcRootMenuDma(unsigned channel);
++
++#endif
+diff --git a/libretro/libretro.cpp b/libretro/libretro.cpp
+index b7aaace..d107b98 100644
+--- a/libretro/libretro.cpp
++++ b/libretro/libretro.cpp
+@@ -7,0 +8 @@
++#include "kdc_root_menu_probe.h"
+@@ -2250,0 +2252 @@ void retro_run()
++    KdcRootMenuFrame();
+diff --git a/ppu.cpp b/ppu.cpp
+index c51b92b..aedba91 100644
+--- a/ppu.cpp
++++ b/ppu.cpp
+@@ -7,0 +8 @@
++#include "kdc_root_menu_probe.h"
+@@ -206,0 +208 @@ void S9xSetPPU (uint8 Byte, uint16 Address)
++    KdcRootMenuMmio(Address, Byte);
+@@ -1236,0 +1239 @@ void S9xSetCPU (uint8 Byte, uint16 Address)
++    KdcRootMenuMmio(Address, Byte);
