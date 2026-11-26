@@ -6,9 +6,11 @@ baseline was `e18a4f753f54ed8bedf015f7bd634d26f6fc4241`.
 
 Keep the current emission observers. The native queue has persistent writes
 and ABI outputs beyond presentation commands. The two paths also differ in
-layout commands, allocation and consumption lifetime. Frozen enhanced
-commands already differ across native-bounce and interpreter-only
-execution in one route. Production emission, entry hooks and fallback stay in place.
+layout commands, allocation and consumption lifetime. Before the entry-hook
+tier-down fix, frozen enhanced commands differed across native-bounce and
+interpreter-only execution in one route. The fixed host now reproduces
+command parity on that route; see the frozen replay ledger below.
+Production emission, entry hooks and fallback stay in place.
 
 ## Bounded original-ROM ledger
 
@@ -383,9 +385,10 @@ in each of the 20 retained frames, starting at host frame 580 and canvas
 position `(388,188)`. Center pixels matched. The images show the recovered
 enemy at the right edge with the provider enabled.
 
-Native bounce and interpreter-only disagree in the frozen enhancement
-commands. The first differing wide record is 58,697 at the OAM latch with
-internal counter 461. The valid lists contain 89 and 83 pieces respectively.
+Before `snesrecomp-entry-hook-tierdown.patch`, native bounce and
+interpreter-only disagreed in the frozen enhancement commands. The first
+differing wide record is 58,697 at the OAM latch with internal counter 461.
+The valid lists contain 89 and 83 pieces respectively.
 The first orbit difference is record 12,227 at that same latch. The six
 additional pieces in the wide comparison have `$81:AF2D` (four) and
 `$81:AEA1` (two) projection provenance. Five fall in bucket 2 and one in
@@ -403,7 +406,20 @@ The first changed margin command is at internal raster frame 462, line 35.
 Orbit visitor totals are 18,166 and 17,878. The retained wide frames 459–478,
 orbit frames 700–774 and final 20 frames in both views matched composed RGB
 and full WRAM across modes. Final SRAM matched. Command parity therefore
-fails on this route even where the inspected pixels agree.
+failed on this route even where the inspected pixels agreed.
+
+With `snesrecomp-entry-hook-tierdown.patch` applied to the same framework
+pin and the game code regenerated, a current Windows diagnostic build
+(SHA-256 `95019f57ce4c6fd37fe5b2a69c2579fbbdddc9d5d4d779ef6154687d3c735828`)
+repeated the 1P wide frozen comparison in both execution modes. The two
+runs emitted identical 107,743-row streams with SHA-256
+`099369323ca9325af489b6f8e56979524f700f373f3572919a433164a11549c1`.
+At internal latch 461, both valid lists contained the same 83 pieces in the
+same order, with no exact duplicate piece rows. All 20 retained composed
+images, all 20 full WRAM dumps, final SRAM and the frame-900 428×224 PPMs
+matched byte-for-byte. No first divergence remains in this host command
+comparison; the broader host-versus-reference differences above are separate
+and remain open.
 
 ### Reproduce the frozen host comparisons
 

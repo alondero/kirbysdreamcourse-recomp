@@ -1,0 +1,41 @@
+--- a/recompiler/v2/emit_function.py
++++ b/recompiler/v2/emit_function.py
+@@ -2307,18 +2307,6 @@
+             f'      return interp_bridge_lle_yield_unwind('
+             f'cpu, {_transfer_target_expr(block_pc24, False)});')
+         src.append('    }')
+-        # Once per execution of the hooked instruction: after the deadline
+-        # check (a yield there hands the instruction, and with it the report,
+-        # to the interpreter) and before the block's cycles are charged.
+-        if block_pc24 in hook_by_pc24:
+-            src.append(f'    {hook_by_pc24[block_pc24]}(cpu, 0x{block_pc24:06X}u);')
+-        # Cartridge coprocessors observe CPU bus accesses no earlier than this
+-        # architectural block boundary. The aggregate static charge below
+-        # advances the frame clock to the end of the block before its emitted
+-        # operations run; exposing that future timestamp to DSP-1 can let
+-        # firmware consume a word before the CPU has written it.
+-        src.append(
+-            '    cpu->coprocessor_master_cycles = cpu->master_cycles;')
+         # Axis-2: charge this block's static 65816 CPU cycles as one constant
+         # add (recompiler/snes_cycles.py). Near-free. Runtime-only modifiers
+         # (D.l/page-cross/branch-taken) are charged dynamically in block_lines.
+@@ -2349,6 +2337,19 @@
+                 f'    if ({_condition}) {{ RecompStackPop(); '
+                 f'return interp_tier_dispatch_tail_ex(cpu, {_transfer_target_expr(block_pc24, False)}, '
+                 f'0x{block_pc24:06X}u, _entry_s, _hrv, false); }}')
++        # Once per execution of the hooked instruction: after the deadline
++        # check and tier-down guard (either exit hands the instruction, and
++        # with it the report, to the interpreter) and before the block's
++        # cycles are charged.
++        if block_pc24 in hook_by_pc24:
++            src.append(f'    {hook_by_pc24[block_pc24]}(cpu, 0x{block_pc24:06X}u);')
++        # Cartridge coprocessors observe CPU bus accesses no earlier than this
++        # architectural block boundary. The aggregate static charge below
++        # advances the frame clock to the end of the block before its emitted
++        # operations run; exposing that future timestamp to DSP-1 can let
++        # firmware consume a word before the CPU has written it.
++        src.append(
++            '    cpu->coprocessor_master_cycles = cpu->master_cycles;')
+         if _cyc_const:
+             src.append(f'    cpu->cycles += {_cyc_const};')
+             _spd_expr, _spd_const = _block_speed(bank, key.pc)

@@ -48,6 +48,16 @@ static void QueueClear(CpuState *cpu)
     assert(building.count == count && request_count == 0);
 }
 
+static void IdenticalQueuedRequests(CpuState *cpu)
+{
+    Queue(cpu);
+    Queue(cpu);
+    assert(request_count == 2);
+    KdcObserveSprites(cpu, 0x808c12);
+    assert(!building.invalid && building.count == 2 && request_count == 0);
+    assert(building.pieces[0].world_x == 300 && building.pieces[1].world_x == 300);
+}
+
 static void DataBank(CpuState *cpu)
 {
     /* Deliberately contradictory banks: DB=$7F has a visible animation and
@@ -176,6 +186,7 @@ int main(int argc, char **argv)
     ram[0x1004] = 0x80; /* one small terminal piece, tile zero */
     KdcInitializeSprites();
     if (!strcmp(argv[1], "queue")) QueueClear(&cpu);
+    else if (!strcmp(argv[1], "duplicate")) IdenticalQueuedRequests(&cpu);
     else if (!strcmp(argv[1], "bank")) DataBank(&cpu);
     else if (!strcmp(argv[1], "margins")) NativeMargins(ppu);
     else if (!strcmp(argv[1], "scroll")) WrappedScroll(&cpu, ppu);
