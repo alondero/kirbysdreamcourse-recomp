@@ -25,7 +25,10 @@ def parse_buttons(value):
 
 
 def read_recording(path):
-    data = json.loads(Path(path).read_text(encoding='utf-8'))
+    return validate_recording(json.loads(Path(path).read_text(encoding='utf-8')))
+
+
+def validate_recording(data):
     if not isinstance(data, dict) or set(data) != {'frames', 'events'}:
         raise ValueError('recording must contain exactly frames and events')
     frames, events = data['frames'], data['events']

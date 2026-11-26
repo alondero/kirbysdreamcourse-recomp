@@ -68,6 +68,8 @@ Controller source values are `0` for none, `1` for keyboard and `2` for gamepad.
 
 The included ROM-free input and comparison tests can be run with `python -m unittest discover -s tests -p 'test_*.py' -v`. The headless and reference-capture tools support locally stored input recordings; keep recordings and captures out of the repository.
 
+To verify a change in the running desktop game, use the [gameplay scenario runner](docs/gameplay-verification.md) for scripted controller input, state checks and screenshots.
+
 For source-built SPC/DSP differential tests and the optional APU queue-boundary experiment, see [APU timing and audio checks](docs/apu-accuracy.md).
 
 ## Hole practice

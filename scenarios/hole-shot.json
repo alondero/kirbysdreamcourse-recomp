@@ -1,0 +1,16 @@
+{
+  "frames": 900,
+  "dev_hole": "normal:1:1",
+  "events": [
+    {"frame": 601, "count": 2, "button": "a"},
+    {"frame": 661, "count": 2, "button": "a"},
+    {"frame": 691, "count": 2, "button": "a"},
+    {"frame": 754, "count": 2, "button": "a"}
+  ],
+  "checks": [
+    {"label": "Course 1 Hole 1 map", "frame": 599, "offset": "0xabb2", "equals": 0},
+    {"label": "Terrain loaded", "frame": 599, "offset": "0x8b92", "equals": 12},
+    {"label": "Ball starts in U cell 6", "frame": 599, "offset": "0xd8ae", "equals": 6},
+    {"label": "Ball crosses into U cell 8 or beyond", "frame": 810, "offset": "0xd8ae", "min": 8, "max": 11}
+  ]
+}

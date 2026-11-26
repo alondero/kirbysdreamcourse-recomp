@@ -1,0 +1,22 @@
+{
+  "frames": 3101,
+  "events": [
+    {"frame": 320, "count": 2, "button": "start"},
+    {"frame": 500, "count": 2, "button": "start"},
+    {"frame": 700, "count": 2, "button": "start"},
+    {"frame": 900, "count": 2, "button": "a"},
+    {"frame": 1100, "count": 2, "button": "a"},
+    {"frame": 1120, "count": 45, "button": "down"},
+    {"frame": 1180, "count": 30, "button": "right"},
+    {"frame": 1300, "count": 2, "button": "a"},
+    {"frame": 1600, "count": 2, "button": "a"},
+    {"frame": 1900, "count": 2, "button": "a"},
+    {"frame": 2700, "count": 2, "button": "a"}
+  ],
+  "checks": [
+    {"label": "Single-player mode", "frame": 3100, "offset": "0x17ff", "equals": 0},
+    {"label": "Course 1 Hole 1 map", "frame": 3100, "offset": "0xabb2", "equals": 0},
+    {"label": "Terrain loaded", "frame": 3100, "offset": "0x8b92", "equals": 12},
+    {"label": "Ball in starting U cell", "frame": 3100, "offset": "0xd8ae", "equals": 6}
+  ]
+}
