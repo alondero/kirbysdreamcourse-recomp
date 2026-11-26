@@ -76,6 +76,76 @@ class CpuRuntimeTest(unittest.TestCase):
             raise ValueError('CPU checks require the exact supported ROM')
         cls.executable = Path(os.environ['KDC_PRACTICE_EXECUTABLE'])
 
+    def test_saved_root_cursor_survives_difficulty_rebuilds(self):
+        from test_practice import PracticeRuntimeTest
+        tap = PracticeRuntimeTest.tap
+        script = ('wait 500\n' + tap('start') + 'wait 120\ndump ordinary\n' +
+                  tap('down') + tap('a') + 'wait 90\ndump two_player\n' +
+                  tap('b') + 'wait 90\ndump root_saved\n' +
+                  tap('down') * 3 + 'dump cpu_row\n' + tap('a') +
+                  'wait 90\ndump difficulty\n' +
+                  tap('b') + 'wait 90\ndump restored\n')
+        native, _ = PracticeRuntimeTest.run_case(self, script, frames=2500)
+        fallback, _ = PracticeRuntimeTest.run_case(self, script, bounce='0', frames=2500)
+
+        def word(ram, address):
+            return int.from_bytes(ram[address:address + 2], 'little')
+
+        def check_round_trip(files):
+            ordinary = files['ordinary.wram.bin']
+            two_player = files['two_player.wram.bin']
+            root_saved = files['root_saved.wram.bin']
+            cpu_row = files['cpu_row.wram.bin']
+            difficulty = files['difficulty.wram.bin']
+            restored = files['restored.wram.bin']
+            tilemap = slice(0x39da, 0x3f5a)
+
+            self.assertEqual(word(ordinary, 0x1e4a), 5)
+            self.assertEqual(word(ordinary, 0xea86), 0)
+            self.assertEqual(word(ordinary, 0xea88), 0)
+            self.assertEqual(ordinary[0xeaa0:0xeaa5], bytes((0, 1, 2, 6, 7)))
+
+            self.assertEqual(word(two_player, 0xea86), 0)
+            self.assertEqual(word(two_player, 0xea88), 1)
+            self.assertEqual(word(root_saved, 0x1e4a), 5)
+            self.assertEqual(word(root_saved, 0xea86), 1)
+            self.assertEqual(word(root_saved, 0xea88), 1)
+            self.assertEqual(root_saved[0xea8e:0xea93], bytes((11,) * 5))
+            self.assertEqual(root_saved[0xea97:0xea9c], bytes((9, 11, 13, 15, 17)))
+            self.assertEqual(root_saved[0xeaa0:0xeaa5], bytes((0, 1, 2, 6, 7)))
+
+            self.assertEqual(word(cpu_row, 0xea86), 4)
+            self.assertEqual(word(cpu_row, 0xea88), 1)
+            self.assertEqual(word(difficulty, 0x1e4a), 3)
+            self.assertEqual(word(difficulty, 0xea86), 1)
+            self.assertEqual(word(difficulty, 0xea88), 1)
+            self.assertEqual(word(difficulty, 0xea8a), 1)
+            self.assertEqual(difficulty[0xea8e:0xea91], bytes((11,) * 3))
+            self.assertEqual(difficulty[0xea97:0xea9a], bytes((9, 11, 13)))
+            self.assertEqual(difficulty[0xeaa0:0xeaa3], bytes((8, 9, 10)))
+            self.assertNotEqual(ordinary[tilemap], difficulty[tilemap])
+
+            self.assertEqual(word(restored, 0x1e4a), 5)
+            self.assertEqual(word(restored, 0xea86), 1)
+            self.assertEqual(word(restored, 0xea88), 1)
+            self.assertEqual(word(restored, 0xea8a), 0)
+            self.assertEqual(restored[0xea8e:0xea93], bytes((11,) * 5))
+            self.assertEqual(restored[0xea97:0xea9c], bytes((9, 11, 13, 15, 17)))
+            self.assertEqual(restored[0xeaa0:0xeaa5], bytes((0, 1, 2, 6, 7)))
+            self.assertEqual(ordinary[tilemap], restored[tilemap])
+            self.assertEqual(files['ordinary.sram.bin'], files['restored.sram.bin'])
+
+        for mode, files in (('native', native), ('interpreter', fallback)):
+            with self.subTest(mode=mode):
+                check_round_trip(files)
+        for tag in ('root_saved', 'cpu_row', 'difficulty', 'restored'):
+            with self.subTest(mode_comparison=tag):
+                before = native[f'{tag}.wram.bin']
+                after = fallback[f'{tag}.wram.bin']
+                self.assertEqual(before[0x1e40:0x1e60], after[0x1e40:0x1e60])
+                self.assertEqual(before[0x39da:0x3f5a], after[0x39da:0x3f5a])
+                self.assertEqual(before[0xea80:0xeab0], after[0xea80:0xeab0])
+
     def test_natural_cpu_turns_are_repeatable(self):
         # Share the practice harness's isolated saves, controller suppression,
         # pinned runtime settings and private temporary captures.

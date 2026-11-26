@@ -296,7 +296,11 @@ composed PNGs. A native difficulty-cancel repeat matched all 111 captured
 WRAM frames. The locked root had three stock rows plus the two additions.
 The unlocked root had six stock rows plus the two additions. The difficulty
 view produced result bytes 8, 9 and 10 before B restored the locked root.
-Separate native inputs and screenshots confirmed each stock destination.
+A scripted nonzero-cursor round trip selected 2P and cancelled its submenu.
+Entering 1P VS CPU then presented MEDIUM (row 1) because the rebuild reloaded
+the retained `$EA88`; B restored the five-row root with row 1 selected and
+byte-identical SRAM in native and interpreter modes. Separate native inputs
+and screenshots confirmed each stock destination.
 A natural first Hard CPU turn followed by pause EXIT MATCH reset to the
 root and restored the ordinary SRAM byte for byte.
 

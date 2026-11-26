@@ -116,13 +116,14 @@ Addresses were inspected with the local 65816 disassembler, then exercised in
 the guarded runtime. ROM-derived disassembly, captures and recordings remain
 under ignored `local/`.
 
-- Root menu: `$83:B71C` recomputes unlock flags `$EAA9..$EAB3` and builds the
-  menu; `$83:B720` rebuilds it without that; `$83:BB44` is the shared menu
-  routine and `$83:BBD8` runs after its entries are laid out, before the
-  tilemap upload. The extension appends PRACTICE (6) and 1P VS CPU (7) there,
-  or, after 1P VS CPU, relabels the entries EASY/MEDIUM/HARD (8..10) and sets
-  `$EA8A` so B cancels as it does in the guest's submenus. At `$83:B74E` a
-  difficulty is turned into result 1, the original two-player entry.
+- [Root menu](root-mode-menu.md): `$83:B71C` recomputes unlock flags
+  `$EAA9..$EAB3` and builds the menu; `$83:B720` rebuilds it without that;
+  `$83:BB44` is the shared menu routine and `$83:BBD8` runs after its entries
+  are laid out, before the tilemap upload. The extension appends PRACTICE (6)
+  and 1P VS CPU (7) there, or, after 1P VS CPU, relabels the entries
+  EASY/MEDIUM/HARD (8..10) and sets `$EA8A` so B cancels as it does in the
+  guest's submenus. At `$83:B74E` a difficulty is turned into result 1, the
+  original two-player entry.
 - `$83:B824` is the two-player submenu (EXTRA COURSE only when `$EAA9`);
   `$83:B83E` stores `$17FF = 1` after a choice. The CPU save session starts
   there. The next root-menu build ends it.
