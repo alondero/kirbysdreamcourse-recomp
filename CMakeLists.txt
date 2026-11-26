@@ -97,6 +97,9 @@ file(STRINGS "${SNESRECOMP_ROOT}/runner/src/beam_frame_driver.h" KDC_STATE_ONLY_
 if(NOT KDC_HD_PERF_OPT_API OR NOT KDC_STATE_ONLY_RASTER_API)
     message(FATAL_ERROR "Apply patches/snesrecomp-hd-perf-opt.patch after the transition pacing patch")
 endif()
+if(NOT EXISTS "${SNESRECOMP_ROOT}/runner/src/snes/ppu_hd_gpu.h")
+    message(FATAL_ERROR "Apply patches/snesrecomp-hd-gpu-compose.patch after hd-perf-opt")
+endif()
 file(STRINGS "${SNESRECOMP_ROOT}/runner/src/desktop/host_clock.h" KDC_PRESENTATION_BUDGET_API
      REGEX "snes_host_clock_presentation_allowed" LIMIT_COUNT 1)
 if(NOT KDC_PRESENTATION_BUDGET_API)
@@ -272,6 +275,30 @@ elseif(KDC_APU_BOUNDARY_API)
 endif()
 snesrecomp_target_sdl(KirbyDreamCourseRecomp)
 snesrecomp_target_desktop_host(KirbyDreamCourseRecomp)
+if(NOT ANDROID)
+    target_sources(KirbyDreamCourseRecomp PRIVATE src/hd_gpu.c src/course_orbit_gpu.c)
+    add_executable(kdc_hd_gpu_fixture EXCLUDE_FROM_ALL tests/hd_tiles_test.c src/hd_gpu.c
+        "${SNESRECOMP_ROOT}/runner/src/snes/ws_shadow.c"
+        "${SNESRECOMP_ROOT}/runner/src/snes/ppu_legacy.c")
+    target_compile_definitions(kdc_hd_gpu_fixture PRIVATE KDC_TEST_GPU_HD=1)
+    add_executable(kdc_orbit_gpu_fixture EXCLUDE_FROM_ALL tests/course_orbit_render_test.c
+        src/course_camera.c src/course_geometry.c src/course_sprite_view.c src/hd_tile_source.c
+        src/hd_scaler.c src/course_checker.c src/course_terrain.c src/hd_image.c src/host_parallel.c
+        src/course_orbit.c src/course_hud.c src/course_orbit_gpu.c src/hd_gpu.c)
+    target_compile_definitions(kdc_orbit_gpu_fixture PRIVATE KDC_TEST_GPU_ORBIT=1)
+    if(NOT WIN32)
+        target_link_libraries(kdc_orbit_gpu_fixture PRIVATE Threads::Threads)
+    endif()
+    foreach(fixture IN ITEMS kdc_hd_gpu_fixture kdc_orbit_gpu_fixture)
+        target_sources(${fixture} PRIVATE "${SNESRECOMP_ROOT}/third_party/gl_core/gl_core_3_1.c")
+        target_include_directories(${fixture} PRIVATE src
+            "${SNESRECOMP_ROOT}/runner/src" "${SNESRECOMP_ROOT}/third_party/gl_core")
+        target_compile_options(${fixture} PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+        target_link_options(${fixture} PRIVATE -Wl,--gc-sections)
+        target_link_libraries(${fixture} PRIVATE OpenGL::GL)
+        snesrecomp_target_sdl(${fixture})
+    endforeach()
+endif()
 
 # The framework owns the host; games select and pin the shared launcher UI.
 include(FetchContent)

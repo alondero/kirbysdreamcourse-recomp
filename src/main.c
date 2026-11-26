@@ -39,10 +39,15 @@
 #include "host_paths.h"
 #include "hd_pack.h"
 #include "hd_textures.h"
+#ifndef __ANDROID__
+#include "hd_gpu.h"
+#include "course_orbit_raster.h"
+#endif
 #include "practice.h"
 #include "widescreen.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "snes/ppu.h"
 #include "snesrecomp_rom_identity.h"  /* generated from rom_identity.txt */
 
@@ -157,6 +162,22 @@ static int DrawHdFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
     return 1;
 }
 
+#ifndef __ANDROID__
+static struct PpuHdGpuFrame *BeginGpuHd(unsigned width, unsigned height, unsigned scale)
+{
+    static int orbit_gpu = -1, normal_gpu;
+    if (orbit_gpu < 0) {
+        const char *orbit = getenv("KDC_ORBIT_GPU"), *normal = getenv("KDC_HD_GPU");
+        orbit_gpu = orbit && strcmp(orbit, "1") == 0;
+        normal_gpu = !normal || strcmp(normal, "0") != 0;
+        if (orbit_gpu) KdcOrbitSetTerrainRaster(KdcOrbitGlTerrain);
+    }
+    if (!normal_gpu || KdcPracticeVisible())
+        return NULL;
+    return KdcHdGpuBegin(width, height, scale);
+}
+#endif
+
 static const SnesDesktopHostGame kGameHost = {
     .display_name        = "Kirby's Dream Course",
     .window_title        = "Kirby's Dream Course",
@@ -190,6 +211,10 @@ static const SnesDesktopHostGame kGameHost = {
     .draw_frame          = DrawFrame,
     .hd_scale            = KdcHdScale,
     .draw_hd_frame       = DrawHdFrame,
+#ifndef __ANDROID__
+    .begin_gpu_hd       = BeginGpuHd,
+    .draw_gpu_hd        = KdcHdGpuDraw,
+#endif
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
     .default_config_ini =

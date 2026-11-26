@@ -1,0 +1,521 @@
+diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
+index 55296b6..85b6ee7 100644
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -172,6 +172,7 @@ static void RequestScreenshot(void);
+ #ifndef __ANDROID__
+ void OpenGLRenderer_Create(struct RendererFuncs *funcs);
+ #include "opengl.h"   /* snesrecomp_opengl_set_vsync */
++#include "snes/ppu_hd_gpu.h"
+ #endif
+ 
+ /* ── Symbols the framework leaves to the host ─────────────────────────────── */
+@@ -686,6 +687,11 @@ static void RendererApply(int choice) {
+ }
+ 
+ static void HdBindForNextFrame(unsigned width, unsigned height);
++#ifndef __ANDROID__
++static PpuHdGpuFrame *g_gpu_hd;
++static bool g_framedump_active;
++static void BeginGpuHdCapture(void);
++#endif
+ 
+ static void PreparePpuFrame(void) {
+   int drawable_width = 0, drawable_height = 0;
+@@ -1298,8 +1304,18 @@ static SDL_HitTestResult HitTestCallback(SDL_Window *win, const SDL_Point *pt, v
+ static void CaptureSimulationFrame(unsigned number) {
+   PreparePpuFrame();
+   if (g_game->begin_sim_frame) g_game->begin_sim_frame(number);
++#ifndef __ANDROID__
++  BeginGpuHdCapture();
++#endif
+   if (g_rtl_game_info && g_rtl_game_info->draw_ppu_frame)
+     g_rtl_game_info->draw_ppu_frame();
++#ifndef __ANDROID__
++  if (g_ppu) {
++    /* A reset during capture can replace the presentation binding. */
++    if (g_gpu_hd != g_ppu->hdGpuFrame) g_gpu_hd = NULL;
++    g_ppu->hdGpuFrame = NULL;
++  }
++#endif
+   if (g_game->end_sim_frame) g_game->end_sim_frame(g_my_pixels, number);
+   if (g_game->publish_native_field) g_game->publish_native_field(g_my_pixels, number);
+ }
+@@ -1452,6 +1468,9 @@ static uint32_t g_hd_bind_frame;
+ static uint8_t *g_hd_native;
+ 
+ static void HdUnbind(void) {
++#ifndef __ANDROID__
++  g_gpu_hd = NULL;
++#endif
+   if (g_hd_bound_scale && g_ppu)
+     PpuBindMode7HdSurface(g_ppu, NULL, 0, 0, 0, 0, 0);
+   g_hd_bound_scale = 0;
+@@ -1498,7 +1517,35 @@ static int HdPresentScale(void) {
+   return (int)g_hd_bound_scale;
+ }
+ 
+-static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
++#ifndef __ANDROID__
++static void BeginGpuHdCapture(void) {
++  g_gpu_hd = NULL;
++  int scale = HdPresentScale();
++  if (scale <= 1 || g_config.output_method != kOutputMethod_OpenGL ||
++      snes_runahead_frames() || g_snes->disableRender || g_game->publish_native_field ||
++      /* Presets may take ownership of their input texture for frame history. */
++      (g_config.shader && *g_config.shader) ||
++      !g_game->begin_gpu_hd || !g_game->draw_gpu_hd)
++    return;
++  g_gpu_hd = g_game->begin_gpu_hd(g_snes_width, g_snes_height, scale);
++  g_ppu->hdGpuFrame = g_gpu_hd;
++}
++
++static bool GpuHdNeedsReadback(void) {
++  static int diagnostics = -1;
++  if (diagnostics < 0)
++    diagnostics = HostGetenv("SCREENSHOT") || HostGetenv("SCREENSHOT_DIR") ||
++        HostGetenv("PRESENT_LOG");
++  const uint32_t *pixels;
++  int w, h;
++  return diagnostics || g_framedump_active || (g_config.shader && *g_config.shader) ||
++      snes_osd_image(&pixels, &w, &h) ||
++      snes_osd_volume_image(&pixels, &w, &h);
++}
++#endif
++
++/* A nonzero return value names a completed, GPU-resident image. */
++static unsigned HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+   const int w = g_snes_width, h = g_snes_height;
+   const size_t native_pitch = (size_t)w * 4u;
+   bool hd_composed = g_game->draw_hd_frame &&
+@@ -1522,7 +1569,7 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+         memcpy(dst + (size_t)y * pitch, g_hd_surface + (size_t)y * hd_stride, row_bytes);
+     }
+     debug_server_note_composed_frame(g_hd_native, (unsigned)native_pitch, w, h);
+-    return;
++    return 0;
+   }
+   bool composed = g_game->draw_frame &&
+       g_game->draw_frame(g_hd_native, native_pitch, g_my_pixels, w, h,
+@@ -1532,6 +1579,10 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+                                    composed ? w : 0, composed ? h : 0);
+   if (!composed)
+     RtlWidescreenPresent(g_hd_native, native_pitch, g_my_pixels, w, h);
++#ifndef __ANDROID__
++  if (!composed && g_gpu_hd)
++    return g_game->draw_gpu_hd(g_gpu_hd, g_my_pixels, g_hd_surface);
++#endif
+   const size_t row_bytes = (size_t)w * (size_t)scale * 4u;
+   if (composed) {
+     /* Expand each native row once into ordinary memory, then write it to
+@@ -1550,11 +1601,12 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+       for (int sy = fits ? 0 : 1; sy < scale; sy++)
+         memcpy(first + (size_t)sy * pitch, line, row_bytes);
+     }
+-    return;
++    return 0;
+   }
+   for (int y = 0; y < h * scale; y++)
+     memcpy(dst + (size_t)y * pitch, (const uint8_t *)g_hd_surface + (size_t)y * row_bytes,
+            row_bytes);
++  return 0;
+ }
+ 
+ static void DrawPpuFrameWithPerf(void) {
+@@ -1597,10 +1649,21 @@ static void DrawPpuFrameWithPerf(void) {
+ #endif
+ 
+   profile_start = ProfileStart();
++  unsigned gpu_texture = 0;
+   if (render_scale > 1)
+-    HdDrawFrame(pixel_buffer, (size_t)pitch, render_scale);
++    gpu_texture = HdDrawFrame(pixel_buffer, (size_t)pitch, render_scale);
+   else
+     RtlDrawPpuFrame(pixel_buffer, pitch, g_ppu_render_flags);
++#ifndef __ANDROID__
++  if (gpu_texture && (GpuHdNeedsReadback()
++#if defined(SNESRECOMP_HOST_HAS_BLEND)
++      || blending
++#endif
++      )) {
++    snesrecomp_opengl_read_external(gpu_texture, pixel_buffer);
++    gpu_texture = 0;
++  }
++#endif
+ #if defined(SNESRECOMP_HOST_HAS_BLEND)
+   /* The shared blend keeps the UNBLENDED frame, so the mix never feeds back
+    * on itself, and the PPU's own renderBuffer stays pure for thumbnails.
+@@ -1658,6 +1721,19 @@ static void DrawPpuFrameWithPerf(void) {
+       g_frozen_h = rows;
+     }
+   }
++#ifndef __ANDROID__
++  if (gpu_texture) {
++    snes_osd_present_done();
++    ProfileEnd(kProfileCompose, profile_start);
++    profile_start = ProfileStart();
++    snesrecomp_opengl_present_external(gpu_texture);
++    ProfileEnd(kProfilePresent, profile_start);
++    RecordFrameTiming(g_present_frame);
++    return;
++  }
++#else
++  (void)gpu_texture;
++#endif
+   /* The OSD is rasterized for a ~3x window: half size on a native frame,
+    * full size on an HD frame of similar pixel density. */
+   ComposeOsd(pixel_buffer, pitch, g_snes_width * render_scale,
+@@ -3533,6 +3609,9 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+   const int start_paused = args.start_paused;
+   const char *script_file = args.script_file;
+   const char *framedump_dir = args.framedump_dir;
++#ifndef __ANDROID__
++  g_framedump_active = framedump_dir != NULL;
++#endif
+   const char *config_file = args.config_file;
+   if (!config_file) {
+     /* Anchor cwd to the binary's own directory FIRST. This is what makes an
+diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
+index 085d8bc..f1c6380 100644
+--- a/runner/src/desktop/host_main.h
++++ b/runner/src/desktop/host_main.h
+@@ -48,6 +48,7 @@ extern "C" {
+ #endif
+ 
+ struct RtlGameInfo;
++struct PpuHdGpuFrame;
+ struct SpcPlayer;
+ struct RecompLauncherCModProvider;
+ struct RecompLauncherCGameInfo;
+@@ -234,6 +235,11 @@ typedef struct SnesDesktopHostGame {
+    * ordinary draw_frame/PPU fallback. Guest state must remain unchanged. */
+   int (*draw_hd_frame)(uint8_t *dst, size_t pitch, const uint8_t *field,
+                        int width, int height, double alpha, unsigned scale);
++  /* Optional desktop GL compositor. Prepare may decline before rasterization.
++   * Draw returns a complete, display-sized RGBA8 texture owned by the title. */
++  struct PpuHdGpuFrame *(*begin_gpu_hd)(unsigned width, unsigned height, unsigned scale);
++  unsigned (*draw_gpu_hd)(const struct PpuHdGpuFrame *, const uint8_t *native,
++                          const uint32_t *cpu);
+   /* Bounded host fast-forward: 1 (default) or 2..3. Every guest frame and
+    * input tick still executes. Accelerated output is muted and discarded;
+    * SPC/DSP processing continues. Netplay bypasses this local pacing hook. */
+diff --git a/runner/src/desktop/opengl.c b/runner/src/desktop/opengl.c
+index e9063a7..a906c14 100644
+--- a/runner/src/desktop/opengl.c
++++ b/runner/src/desktop/opengl.c
+@@ -375,7 +375,12 @@ static void OpenGLRenderer_BeginDraw(int width, int height, uint8 **pixels, int
+   *pitch = width * 4;
+ }
+ 
+-static void OpenGLRenderer_EndDraw(void) {
++void snesrecomp_opengl_read_external(unsigned texture, uint8_t *pixels) {
++  glBindTexture(GL_TEXTURE_2D, texture);
++  glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, pixels);
++}
++
++static void OpenGLRenderer_Present(GlTextureWithSize *frame) {
+   int drawable_width, drawable_height;
+ 
+   snesrecomp_sdl_get_drawable_size(g_window, &drawable_width, &drawable_height);
+@@ -390,14 +395,7 @@ static void OpenGLRenderer_EndDraw(void) {
+   if (g_compute_viewport)
+     g_compute_viewport(g_draw_width, g_draw_height, drawable_width, drawable_height, &viewport);
+ 
+-  glBindTexture(GL_TEXTURE_2D, g_texture.gl_texture);
+-  if (g_draw_width == g_texture.width && g_draw_height == g_texture.height) {
+-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_draw_width, g_draw_height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, g_screen_buffer);
+-  } else {
+-    g_texture.width = g_draw_width;
+-    g_texture.height = g_draw_height;
+-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_draw_width, g_draw_height, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, g_screen_buffer);
+-  }
++  glBindTexture(GL_TEXTURE_2D, frame->gl_texture);
+ 
+   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
+@@ -411,7 +409,7 @@ static void OpenGLRenderer_EndDraw(void) {
+     glBindVertexArray(g_VAO);
+     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+   } else {
+-    GlslShader_Render(g_glsl_shader, &g_texture, viewport.x, viewport.y,
++    GlslShader_Render(g_glsl_shader, frame, viewport.x, viewport.y,
+                       viewport.width, viewport.height);
+   }
+ 
+@@ -429,6 +427,26 @@ static void OpenGLRenderer_EndDraw(void) {
+   SDL_GL_SwapWindow(g_window);
+ }
+ 
++static void OpenGLRenderer_EndDraw(void) {
++  glBindTexture(GL_TEXTURE_2D, g_texture.gl_texture);
++  if (g_draw_width == g_texture.width && g_draw_height == g_texture.height) {
++    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_draw_width, g_draw_height, GL_BGRA,
++                    GL_UNSIGNED_INT_8_8_8_8_REV, g_screen_buffer);
++  } else {
++    g_texture.width = g_draw_width;
++    g_texture.height = g_draw_height;
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_draw_width, g_draw_height, 0, GL_BGRA,
++                 GL_UNSIGNED_INT_8_8_8_8_REV, g_screen_buffer);
++  }
++  OpenGLRenderer_Present(&g_texture);
++}
++
++void snesrecomp_opengl_present_external(unsigned texture) {
++  GlTextureWithSize frame = {.gl_texture = texture, .width = g_draw_width,
++                             .height = g_draw_height};
++  OpenGLRenderer_Present(&frame);
++}
++
+ static const struct RendererFuncs kOpenGLRendererFuncs = {
+   &OpenGLRenderer_Init,
+   &OpenGLRenderer_Destroy,
+diff --git a/runner/src/desktop/opengl.h b/runner/src/desktop/opengl.h
+index e7ed472..e07c6c3 100644
+--- a/runner/src/desktop/opengl.h
++++ b/runner/src/desktop/opengl.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <stdint.h>
+ #include "display_aspect.h"
+ 
+ /* The shared desktop OpenGL presenter (desktop/opengl.c). util.h declares
+@@ -24,6 +25,8 @@ void snesrecomp_opengl_set_viewport(void (*compute)(int, int, int, int,
+ 
+ /* Capture the next fully composited OpenGL frame to screenshots/*.bmp. */
+ void OpenGLRenderer_RequestScreenshot(void);
++void snesrecomp_opengl_present_external(unsigned texture);
++void snesrecomp_opengl_read_external(unsigned texture, uint8_t *pixels);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index 2ea1e2d..878c00d 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -70,6 +70,8 @@ void ppu_sec_read(double *eval, double *line, double *bg, double *spr,
+ #endif
+ 
+ static void PpuDrawWholeLine(Ppu *ppu, uint y);
++#include "ppu_hd_gpu.h"
++
+ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line);
+ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line);
+ static void PpuHdTilesBeginLine(Ppu *ppu);
+@@ -1144,6 +1146,8 @@ typedef struct PpuHdTileRecord {
+  * per-subpixel priority resolution where the outcome is already known. */
+ typedef struct PpuHdImage {
+   uint64_t opaque, clear, same;
++  uint64_t atlas_epoch;
++  unsigned atlas_slot;
+   uint32_t rgba;
+   uint8_t indices[];
+ } PpuHdImage;
+@@ -1679,6 +1683,8 @@ static uint16_t PpuHdLookup(Ppu *ppu, unsigned source,
+       if (!image) {
+         image = malloc(sizeof(*image) + samples);
+         if (image && t->fill(&q, image->indices, t->context)) {
++          image->atlas_epoch = 0;
++          image->atlas_slot = 0;
+           image->rgba = 0;
+           PpuHdSummarise(&q, image);
+         } else {
+@@ -3280,6 +3286,7 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
+    * the native scanout or leaving an old scene visible in this surface. */
+   if (!ppu->renderBuffer || width != 256u + 2u * ppu->extraLeftRight ||
+       ppu->renderPitch < width * sizeof(uint32_t)) {
++    if (ppu->hdGpuFrame) ppu->hdGpuFrame->cpu_rows[line - 1] = 1;
+     for (unsigned sy = 0; sy < scale; ++sy)
+       memset(first + sy * surface->pitch, 0, width * scale * sizeof(uint32_t));
+     return;
+@@ -3295,6 +3302,10 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
+   for (unsigned source = 0; hd && source < kPpuOverlaySource_Count; ++source)
+     if (PpuOverlayActiveOnLine(ppu, (PpuOverlaySource)source, (int)line - 1))
+       hd = false;
++  if (ppu->hdGpuFrame) {
++    if (!hd) return; /* The GPU seeds this row straight from native scanout. */
++    ppu->hdGpuFrame->cpu_rows[line - 1] = 1;
++  }
+   if (!hd) {
+     const uint32_t *native = (const uint32_t *)(ppu->renderBuffer +
+         (line - 1) * ppu->renderPitch);
+@@ -3375,7 +3386,7 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
+  * authoritative, at the cost of native pixels where they occur. */
+ typedef struct PpuHdCandidate {
+   const PpuHdTileRecord *rec;
+-  const PpuHdImage *image;  /* NULL: sample the native character */
++  PpuHdImage *image;  /* NULL: sample the native character */
+   const uint8_t *line;      /* this subrow of the texel, NULL when native */
+   int step;                 /* -1 when flipped horizontally */
+   unsigned native_index;
+@@ -3514,6 +3525,56 @@ static uint32_t PpuHdPaintScreen(Ppu *p, const PpuHdCandidate *c, unsigned count
+   return result;
+ }
+ 
++/* Wire format shared with the integer fragment shader. Preserve source order
++ * for equal-priority RGBA samples and keep native priority values verbatim. */
++static bool PpuHdCapturePixel(PpuHdGpuFrame *frame, unsigned j, unsigned line,
++    const Ppu *ppu, size_t i, PpuHdCandidate c[2][kPpuHdSources], const unsigned counts[2],
++    const unsigned kind[2], const unsigned win[2],
++    uint16_t main, uint16_t sub, bool inside, bool rgba) {
++  unsigned count[2];
++  for (unsigned screen = 0; screen < 2; ++screen)
++    count[screen] = rgba || kind[screen] == kPpuHdResolveFull ? counts[screen] : 1;
++  const size_t start = frame->length;
++  if (frame->capacity - start < 2 + 2 * (count[0] + count[1])) return false;
++  uint32_t *dst = frame->words + start;
++  unsigned override = ppu->extraObjectCount ? ppu->objectColors[i] : 0;
++  dst[0] = main | (uint32_t)sub << 16;
++  dst[1] = override | (unsigned)rgba << 16 |
++      (unsigned)PpuHdWindowCondition(PPU_clipMode(ppu), inside) << 17 |
++      (unsigned)!PpuHdWindowCondition(PPU_preventMathMode(ppu), inside) << 18 |
++      count[0] << 19 | count[1] << 23;
++  dst += 2;
++  for (unsigned screen = 0; screen < 2; ++screen) {
++    if (!rgba && kind[screen] == kPpuHdResolveNative) {
++      unsigned native = screen ? sub : main;
++      *dst++ = (native & 0xff00) | ((native & 255) << 16);
++      *dst++ = 0;
++      continue;
++    }
++    for (unsigned k = 0; k < count[screen]; ++k) {
++      const PpuHdCandidate *candidate =
++          &c[screen][!rgba && kind[screen] == kPpuHdResolveWinner ? win[screen] : k];
++      const PpuHdTileRecord *r = candidate->rec;
++      PpuHdImage *image = candidate->image;
++      unsigned info = 0;
++      if (image) {
++        if (image->atlas_epoch != frame->atlas_epoch) {
++          image->atlas_slot = frame->add_tile(image->indices, image->rgba);
++          image->atlas_epoch = frame->atlas_epoch;
++        }
++        if (!image->atlas_slot) return false;
++        info = image->atlas_slot << 9 | image->rgba << 8 |
++            (r->flags & 3) << 6 | r->row << 3 | r->col;
++      }
++      *dst++ = r->z | candidate->native_index << 16;
++      *dst++ = info;
++    }
++  }
++  frame->offsets[(size_t)(line - 1) * frame->width + j] = (uint32_t)start;
++  frame->length = (size_t)(dst - frame->words);
++  return true;
++}
++
+ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
+   struct PpuHdTiles *t = ppu->hdTiles;
+   const PpuMode7HdSurface *surface = &ppu->mode7Hd;
+@@ -3566,21 +3627,34 @@ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
+   const uint32_t *native = (const uint32_t *)(ppu->renderBuffer +
+       (line - 1) * ppu->renderPitch);
+   uint8_t *first = (uint8_t *)surface->pixels + (line - 1) * scale * surface->pitch;
+-  /* Seed a contiguous nearest-scaled row, then copy it vertically. Most
+-   * native pixels are unchanged; avoid four interleaved row writes for each
+-   * of them in the candidate loop below. */
+-  uint32_t *base = (uint32_t *)first;
+-  if (scale == 4) {
+-    for (unsigned j = 0; j < width; ++j) {
+-      const uint32_t color = native[j];
+-      base[j * 4] = base[j * 4 + 1] = base[j * 4 + 2] = base[j * 4 + 3] = color;
++  PpuHdGpuFrame *gpu = ppu->hdGpuFrame;
++  const size_t gpu_start = gpu ? gpu->length : 0;
++  const PpuHdTileStats stats = t->stats;
++  if (gpu) {
++    uint16_t *palette = gpu->palette[line - 1];
++    memcpy(palette, ppu->cgram, sizeof(ppu->cgram));
++    palette[256] = ppu->fixedColor;
++    palette[257] = PPU_mathEnabled(ppu) | (unsigned)PPU_brightness(ppu) << 8 |
++        (unsigned)PPU_addSubscreen(ppu) << 12 | (unsigned)PPU_halfColor(ppu) << 13 |
++        (unsigned)PPU_subtractColor(ppu) << 14;
++  }
++draw_line:
++  if (!gpu) {
++    /* Seed a contiguous nearest-scaled row, then copy it vertically.
++     * OpenGL samples the native field directly. */
++    uint32_t *base = (uint32_t *)first;
++    if (scale == 4) {
++      for (unsigned j = 0; j < width; ++j) {
++        const uint32_t color = native[j];
++        base[j * 4] = base[j * 4 + 1] = base[j * 4 + 2] = base[j * 4 + 3] = color;
++      }
++    } else {
++      for (unsigned j = 0; j < width; ++j)
++        for (unsigned sx = 0; sx < scale; ++sx) base[j * scale + sx] = native[j];
+     }
+-  } else {
+-    for (unsigned j = 0; j < width; ++j)
+-      for (unsigned sx = 0; sx < scale; ++sx) base[j * scale + sx] = native[j];
++    for (unsigned sy = 1; sy < scale; ++sy)
++      memcpy(first + sy * surface->pitch, first, width * scale * sizeof(uint32_t));
+   }
+-  for (unsigned sy = 1; sy < scale; ++sy)
+-    memcpy(first + sy * surface->pitch, first, width * scale * sizeof(uint32_t));
+   const uint16_t stamp = t->stamp;
+   for (unsigned j = 0; j < width; ++j) {
+     const int x = (int)j - (int)ppu->extraLeftRight;
+@@ -3640,6 +3714,18 @@ static bool PpuDrawTileHdLine(Ppu *ppu, unsigned line) {
+       }
+       if (valid) {
+         const bool inside = (visibility[i] & 16) != 0;
++        if (gpu) {
++          if (PpuHdCapturePixel(gpu, j, line, ppu, i, cand, count, kind, win,
++                                main, sub, inside, rgba))
++            continue;
++          /* Roll back this whole row. The rest of the GPU field is usable. */
++          memset(gpu->offsets + (size_t)(line - 1) * width, 0, width * sizeof(uint32_t));
++          gpu->length = gpu_start;
++          gpu->cpu_rows[line - 1] = 1;
++          gpu = NULL;
++          t->stats = stats;
++          goto draw_line;
++        }
+         /* Colour depends only on the resolved pair within one native pixel,
+          * and most subpixels resolve to the validated native pair. */
+         uint16_t last_m = main, last_b = sub;
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index 425a5fc..3d737ef 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -77,6 +77,7 @@ typedef struct PpuHdTileStats {
+   uint32_t cached_tiles;
+ } PpuHdTileStats;
+ struct PpuHdTiles;
++struct PpuHdGpuFrame;
+ 
+ typedef struct BgLayer {
+   uint16_t xhScroll;
+@@ -427,6 +428,7 @@ struct Ppu {
+   PpuMode7HdSurface mode7Hd;
+   /* Optional HD tile source and per-line records; owned by the PPU. */
+   struct PpuHdTiles *hdTiles;
++  struct PpuHdGpuFrame *hdGpuFrame; /* scoped to picture capture by the host */
+   /* Optional host picture memory. Drawing only: CPU ports and save states
+    * always use vram. The caller owns 32768 words until unbound. */
+   const uint16_t *renderVram;
+diff --git a/runner/src/snes/ppu_hd_gpu.h b/runner/src/snes/ppu_hd_gpu.h
+new file mode 100644
+index 0000000..13e0aeb
+--- /dev/null
++++ b/runner/src/snes/ppu_hd_gpu.h
+@@ -0,0 +1,22 @@
++#ifndef SNES_PPU_HD_GPU_H
++#define SNES_PPU_HD_GPU_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++/* Host-owned, transient output of one raster. All row indices are zero-based.
++ * An offset of zero uses the native pixel. A CPU row overrides the GPU result
++ * with the existing Mode 7 renderer or a line whose command buffer filled. */
++typedef struct PpuHdGpuFrame {
++  unsigned width, height, scale;
++  uint32_t *offsets, *words;
++  size_t length, capacity;
++  uint16_t (*palette)[258]; /* CGRAM, fixed colour, brightness and math flags */
++  uint8_t *cpu_rows;
++  uint64_t atlas_epoch;
++  /* Returns a one-based atlas slot, or zero if the image cannot be stored. */
++  unsigned (*add_tile)(const uint8_t *image, bool rgba);
++} PpuHdGpuFrame;
++
++#endif

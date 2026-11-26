@@ -6,9 +6,32 @@
  * the HD path. Explicit scenes then check that transparent HD subpixels
  * reveal the layer below, that opaque HD subpixels grow over natively
  * transparent pixels, and that unrecorded layers fall back to native. */
+#ifdef KDC_TEST_GPU_HD
+#undef SNESRECOMP_ENABLE_MODS
+#endif
 #include "snes/ppu.c"
 #include <assert.h>
 #include <stdio.h>
+#ifdef KDC_TEST_GPU_HD
+#include "gl_fixture.h"
+#include "hd_gpu.h"
+
+static uint32_t gpu_pixels[224 * 4 * 256 * 4];
+static unsigned gpu_fields, gpu_records;
+
+static void InitGpu(void)
+{
+    OpenGlFixture(3, 3);
+}
+
+static void ShutdownGpu(void)
+{
+    assert(gpu_fields && gpu_records);
+    fprintf(stderr, "Compared %u GPU fields (%u record words) against CPU\n",
+            gpu_fields, gpu_records);
+    CloseGlFixture();
+}
+#endif
 
 Snes *g_snes;
 int snes_frame_counter;
@@ -65,8 +88,41 @@ static Ppu *NewPpu(unsigned scale, PpuHdTileFill *fill)
 
 static void Render(Ppu *p)
 {
+#ifdef KDC_TEST_GPU_HD
+    /* Consume exactly the records that the CPU compositor used on this line.
+     * Keep its output and statistics for the existing assertions. */
+    const unsigned scale = p->mode7Hd.scale;
+    PpuHdGpuFrame *gpu = KdcHdGpuBegin(kWidth, kHeight, scale);
+    assert(gpu);
+#endif
     ppu_drawCapturedLine(p, 0, true);
-    for (int line = 1; line <= kHeight; ++line) ppu_drawCapturedLine(p, line, true);
+    for (int line = 1; line <= kHeight; ++line) {
+        ppu_drawCapturedLine(p, line, true);
+#ifdef KDC_TEST_GPU_HD
+        PpuHdTileStats stats;
+        if (p->hdTiles) stats = p->hdTiles->stats;
+        p->hdGpuFrame = gpu;
+        if (!PpuDrawTileHdLine(p, (unsigned)line)) PpuDrawMode7HdLine(p, (unsigned)line);
+        p->hdGpuFrame = NULL;
+        if (p->hdTiles) p->hdTiles->stats = stats;
+#endif
+    }
+#ifdef KDC_TEST_GPU_HD
+    assert(KdcHdGpuDraw(gpu, (const uint8_t *)native, hd));
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, gpu_pixels);
+    assert(glGetError() == GL_NO_ERROR);
+    ++gpu_fields;
+    gpu_records += (unsigned)gpu->length - 1;
+    for (unsigned y = 0; y < kHeight * scale; ++y) {
+        for (unsigned x = 0; x < kWidth * scale; ++x) {
+            size_t index = (size_t)y * kWidth * scale + x;
+            if (gpu_pixels[index] == hd[index]) continue;
+            fprintf(stderr, "GPU mismatch at %u,%u (scale %u): %08x != %08x\n",
+                    x, y, scale, gpu_pixels[index], hd[index]);
+            assert(0);
+        }
+    }
+#endif
 }
 
 static void AssertNearest(unsigned scale)
@@ -702,6 +758,44 @@ static void TestScanlinePaletteIdentity(unsigned bpp)
     ppu_free(p);
 }
 
+#ifdef KDC_TEST_GPU_HD
+static bool AlphaImage(const PpuHdTileQuery *q, uint32_t *image)
+{
+    if (q->layer != 0 || q->address != 0x2010) return false;
+    const unsigned side = 8 * q->scale;
+    for (unsigned y = 0; y < side; ++y)
+        for (unsigned x = 0; x < side; ++x)
+            image[y * side + x] = (uint32_t)((x + y) % 4 * 85) << 24 | 0x487ac1;
+    return true;
+}
+
+static void TestRgbaWindowAndMath(void)
+{
+    Ppu *p = NewPpu(4, Recolour);
+    RandomScene(p);
+    for (unsigned i = 0; i < 16; ++i) p->vram[0x2010 + i] = i < 8 ? 0xff : 0;
+    for (unsigned i = 0; i < 0x400; ++i)
+        p->vram[i] = (uint16_t)(1 | ((i & 3) << 14));
+    p->windowsel = 0x00220002;  /* Color, OBJ and BG1 window 1. */
+    p->window1left = 45;
+    p->window1right = 181;
+    p->screenWindowed[0] = 0x11;
+    p->screenWindowed[1] = 0x10;
+    p->screenEnabled[1] |= 0x10;
+    assert(PpuSetHdRgbaSource(p, AlphaImage));
+    for (unsigned n = 0; n < 3; ++n) {
+        p->inidisp = (uint8_t)(15 - n * 5);
+        p->cgadsub = n ? 0xff : 0x7f;
+        p->cgwsel = n == 0 ? 0x42 : n == 1 ? 0x92 : 0x60;
+        Render(p);
+    }
+    PpuHdTileStats stats;
+    PpuGetHdTileStats(p, &stats);
+    assert(stats.replaced_pixels > 0);
+    ppu_free(p);
+}
+#endif
+
 static void TestPaletteEpochWrap(void)
 {
     Ppu *p = SingleCharacterScene();
@@ -775,6 +869,9 @@ static void TestBackgroundSampleHdLines(void)
 
 int main(void)
 {
+#ifdef KDC_TEST_GPU_HD
+    InitGpu();
+#endif
     TestUnrelatedScanlinePalettes(4);
     TestUnrelatedScanlinePalettes(2);
     TestScanlinePaletteIdentity(4);
@@ -796,6 +893,10 @@ int main(void)
     TestLinePolicy();
     TestUnsupportedLinesStayNative();
     TestDisableRestoresMode7Surface();
+#ifdef KDC_TEST_GPU_HD
+    TestRgbaWindowAndMath();
+    ShutdownGpu();
+#endif
     puts("hd tiles ok");
     return 0;
 }

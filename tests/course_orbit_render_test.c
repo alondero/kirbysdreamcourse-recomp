@@ -13,6 +13,47 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef KDC_TEST_GPU_ORBIT
+#include "gl_fixture.h"
+#include "course_orbit_raster.h"
+
+static unsigned compared_fields;
+static uint8_t gpu_output[kPpuBufWidth * 4 * 4 * 240 * 4];
+
+static bool RenderGpuTerrain(const KdcOrbitFace *faces, unsigned count,
+    const KdcOrbitTexture *texture, int samples, bool smooth,
+    uint8_t *pixels, size_t pitch, float *depth, int width, int height)
+{
+    assert(KdcOrbitGlTerrain(faces, count, texture, samples, smooth,
+        pixels, pitch, depth, width, height));
+    return true;
+}
+
+static int DrawHdDifferential(uint8_t *dst, size_t pitch, const uint8_t *field,
+                              int w, int h, double alpha, unsigned scale)
+{
+    int drew = KdcOrbitDrawHd(dst, pitch, field, w, h, alpha, scale);
+    if (!drew) return drew;
+    const size_t bytes = pitch * (size_t)h * scale;
+    assert(bytes <= sizeof(gpu_output));
+    memcpy(gpu_output, dst, bytes);
+    KdcOrbitSetTerrainRaster(RenderGpuTerrain);
+    assert(KdcOrbitDrawHd(gpu_output, pitch, field, w, h, alpha, scale));
+    KdcOrbitSetTerrainRaster(NULL);
+    if (memcmp(dst, gpu_output, bytes)) {
+        for (size_t i = 0; i < bytes; ++i) {
+            if (dst[i] == gpu_output[i]) continue;
+            fprintf(stderr, "Orbit GPU mismatch at %zu,%zu (scale %u): %02x != %02x\n",
+                    i % pitch / 4, i / pitch, scale, gpu_output[i], dst[i]);
+            assert(0);
+        }
+    }
+    ++compared_fields;
+    return drew;
+}
+#define KdcOrbitDrawHd DrawHdDifferential
+#endif
+
 enum { width = 256, height = 224, padding = 4, stride = width + padding };
 static uint8_t rom[0x100000], saved_ram[0x20000];
 uint8_t g_ram[0x20000];
@@ -773,6 +814,9 @@ static void HdEdgeHud(void)
 
 int main(void)
 {
+#ifdef KDC_TEST_GPU_ORBIT
+    OpenGlFixture(3, 3);
+#endif
     cart.rom = rom;
     cart.romImageSize = sizeof(rom);
     snes.cart = &cart;
@@ -1020,5 +1064,11 @@ int main(void)
     Draw();
     assert(CountColor(pixels, 0xffff0000, &other_x, &other_y) == 64);
     assert(other_x == red_x && other_y == red_y);
-    return Scenarios();
+    const int result = Scenarios();
+#ifdef KDC_TEST_GPU_ORBIT
+    assert(compared_fields);
+    fprintf(stderr, "Compared %u GPU orbit fields against CPU\n", compared_fields);
+    CloseGlFixture();
+#endif
+    return result;
 }
