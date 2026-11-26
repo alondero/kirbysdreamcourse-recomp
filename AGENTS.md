@@ -6,4 +6,6 @@ The target is the supplied Kirby's Dream Course (USA) ROM. Verify the exact hash
 
 For behavior changes, reproduce with deterministic input and compare against a pinned reference emulator where practical. Report the first divergence and untested paths. Keep hardware behavior separate from game-specific assumptions and preserve the interpreter fallback until evidence supports translation.
 
+Gameplay verification: for changes visible in the running game, build this worktree, run a scenario that reaches the affected state, and inspect the relevant screenshot or state checks. For launcher changes, use the normal desktop entry point. See [gameplay verification](docs/gameplay-verification.md) for both workflows.
+
 The architecture is a plan, not proof that dependencies or commands work. Inspect the chosen upstream revision and licenses before integration; record exact pins and verified build/test commands when established.
