@@ -163,18 +163,36 @@ static int DrawHdFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
 }
 
 #ifndef __ANDROID__
+static int OrbitGpuEnabled(void)
+{
+    static int orbit_gpu = -1;
+    if (orbit_gpu < 0) {
+        const char *orbit = getenv("KDC_ORBIT_GPU");
+        orbit_gpu = !orbit || strcmp(orbit, "0") != 0;
+        if (orbit_gpu) KdcOrbitSetGpuCompositor(KdcOrbitGlBegin, KdcOrbitGlCompose);
+    }
+    return orbit_gpu;
+}
+
 static struct PpuHdGpuFrame *BeginGpuHd(unsigned width, unsigned height, unsigned scale)
 {
-    static int orbit_gpu = -1, normal_gpu;
-    if (orbit_gpu < 0) {
-        const char *orbit = getenv("KDC_ORBIT_GPU"), *normal = getenv("KDC_HD_GPU");
-        orbit_gpu = orbit && strcmp(orbit, "1") == 0;
+    static int normal_gpu = -1;
+    if (normal_gpu < 0) {
+        const char *normal = getenv("KDC_HD_GPU");
         normal_gpu = !normal || strcmp(normal, "0") != 0;
-        if (orbit_gpu) KdcOrbitSetTerrainRaster(KdcOrbitGlTerrain);
+        if (OrbitGpuEnabled()) KdcOrbitGlPrewarm((int)(width * scale), (int)(height * scale));
     }
     if (!normal_gpu || KdcPracticeVisible())
         return NULL;
     return KdcHdGpuBegin(width, height, scale);
+}
+
+static unsigned DrawGpuHdFrame(const uint8_t *field, int width, int height,
+                               double alpha, unsigned scale)
+{
+    if (!OrbitGpuEnabled() || KdcPracticeVisible())
+        return 0;
+    return KdcOrbitDrawHdGpu(field, width, height, alpha, scale);
 }
 #endif
 
@@ -214,6 +232,7 @@ static const SnesDesktopHostGame kGameHost = {
 #ifndef __ANDROID__
     .begin_gpu_hd       = BeginGpuHd,
     .draw_gpu_hd        = KdcHdGpuDraw,
+    .draw_gpu_hd_frame  = DrawGpuHdFrame,
 #endif
     /* Match SNES sprite evaluation by default; users may override this in
      * their existing config.ini. Other values mirror the framework template. */
