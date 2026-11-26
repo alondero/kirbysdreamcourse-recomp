@@ -27,7 +27,7 @@ the simulation deadline and limits presentation work while polling events and
 delivering input once per guest frame. It does not batch hidden guest frames.
 Manual turbo, unpaced diagnostics and netplay use their existing paths.
 The feature requires the guarded APU clock flags used by release defaults and
-`play_experimental.ps1`; explicit legacy timing overrides disable it.
+`play.ps1`; explicit legacy timing overrides disable it.
 
 Accelerated output is muted under the APU mutex. The SPC and DSP continue
 running; `dsp_trimSamples` discards queued output without resetting their

@@ -330,7 +330,7 @@ class CoursePackRuntimeTest(unittest.TestCase):
         self.assertIn('saves/custom/save.srm', files)
         self.assertNotEqual(files['saves/custom/save.srm'], seeded)
 
-        # 2. tools/play_experimental.ps1 run from a temporary project root (so
+        # 2. tools/play.ps1 run from a temporary project root (so
         #    it never touches the checkout's local/dev-play) must preserve
         #    drop-in catalog discovery for pack-2p: while leaving install saves
         #    untouched, and must not pass --course-pack-dir for ordinary
@@ -340,7 +340,7 @@ class CoursePackRuntimeTest(unittest.TestCase):
                 proj_root = Path(proj)
                 tools_dir = proj_root / 'tools'
                 tools_dir.mkdir()
-                shutil.copy2(self.root / 'tools/play_experimental.ps1', tools_dir / 'play_experimental.ps1')
+                shutil.copy2(self.root / 'tools/play.ps1', tools_dir / 'play.ps1')
                 shutil.copy2(self.root / 'tools/invoke_native.ps1', tools_dir / 'invoke_native.ps1')
                 install_dir = proj_root / 'install'
                 install_dir.mkdir()
@@ -355,7 +355,7 @@ class CoursePackRuntimeTest(unittest.TestCase):
                 env.update(SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
                 res = subprocess.run([
                     'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                    '-File', str(tools_dir / 'play_experimental.ps1'),
+                    '-File', str(tools_dir / 'play.ps1'),
                     '-Rom', str(self.rom),
                     '-Executable', str(inst_exe),
                     '-DevHole', 'pack-2p:gdc:1:1',
@@ -397,7 +397,7 @@ class CoursePackRuntimeTest(unittest.TestCase):
                                                 capture_output=True).returncode, 2)
                 res_norm = subprocess.run([
                     'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                    '-File', str(tools_dir / 'play_experimental.ps1'),
+                    '-File', str(tools_dir / 'play.ps1'),
                     '-Rom', str(self.rom),
                     '-Executable', str(legacy_exe),
                     '-DevHole', 'normal:1:1',

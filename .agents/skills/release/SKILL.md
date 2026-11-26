@@ -37,7 +37,7 @@ git rev-parse 'origin/main^{commit}'
 Use the requested commit, or the fetched `origin/main` commit if none is given.
 Pin its full SHA for every later step. Do not silently release uncommitted
 work or select the last merge commit: this project also uses squash merges.
-Use a requested version such as `v0.1.2-experimental`; otherwise propose the
+Use a requested version such as `v0.1.2`; otherwise propose the
 next version from reachable published tags. Resolve an ambiguous version
 while continuing preparation. Never move an existing tag.
 
@@ -87,7 +87,7 @@ Draft actual UTF-8 Markdown under ignored `local/releases/` using
 Replace every placeholder, use actual newlines, and link documents at the
 release tag. State the package type, supported ROM, setup, controls, observed
 coverage, first known divergence and untested paths. Distinguish the GitHub
-prerelease flag from prose such as "experimental quality".
+prerelease flag from release-note prose describing pre-release status.
 
 ## 3. Build, package and test before tagging
 
@@ -160,8 +160,8 @@ Test the extracted ZIP without developer tools or a generation step. Verify
 the ROM hash before ROM-dependent work, exercise direct launch with the actual
 release timing defaults in native and fallback modes, and check wrong-ROM
 rejection. The packaged smoke checks above satisfy this baseline when they pass.
-Test audio, input, settings and persistence interactively when practical; an
-experimental release need not wait for unavailable interactive checks. Replay
+Test audio, input, settings and persistence interactively when practical; a
+pre-release need not wait for unavailable interactive checks. Replay
 deterministic scenarios against the pinned reference where practical. Record
 the first known divergence and accurately report untested paths in the notes.
 
@@ -195,7 +195,7 @@ it in waits of at most 60 seconds so progress remains visible. The expected
 assets are `kirbysdreamcourse-recomp-android-arm64.apk`, `kirbysdreamcourse-recomp-windows-x64.zip` and
 `kirbysdreamcourse-recomp-linux-x64.zip`. Both platform jobs must pass and agree
 on commit/version before publishing. Keep prerelease true for the current
-experimental state unless the user requests otherwise.
+pre-release state unless the user requests otherwise.
 
 The workflow creates an initial notes body and a Windows, Linux & Android title. Replace
 the body with the complete prepared UTF-8 notes once the build has passed:
@@ -217,7 +217,7 @@ tested local file. Downloads use a temporary directory, without extraction.
 It does not certify provenance or gameplay; those belong to step 3.
 
 For an intended stable/latest release, also check GitHub's `/releases/latest`
-points at this version. Experimental releases need not be latest.
+points at this version. Pre-releases need not be latest.
 Report the URL, commit, package type, asset, checksum, checks and remaining
 gaps. On failure, report any tag/release already created and the failing step;
 do not rebuild and overwrite an uploaded asset silently.

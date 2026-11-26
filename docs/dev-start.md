@@ -3,7 +3,7 @@
 For the controller-operated game menu, see [hole practice](practice.md). Its
 save isolation is automatic; the developer CLI behavior below is unchanged.
 
-Build with `tools/setup.ps1`, then launch with `tools/play_experimental.ps1 -DevHole normal:3:7`. This is an opt-in testing shortcut. The original menu flow remains the default.
+Build with `tools/setup.ps1`, then launch with `tools/play.ps1 -DevHole normal:3:7`. This is an opt-in testing shortcut. The original menu flow remains the default.
 
 The first developer launch seeds missing settings from the source executable,
 including HD textures, smooth presentation, HUD placement, view aspect and
@@ -30,9 +30,9 @@ The demo selections come from the four attract records referenced at `$83DB10`: 
 ## Invocation and saves
 
 ```powershell
-./tools/play_experimental.ps1 -DevHole extra:3:7
-./tools/play_experimental.ps1 -DevHole map:160 -DevTwoPlayer
-./tools/play_experimental.ps1 -DevHoleList
+./tools/play.ps1 -DevHole extra:3:7
+./tools/play.ps1 -DevHole map:160 -DevTwoPlayer
+./tools/play.ps1 -DevHoleList
 ```
 
 `-Executable` and `-Rom` retain their existing meanings. `-Fallback` selects interpreter execution, and `-CoursePack PATH` loads an external IPS pack. The shortcut bypasses the startup launcher, copies the executable and launcher resources into `local/dev-play`, and uses that directory's saves and settings (passing `--course-pack-dir` from the selected install only for `-DevHole pack:*` and `pack-2p:*`). Existing controls/settings are copied on its first launch when available. Configure both controller seats via Ctrl+L for multiplayer. Ctrl+R resets and starts on the requested hole again. Loading a save state disarms the pending shortcut; it does not replace the restored game with a new hole.

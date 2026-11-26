@@ -1,6 +1,6 @@
 # Architecture plan
 
-Status: proposed, 2026-10-28. The experimental native-dispatch and interpreter modes complete recorded first and second courses, reload their saves, and reach course three; known divergences and incomplete gates are recorded in [docs/compatibility.md](docs/compatibility.md). Research and source links: [docs/research.md](docs/research.md). Decisions below remain hypotheses until the gates pass.
+Status: pre-release (initial plan 2026-10-28). The native-dispatch and interpreter modes complete recorded first and second courses, reload their saves, and reach course three; known divergences and incomplete gates are recorded in [docs/compatibility.md](docs/compatibility.md). Research and source links: [docs/research.md](docs/research.md). Decisions below remain hypotheses until the gates pass.
 
 ## Goal and scope
 

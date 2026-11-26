@@ -356,6 +356,12 @@ class WorkflowPublishTests(unittest.TestCase):
                                         env=environment, capture_output=True, encoding="utf-8")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
+                notes = (Path(temporary) / "dist/release-notes.md").read_text(encoding="utf-8")
+                if prerelease == "true":
+                    self.assertTrue(notes.startswith("Pre-release Windows x64, Linux x64 and Android arm64 builds from "))
+                else:
+                    self.assertTrue(notes.startswith("Windows x64, Linux x64 and Android arm64 builds from "))
+                    self.assertNotIn("Pre-release", notes)
 
     def test_publish_title_matches_the_documented_title(self):
         script = "\n".join(self.release_script())

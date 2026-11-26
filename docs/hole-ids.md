@@ -1,6 +1,6 @@
 # Hole ID reference
 
-These decimal IDs index the supported USA ROM map tables. Course and hole numbers are one-based; use the selector with `tools/play_experimental.ps1 -DevHole`. The table is descriptive metadata, not extracted game data.
+These decimal IDs index the supported USA ROM map tables. Course and hole numbers are one-based; use the selector with `tools/play.ps1 -DevHole`. The table is descriptive metadata, not extracted game data.
 
 The four attract demo selectors reuse IDs 0, 42, 44 and 77. Demo Play IDs 160-179 are separate layouts: the numbering follows [map ID research](https://wikiwiki.jp/taslabo/KirbysDreamCourseTricks) and the 8/8/4 layout in the [map archive](https://vgmaps.de/maps/snes/kirbys-dream-course). Multiplayer course names follow the [game manual](https://db.hfsplay.fr/files/2018/10/06/542dfe54-c533-43ba-a787-c3464c5db484.pdf#page=21). These external sources are identification evidence, not proof of behavior for every slot.
 

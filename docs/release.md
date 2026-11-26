@@ -57,8 +57,8 @@ recordings are excluded from public commits, caches, artifacts and releases.
 Use a clean checkout. In PowerShell, with MinGW GCC. Setup locates a native Windows CMake automatically; pass `-CMake` only to override that choice.
 
 ```powershell
-./tools/build_release.ps1 -Version v0.1.2-experimental -Rom 'C:/private/Kirby.sfc'
-python .agents/skills/release/scripts/release.py smoke-windows --archive local/releases/v0.1.2-experimental/kirbysdreamcourse-recomp-windows-x64.zip --rom 'C:/private/Kirby.sfc'
+./tools/build_release.ps1 -Version v0.1.2 -Rom 'C:/private/Kirby.sfc'
+python .agents/skills/release/scripts/release.py smoke-windows --archive local/releases/v0.1.2/kirbysdreamcourse-recomp-windows-x64.zip --rom 'C:/private/Kirby.sfc'
 ```
 
 The shared build calls ordinary setup with release version/defaults enabled.
@@ -79,7 +79,7 @@ staged by CMake. `build-info.json` records commit, version, dependency pins,
 compiler, build command and imports; packaging prints the ZIP SHA-256.
 
 Release builds set guarded timing/native-dispatch defaults in the EXE itself,
-matching `tools/play_experimental.ps1`. Explicit environment settings still
+matching `tools/play.ps1`. Explicit environment settings still
 win, including `SNESRECOMP_LLE_BOUNCE=0` for interpreter fallback. The default
 development build is unchanged.
 
@@ -108,7 +108,7 @@ CI minutes. Editing the release skill alone does not authorize dispatch.
 After a tested commit is tagged and the tag pushed:
 
 ```powershell
-gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref main -f tag=v0.1.2-experimental -f publish=true -f prerelease=true
+gh workflow run build-release.yml --repo alondero/kirbysdreamcourse-recomp --ref main -f tag=v0.1.2 -f publish=true -f prerelease=true
 ```
 
 Publication builds the requested tag, rather than whichever main commit is
