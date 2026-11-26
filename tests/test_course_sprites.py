@@ -16,6 +16,9 @@ class CourseSpritesTest(unittest.TestCase):
     def test_queue_only_clear_discards_unconsumed_requests(self):
         self.run_fixture('course_sprites_review_test.c', 'queue')
 
+    def test_identical_independent_enqueue_requests_each_capture(self):
+        self.run_fixture('course_sprites_review_test.c', 'duplicate')
+
     def test_observers_honor_data_bank_without_guest_mutation(self):
         self.run_fixture('course_sprites_review_test.c', 'bank')
 
