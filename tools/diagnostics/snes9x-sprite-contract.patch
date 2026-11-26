@@ -1,0 +1,324 @@
+diff --git a/cpuexec.cpp b/cpuexec.cpp
+index 0494810..c0ce02c 100644
+--- a/cpuexec.cpp
++++ b/cpuexec.cpp
+@@ -14,6 +14,9 @@
+ #include "spc7110.h"
+ #include "bsflash.h"
+ #include "snapshot.h"
++#include "sprite_contract_probe.h"
++#include <cstdio>
++#include <cstdlib>
+ #ifdef DEBUGGER
+ #include "debug.h"
+ #include "missing.h"
+@@ -21,6 +24,148 @@
+ 
+ static inline void S9xReschedule (void);
+ 
++static FILE *sprite_trace;
++static FILE *sprite_state;
++static unsigned sprite_frame, detail_frame, state_index, instruction_pc;
++bool KdcSpriteDetail;
++bool KdcSpriteWatchLayouts;
++
++void KdcSpriteClose()
++{
++	if ((sprite_trace && fclose(sprite_trace)) || (sprite_state && fclose(sprite_state)))
++		abort();
++	sprite_trace = sprite_state = NULL;
++	sprite_frame = detail_frame = state_index = instruction_pc = 0;
++	KdcSpriteDetail = false;
++	KdcSpriteWatchLayouts = false;
++}
++
++void KdcSpriteFrame()
++{
++	if (++sprite_frame == 1)
++	{
++		const char *trace = getenv("KDC_SPRITE_REFERENCE_TRACE");
++		if (!trace || !*trace)
++			return;
++		sprite_trace = fopen(trace, "wb");
++		const char *frame = getenv("KDC_SPRITE_REFERENCE_DETAIL");
++		detail_frame = frame ? strtoul(frame, NULL, 10) : 0;
++		const char *state = getenv("KDC_SPRITE_REFERENCE_STATE");
++		sprite_state = state && *state ? fopen(state, "wb") : NULL;
++		KdcSpriteWatchLayouts = getenv("KDC_SPRITE_REFERENCE_WATCH_LAYOUTS") != NULL;
++		if (!sprite_trace || (state && *state && !sprite_state))
++			abort();
++	}
++	if (sprite_trace)
++		fprintf(sprite_trace, "F %u\n", sprite_frame);
++	KdcSpriteDetail = sprite_trace && sprite_frame == detail_frame;
++}
++
++static bool SpriteCode(unsigned pc)
++{
++	const unsigned bank = (pc >> 16) & 0x7f, address = pc & 0xffff;
++	return (bank == 0 && ((address >= 0x8823 && address < 0x8870) ||
++		(address >= 0x8a1a && address < 0x8f80))) ||
++		(bank == 1 && address >= 0x9fc3 && address <= 0xa0bf);
++}
++
++static bool SpriteBoundary(unsigned pc)
++{
++	if (pc == 0x04efc1 || pc == 0x84efc1)
++		return true;
++	switch (pc & 0x7fffff)
++	{
++		case 0x019fc3: case 0x019fdc: case 0x01a045: case 0x01a0a3: case 0x01a0b6:
++		case 0x0798c9:
++			return true;
++	}
++	if ((pc >> 16) != 0x00 && (pc >> 16) != 0x80)
++		return false;
++	switch (pc & 0xffff)
++	{
++		case 0x82ca: case 0x8823: case 0x8841: case 0x8ae1:
++		case 0x8a1a: case 0x8a1e: case 0x8a3d: case 0x8b02: case 0x8b09:
++		case 0x8c08: case 0x8c12: case 0x8d89: case 0x8e39: case 0x8ed8:
++		case 0x9e9e: case 0x9eec: case 0xdfc0: case 0xe525: case 0xe55e:
++		case 0xe5a6: case 0xe60b: case 0xe635: case 0xe776:
++			return true;
++		default:
++			return false;
++	}
++}
++
++static void SpriteRegisters(char tag, unsigned pc)
++{
++	const unsigned status = (Registers.PL & ~(Zero | Negative | Carry | Overflow)) |
++		ICPU._Carry | ((ICPU._Zero == 0) << 1) | (ICPU._Negative & 0x80) | (ICPU._Overflow << 6);
++	const unsigned s = Registers.S.W;
++	unsigned caller = 0;
++	// Read only the mirrored stack bytes. This is a return-address candidate.
++	if (s <= 0x1ffc)
++		caller = Memory.RAM[s + 1] | Memory.RAM[s + 2] << 8 | Memory.RAM[s + 3] << 16;
++	fprintf(sprite_trace, "%c %06x %04x %04x %04x %04x %04x %02x %02x %u %06x\n",
++		tag, pc, Registers.A.W, Registers.X.W, Registers.Y.W,
++		Registers.D.W, s, Registers.DB, status, !!CheckEmulation(), caller);
++}
++
++static void SpriteSnapshot()
++{
++	if (sprite_state)
++	{
++		fprintf(sprite_trace, "S %u\n", state_index++);
++		if (fwrite(Memory.RAM, sizeof(Memory.RAM), 1, sprite_state) != 1 ||
++			fwrite(Memory.SRAM, 8192, 1, sprite_state) != 1 ||
++			fwrite(PPU.OAMData, sizeof(PPU.OAMData), 1, sprite_state) != 1)
++			abort();
++	}
++}
++
++void KdcSpriteInstruction()
++{
++	const unsigned pc = Registers.PBPC;
++	if (SpriteBoundary(pc))
++	{
++		SpriteRegisters('B', pc);
++		if (KdcSpriteDetail)
++			SpriteSnapshot();
++	}
++	else if (KdcSpriteDetail && SpriteCode(pc))
++		SpriteRegisters('I', pc);
++}
++
++void KdcSpriteWrite(unsigned address, unsigned value, unsigned width, unsigned order)
++{
++	if (KdcSpriteDetail && SpriteCode(instruction_pc) && !CPU.InDMAorHDMA)
++		fprintf(sprite_trace, "W %06x %06x %u %04x %u\n", instruction_pc, address, width, value, order);
++	if (KdcSpriteWatchLayouts)
++		KdcSpriteLayoutWrite(address, value, width);
++}
++
++void KdcSpriteLayoutWrite(unsigned address, unsigned value, unsigned width)
++{
++	const unsigned bank = (address >> 16) & 0xff, offset = address & 0xffff;
++	if (bank != 0x7e && !((bank & 0x7f) < 0x40 && offset < 0x2000))
++		return;
++	if ((offset + width > 0x1200 && offset < 0x1600) ||
++		(offset + width > 0x0b1e && offset < 0x0b24))
++		fprintf(sprite_trace, "L %06x %06x %u %04x\n", instruction_pc, address, width, value);
++}
++
++void KdcSpriteDma(unsigned channel)
++{
++	const SDMA &dma = DMA[channel];
++	if (sprite_trace && !dma.ReverseTransfer && dma.BAddress == 4)
++		fprintf(sprite_trace, "D %06x %u %02x %02x%04x %04x %u %03x %u\n", instruction_pc,
++			channel, dma.BAddress, dma.ABank, dma.AAddress, dma.TransferBytes,
++			dma.TransferMode, PPU.OAMAddr, PPU.OAMFlip);
++}
++
++void KdcSpritePpu(unsigned address, unsigned value)
++{
++	fprintf(sprite_trace, "P %06x %u %02x %04x %02x\n", instruction_pc,
++		CPU.InDMAorHDMA, CPU.CurrentDMAorHDMAChannel & 0xff, address, value);
++}
++
+ void S9xMainLoop (void)
+ {
+ 	#define CHECK_FOR_IRQ_CHANGE() \
+@@ -135,6 +280,11 @@ void S9xMainLoop (void)
+ 		{
+ 			break;
+ 		}
++		if (sprite_trace)
++		{
++			instruction_pc = Registers.PBPC;
++			KdcSpriteInstruction();
++		}
+ 
+ 		uint8				Op;
+ 		struct	SOpcodes	*Opcodes;
+@@ -170,6 +320,13 @@ void S9xMainLoop (void)
+ 
+ 		Registers.PCw++;
+ 		(*Opcodes[Op].S9xOpcode)();
++		if (KdcSpriteDetail && (Op == 0x60 || Op == 0x6b) && SpriteCode(instruction_pc))
++		{
++			fprintf(sprite_trace, "R %06x %02x\n", instruction_pc, Op);
++			SpriteRegisters('A', Registers.PBPC);
++			SpriteSnapshot();
++		}
++		instruction_pc = 0;
+ 
+ 		if (Settings.SA1)
+ 			S9xSA1MainLoop();
+diff --git a/dma.cpp b/dma.cpp
+index 95cb1a9..a0590ba 100644
+--- a/dma.cpp
++++ b/dma.cpp
+@@ -48,8 +48,11 @@ static inline bool8 addCyclesInDMA (uint8 dma_channel)
+ 	return (TRUE);
+ }
+ 
++#include "sprite_contract_probe.h"
++
+ bool8 S9xDoDMA (uint8 Channel)
+ {
++	KdcSpriteDma(Channel);
+ 	CPU.InDMA = TRUE;
+     CPU.InDMAorHDMA = TRUE;
+ 	CPU.CurrentDMAorHDMAChannel = Channel;
+diff --git a/getset.h b/getset.h
+index bd3b365..56ef1e2 100644
+--- a/getset.h
++++ b/getset.h
+@@ -337,8 +337,12 @@ inline uint16 S9xGetWord (uint32 Address, enum s9xwrap_t w = WRAP_NONE)
+ 	}
+ }
+ 
++#include "sprite_contract_probe.h"
++
+ inline void S9xSetByte (uint8 Byte, uint32 Address)
+ {
++	if (KdcSpriteDetail || KdcSpriteWatchLayouts)
++		KdcSpriteWrite(Address, Byte, 1, 0);
+ 	int		block = (Address & 0xffffff) >> MEMMAP_SHIFT;
+ 	uint8	*SetAddress = Memory.WriteMap[block];
+ 	int32	speed = memory_speed(Address);
+@@ -484,6 +488,8 @@ inline void S9xSetWord (uint16 Word, uint32 Address, enum s9xwrap_t w = WRAP_NON
+ 		return;
+ 	}
+ 
++	if (KdcSpriteDetail || KdcSpriteWatchLayouts)
++		KdcSpriteWrite(Address, Word, 2, o);
+ 	int		block = (Address & 0xffffff) >> MEMMAP_SHIFT;
+ 	uint8	*SetAddress = Memory.WriteMap[block];
+ 	int32	speed = memory_speed(Address);
+diff --git a/libretro/libretro.cpp b/libretro/libretro.cpp
+index b7aaace..b79057c 100644
+--- a/libretro/libretro.cpp
++++ b/libretro/libretro.cpp
+@@ -2246,6 +2246,8 @@ static void report_buttons()
+     }
+ }
+ 
++#include "../sprite_contract_probe.h"
++
+ void retro_run()
+ {
+     static uint16 height = PPU.ScreenHeight;
+@@ -2294,6 +2296,7 @@ void retro_run()
+ 
+     poll_cb();
+     report_buttons();
++    KdcSpriteFrame();
+     S9xMainLoop();
+ 
+     audio_upload_samples();
+@@ -2301,6 +2304,7 @@ void retro_run()
+ 
+ void retro_deinit()
+ {
++    KdcSpriteClose();
+     S9xDeinitAPU();
+     Memory.Deinit();
+     S9xGraphicsDeinit();
+diff --git a/ppu.cpp b/ppu.cpp
+index c51b92b..23a0707 100644
+--- a/ppu.cpp
++++ b/ppu.cpp
+@@ -202,8 +202,12 @@ void S9xFixColourBrightness (void)
+ 	}
+ }
+ 
++#include "sprite_contract_probe.h"
++
+ void S9xSetPPU (uint8 Byte, uint16 Address)
+ {
++	if (KdcSpriteDetail && Address >= 0x2100 && Address <= 0x2133 && Address != 0x2104)
++		KdcSpritePpu(Address, Byte);
+ 	// MAP_PPU: $2000-$3FFF
+ 
+ 	if (CPU.InDMAorHDMA)
+diff --git a/ppu.h b/ppu.h
+index e11feb4..bc934a0 100644
+--- a/ppu.h
++++ b/ppu.h
+@@ -270,8 +270,12 @@ static inline void S9xUpdateVRAMReadBuffer()
+ 		PPU.VRAMReadBuffer = READ_WORD(Memory.VRAM + ((PPU.VMA.Address << 1) & 0xffff));
+ }
+ 
++#include "sprite_contract_probe.h"
++
+ static inline void REGISTER_2104 (uint8 Byte)
+ {
++	if (KdcSpriteDetail)
++		KdcSpritePpu(0x2104, Byte);
+ 	if (!(PPU.OAMFlip & 1))
+ 	{
+ 		PPU.OAMWriteRegister &= 0xff00;
+@@ -594,6 +598,8 @@ static inline void REGISTER_2122 (uint8 Byte)
+ 
+ static inline void REGISTER_2180 (uint8 Byte)
+ {
++	if (KdcSpriteWatchLayouts)
++		KdcSpriteLayoutWrite(0x7e0000 + PPU.WRAM, Byte, 1);
+ 	Memory.RAM[PPU.WRAM++] = Byte;
+ 	PPU.WRAM &= 0x1ffff;
+ }
+diff --git a/sprite_contract_probe.h b/sprite_contract_probe.h
+new file mode 100644
+index 0000000..dc07c6e
+--- /dev/null
++++ b/sprite_contract_probe.h
+@@ -0,0 +1,15 @@
++// Diagnostic-only observer for the Kirby's Dream Course sprite contract.
++#ifndef KDC_SPRITE_CONTRACT_PROBE_H
++#define KDC_SPRITE_CONTRACT_PROBE_H
++
++extern bool KdcSpriteDetail;
++extern bool KdcSpriteWatchLayouts;
++void KdcSpriteFrame();
++void KdcSpriteClose();
++void KdcSpriteInstruction();
++void KdcSpriteWrite(unsigned address, unsigned value, unsigned width, unsigned order);
++void KdcSpriteDma(unsigned channel);
++void KdcSpritePpu(unsigned address, unsigned value);
++void KdcSpriteLayoutWrite(unsigned address, unsigned value, unsigned width);
++
++#endif

@@ -1,0 +1,107 @@
+diff --git a/src/course_sprites.c b/src/course_sprites.c
+index 49d2c9f..e491f11 100644
+--- a/src/course_sprites.c
++++ b/src/course_sprites.c
+@@ -36,6 +36,7 @@ typedef struct DrawList {
+ } DrawList;
+ 
+ extern Snes *g_snes;
++extern int snes_frame_counter;
+ static DrawList building, displayed;
+ typedef struct Request {
+     int16_t world_x, world_y;
+@@ -53,6 +54,7 @@ static unsigned left_pixels, right_pixels;
+ static unsigned recovered_left, recovered_right;
+ static FILE *diagnostic;
+ static FILE *orbit_diagnostic;
++static FILE *frozen_stream;
+ static bool reported_invalid;
+ static OrbitAnchor projections[1024], task_anchors[64], pending_anchor;
+ static unsigned projection_count, projection_next;
+@@ -682,6 +684,19 @@ void KdcObserveSprites(const CpuState *cpu, uint32_t pc)
+         /* Immediately before the fixed $0600 -> OAM DMA, not at the end of
+          * a host frame, when the next simulation camera can be staged. */
+         displayed = building;
++        if (frozen_stream) {
++            fprintf(frozen_stream, "latch %d %u %u\n", snes_frame_counter,
++                    displayed.count, displayed.invalid);
++            for (unsigned bucket = 0; !displayed.invalid && bucket < 10; ++bucket) {
++                for (unsigned i = 0; i < displayed.count; ++i) {
++                    const Piece *piece = &displayed.pieces[i];
++                    if (piece->bucket != bucket) continue;
++                    fprintf(frozen_stream, "piece %u %u %d %d %04x %u %u %06x\n",
++                            bucket, i, piece->world_x, piece->world_y, piece->attributes,
++                            piece->large, piece->recovered, piece->anchor.source_pc);
++                }
++            }
++        }
+         if (displayed.invalid && !reported_invalid) {
+             fprintf(stderr, "Course sprite presentation list rejected: invalid layout or host capacity exceeded\n");
+             reported_invalid = true;
+@@ -887,6 +902,15 @@ void KdcInitializeSprites(void)
+         orbit_diagnostic = fopen(path, "w");
+         if (!orbit_diagnostic) fprintf(stderr, "Unable to open orbit sprite log: %s\n", path);
+     }
++    path = getenv("KDC_FROZEN_SPRITE_STREAM");
++    if (!frozen_stream && path && *path) {
++        frozen_stream = fopen(path, "wb");
++        if (!frozen_stream) {
++            fprintf(stderr, "Unable to open frozen sprite stream: %s\n", path);
++            abort();
++        }
++        fputs("frozen-sprite-stream 1\n", frozen_stream);
++    }
+ }
+ 
+ static void PrepareLine(Ppu *ppu, int line, void *context)
+@@ -943,6 +967,23 @@ static void PrepareLine(Ppu *ppu, int line, void *context)
+             }
+             objects[count] = (PpuExtraObject){x, line, (uint16_t)size, 1, 64,
+                 (attr >> 12) & 3, (attr & 0x800) != 0, 0, order, pixels[count]};
++            if (frozen_stream) {
++                if (!count) {
++                    fprintf(frozen_stream, "raster %d %d %d %d %u %u %02x %02x %02x %03x"
++                            " %02x %02x %02x %02x %02x %02x %02x %02x %04x %04x %04x\n",
++                            snes_frame_counter, line, camera_x, camera_y,
++                            ppu->extraLeftCur, ppu->extraRightCur, ppu->inidisp, ppu->obsel,
++                            ppu->bgmode, ppu->windowsel, ppu->window1left, ppu->window1right,
++                            ppu->window2left, ppu->window2right, ppu->screenEnabled[0],
++                            ppu->screenEnabled[1], ppu->screenWindowed[0], ppu->screenWindowed[1],
++                            ppu->wbgobjlog, (ppu->cgwsel << 8) | ppu->cgadsub, ppu->fixedColor);
++                }
++                fprintf(frozen_stream, "margin %u %u %u %d %d %u %04x",
++                        bucket, i, order, x, y, size, attr);
++                for (int column = 0; column < size; ++column)
++                    fprintf(frozen_stream, " %04x", pixels[count][column]);
++                fputc('\n', frozen_stream);
++            }
+             ++count;
+         }
+     }
+@@ -977,6 +1018,9 @@ void KdcVisitOrbitSprites(const Ppu *ppu, const uint8_t *ram,
+     if (!ppu || !ram || !visitor || displayed.invalid || !KdcIsCourse(ppu)) return;
+     int camera_x = KdcCourseScroll(ppu->hScroll[0], KdcReadWord(ram, 0x86));
+     int camera_y = KdcCourseScroll(ppu->vScroll[0], KdcReadWord(ram, 0x88));
++    if (frozen_stream)
++        fprintf(frozen_stream, "orbit %d %d %d %u\n", snes_frame_counter,
++                camera_x, camera_y, displayed.count);
+     for (unsigned bucket = 0; bucket < 10; ++bucket) {
+         for (unsigned i = 0; i < displayed.count; ++i) {
+             const Piece *piece = &displayed.pieces[i];
+@@ -991,6 +1035,16 @@ void KdcVisitOrbitSprites(const Ppu *ppu, const uint8_t *ram,
+                 anchor->motion_id, piece->piece_id, piece->motion_x, piece->motion_y,
+                 piece->view, {0}, 0
+             };
++            if (frozen_stream) {
++                fprintf(frozen_stream, "visit %u %u %a %a %a %a %a %04x %u %u %u %u"
++                        " %06x %016llx %08x %a %a %u %u %u %u %u %u %u\n",
++                        bucket, i, sprite.x, sprite.y, sprite.z, sprite.offset_x, sprite.offset_y,
++                        sprite.attributes, sprite.large, sprite.world, sprite.unresolved,
++                        sprite.ground, sprite.source_pc, (unsigned long long)sprite.motion_id,
++                        sprite.piece_id, sprite.motion_x, sprite.motion_y, sprite.view.family,
++                        sprite.view.direction, sprite.view.facing, sprite.view.player,
++                        sprite.view.attachment, sprite.view.aimed, sprite.view.aim);
++            }
+             visitor(&sprite, context);
+         }
+     }
