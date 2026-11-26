@@ -519,6 +519,7 @@ static bool ProgressiveEnlargeStep(void)
 
 const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bool hd)
 {
+    static uint64_t texture_revision;
     if (!ppu || !ram) return NULL;
     const uint16_t *vram = PpuRenderVram(ppu);
     uint8_t tables[sizeof(state.tables)];
@@ -571,6 +572,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     if (!hd) luma_dirty = 0;
     if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all)
         return &state.view;
+    state.view.texture_revision = ++texture_revision;
 
     uint8_t char_dirty[1024];
     if (chars_changed && !all)

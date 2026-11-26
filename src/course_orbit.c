@@ -1,4 +1,5 @@
 #include "course_orbit.h"
+#include "course_orbit_raster.h"
 #include "course_camera.h"
 #include "course_geometry.h"
 #include "course_view.h"
@@ -60,29 +61,15 @@ void KdcOrbitConfigure(bool enabled, bool controls)
  * horizontal bands on the worker pool. Everything a band reads is fixed
  * before the first one starts; a band writes only its own rows. */
 
-/* The terrain texture level chosen for a draw. */
-typedef struct Texture {
-    const uint8_t *texels; /* palette indices, 0 transparent */
-    int stride, width, height;
-    int scale;             /* texels per source pixel */
-    int left, top;         /* source pixel of texel (0,0) */
-    const uint32_t *colors;
-} Texture;
-
 enum { kBandRows = 8, kMaxBands = 32 }; /* native rows per band: one BG3 character row */
+typedef KdcOrbitTexture Texture;
+typedef KdcOrbitFace Face;
+static KdcOrbitTerrainRaster *terrain_raster;
 
-/* A projected terrain triangle. Barycentric weights, depth and texture
- * coordinates are all a*x + b*y + c at the centre of output pixel (x,y). */
-typedef struct Face {
-    int left, right, top, bottom; /* inclusive pixel bounds */
-    double weight[3][3];
-    double inv_slope[3];          /* 1 / weight[k][0] when weight[k][0] != 0 */
-    int8_t slope_sign[3];         /* +1, -1, 0 */
-    double depth[3], u[3], v[3];
-    double sharp_u, sharp_v;
-    uint32_t color;               /* flat, or shown where the texture is clear */
-    bool textured;
-} Face;
+void KdcOrbitSetTerrainRaster(KdcOrbitTerrainRaster *raster)
+{
+    terrain_raster = raster;
+}
 
 /* A sprite piece with everything derived from the camera resolved. */
 typedef struct Piece {
@@ -115,6 +102,7 @@ typedef struct Render {
     const KdcTerrain *terrain;
     Texture texture;
     bool smooth;   /* antialiased texture sampling */
+    bool terrain_drawn;
     int samples;   /* per axis, when one pixel spans several texels */
     const Face *faces;
     unsigned face_count;
@@ -1777,8 +1765,10 @@ static void DrawBand(void *context, unsigned index)
     const int row0 = (int)index * kBandRows;
     const int row1 = row0 + kBandRows < native_height ? row0 + kBandRows : native_height;
     const int y0 = row0 * render->scale, y1 = row1 * render->scale;
-    ClearDepthRows(render, y0, y1);
-    TerrainRows(render, index, y0, y1);
+    if (!render->terrain_drawn) {
+        ClearDepthRows(render, y0, y1);
+        TerrainRows(render, index, y0, y1);
+    }
     BackgroundRows(render, row0, row1);
     for (unsigned i = 0; i < render->decal_count; ++i) DecalRows(render, &render->decals[i], y0, y1);
     for (unsigned i = 0; i < render->body_count; ++i) BodyRows(render, &render->bodies[i], true, y0, y1);
@@ -1910,6 +1900,7 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
             .texels = enlarged ? terrain->hd : terrain->native,
             .scale = enlarged ? kKdcTerrainScale : 1,
             .left = terrain->left, .top = terrain->top, .colors = terrain->colors,
+            .revision = terrain->texture_revision,
         };
         render.texture.width = terrain->width * render.texture.scale;
         render.texture.height = terrain->height * render.texture.scale;
@@ -1925,6 +1916,10 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
     PreparePieces(&render);
     PrepareHudArt(&render);
     const double prepared = Milliseconds();
+    if (terrain_raster && scale > 1)
+        render.terrain_drawn = terrain_raster(render.faces, render.face_count,
+            &render.texture, render.samples, render.smooth, dst, pitch,
+            render.depth, render.width, render.height);
     KdcParallelFor((unsigned)((height + kBandRows - 1) / kBandRows), DrawBand, &render);
     ReportProfile(prepared - started, Milliseconds() - prepared);
     return 1;

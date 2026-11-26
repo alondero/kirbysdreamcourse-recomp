@@ -2,6 +2,7 @@
 import argparse
 import csv
 import hashlib
+from itertools import zip_longest
 import json
 import math
 import os
@@ -46,6 +47,18 @@ def run_order(builds, hd_modes, repeat):
     """Alternate AB/BA (or reverse the full matrix) without concurrent runs."""
     cases = [(name, executable, hd) for name, executable in builds for hd in hd_modes]
     return cases if repeat % 2 == 0 else cases[::-1]
+
+
+def verify_trace(baseline, candidate, label, expected_lines):
+    with baseline.open() as left, candidate.open() as right:
+        count = 0
+        for line, (a, b) in enumerate(zip_longest(left, right), 1):
+            if a != b:
+                raise AssertionError(f'{label} first difference at line {line}: '
+                                     f'{a!r} != {b!r}')
+            count = line
+        if count != expected_lines:
+            raise AssertionError(f'{label} expected {expected_lines} lines, got {count}')
 
 
 def summarize_runs(results):
@@ -149,6 +162,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--baseline', type=Path)
+    parser.add_argument('--gpu-hd', action='store_true',
+                        help='Enable OpenGL HD composition for the candidate only')
+    parser.add_argument('--gpu-orbit', action='store_true',
+                        help='Enable experimental OpenGL orbit terrain rasterization for the candidate only')
+    parser.add_argument('--verify-presents', action='store_true',
+                        help='Compare per-presentation pixel CRCs and guest state in separate paired replays')
     parser.add_argument('--rom', type=Path, default=Path("Kirby's Dream Course (USA).sfc"))
     parser.add_argument('--display', action='store_true', help='Use the real display instead of SDL dummy')
     parser.add_argument('--native-width', action='store_true', help='Disable widescreen')
@@ -179,8 +198,17 @@ def main():
         parser.error('--window-size must be WIDTHxHEIGHT with positive dimensions')
     if args.backend in ('direct3d11', 'opengl') and not args.display:
         parser.error('Accelerated backends require --display')
+    if (args.gpu_hd or args.gpu_orbit) and args.backend != 'opengl':
+        parser.error('--gpu-hd and --gpu-orbit require --backend opengl')
+    if args.gpu_orbit and args.scenario != 'orbit':
+        parser.error('--gpu-orbit requires --scenario orbit')
+    if args.verify_presents and (not args.baseline or args.no_captures):
+        parser.error('--verify-presents requires --baseline and separate captures')
     scenario = SCENARIOS[args.scenario]
     frames = args.frames if args.frames is not None else scenario['frames']
+    capture_frames = scenario['screenshot'] + 5
+    if args.verify_presents:
+        capture_frames = max(capture_frames, frames)
     if not 1 <= args.profile_start < frames or frames > 36000:
         parser.error('Require 1 <= profile start < frames <= 36000 (host trace capacity)')
     rom = args.rom.resolve(strict=True)
@@ -236,6 +264,9 @@ def main():
                        SNESRECOMP_SCREENSHOT=str(case / 'frame.ppm'),
                        SNESRECOMP_SCREENSHOT_FRAME=str(scenario['screenshot']))
             env.update(RUNTIME_ENV)
+            env['KDC_HD_GPU'] = str(int(args.gpu_hd and name == 'candidate'))
+            if args.gpu_orbit and name == 'candidate':
+                env['KDC_ORBIT_GPU'] = '1'
             if args.threads is not None:
                 env['KDC_THREADS'] = str(args.threads)
             if args.orbit_profile:
@@ -261,7 +292,10 @@ def main():
                     timed['KDC_GPU_TRACE'] = str(case / 'gpu.csv')
             del timed['SNESRECOMP_SCREENSHOT'], timed['SNESRECOMP_SCREENSHOT_FRAME']
             if not args.no_captures and not warmup:
-                capture = dict(env, SNESRECOMP_RUN_FRAMES=str(scenario['screenshot'] + 5))
+                capture = dict(env, SNESRECOMP_RUN_FRAMES=str(capture_frames))
+                if args.verify_presents:
+                    capture.update(SNESRECOMP_PRESENT_LOG=str(case / 'presents.csv'),
+                                   SNESRECOMP_STATE_TRACE=str(case / 'state.csv'))
                 with (case / 'capture.log').open('w') as log:
                     subprocess.run(command, cwd=case, env=capture,
                                    stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
@@ -269,6 +303,10 @@ def main():
                 subprocess.run(command, cwd=case, env=timed,
                                stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
             log = (case / 'run.log').read_text()
+            if args.gpu_hd and name == 'candidate' and hd and 'GPU HD composition active' not in log:
+                raise AssertionError(f'{case}: GPU HD compositor did not present a frame')
+            if args.gpu_orbit and name == 'candidate' and hd and 'GPU orbit terrain active' not in log:
+                raise AssertionError(f'{case}: GPU orbit terrain did not render a frame')
             if args.diagnostic_costs:
                 assert (case / 'cost.csv').is_file(), 'Missing diagnostic costs; use the diagnostic build'
                 if args.backend == 'opengl':
@@ -291,6 +329,7 @@ def main():
             timing = frame_timings(case / 'timing.csv')
             if timing['distributions']['work_ms']['count'] != int(window[4]):
                 raise AssertionError(f'{case}: presentation trace is incomplete')
+            stages['renderer-total'] = timing['distributions']['renderer_ms']['mean']
             renderer = re.search(r'^Renderer: (.+)$', log, re.MULTILINE)
             if not renderer:
                 renderer = re.search(r'renderer initialized: (.+)', log)
@@ -342,11 +381,18 @@ def main():
                 assert intervals['p99'] <= args.max_p99_ms, 'HD presentation p99 budget exceeded'
         if args.baseline and not args.no_captures and not warmup:
             for hd in args.hd:
+                if args.verify_presents:
+                    left = output / f'{repeat}-baseline-hd{hd}'
+                    right = output / f'{repeat}-candidate-hd{hd}'
+                    verify_trace(left / 'presents.csv', right / 'presents.csv',
+                                 f'HD={hd} presentation', capture_frames + 1)
+                    verify_trace(left / 'state.csv', right / 'state.csv',
+                                 f'HD={hd} guest state', capture_frames)
                 assert captures['baseline', hd] == captures['candidate', hd], f'HD={hd}: image changed'
     comparison = paired_comparison(results)
     (output / 'paired-comparison.json').write_text(json.dumps(comparison, indent=2) + '\n')
     for hd, row in comparison.items():
-        for stage in ('raster-capture', 'compose', 'upload-present'):
+        for stage in ('raster-capture', 'compose', 'upload-present', 'renderer-total'):
             stats = row['mean_ms'].get(stage)
             if stats:
                 print(f'paired {hd} {stage}: median delta {stats["delta_ms"]:+.3f} ms '

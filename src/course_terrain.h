@@ -28,6 +28,7 @@ typedef struct KdcTerrain {
     /* The image enlarged by kKdcTerrainScale (hd_image.h), or NULL when it
      * was not requested. */
     const uint8_t *hd;
+    uint64_t texture_revision; /* changes when cached texel storage is updated */
     /* 0xffRRGGBB for each palette index, from the live palette. */
     uint32_t colors[128];
 } KdcTerrain;

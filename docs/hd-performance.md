@@ -171,3 +171,100 @@ Steam Deck. No slower physical target is available in this session; one
 worker on the 3900X is a worker-scaling control, not a substitute for one.
 Direct3D GPU time, scheduler/on-CPU attribution and end-to-end display latency
 remain unmeasured.
+
+## OpenGL composition evaluation
+
+The evaluation uses the guarded build from `7181048` with the GPU compositor
+patch. The paired control runs the same binary with the GPU experiment
+disabled. This isolates the compositor from compiler, SDL and guest changes.
+[Issue #101](https://github.com/alondero/kirbysdreamcourse-recomp/issues/101)
+
+Normal-view desktop OpenGL composition uses the native frame, per-line
+palette and colour-math state, and sparse validated Mode 1 tile records. The
+PPU still checks native priority and colour before emitting a record. The
+GPU samples cached indexed or RGBA tiles from an atlas, resolves priority and
+colour math with integer operations, and provides the result as a texture to
+the presenter. Pixels with no record use the native frame. Mode 7 lines
+requiring CPU subpixel rendering and lines that exhaust the record buffer
+use the existing CPU pixels. SDL renderers, shader presets, run-ahead and
+the practice overlay use the CPU compositor. Frame dumps and the host OSD
+can read back the composed pixels. Set `KDC_HD_GPU=0` for a CPU control.
+
+The orbit experiment bins projected terrain faces and resolves terrain
+coverage, depth and texture sampling on the GPU. It reads back colour and
+depth for the existing CPU scenery, decal, sprite and HUD passes. It requires
+OpenGL 4.0 or OpenGL 3.3 with `ARB_gpu_shader_fp64` and `ARB_gpu_shader5`.
+[Khronos double-precision extension](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_gpu_shader_fp64.txt),
+[Khronos shader extension](https://registry.khronos.org/OpenGL/extensions/ARB/ARB_gpu_shader5.txt)
+
+Set `KDC_ORBIT_GPU=1` to run the experiment. CPU orbit remains the default
+because the measured combination was slower. A GPU-resident orbit pipeline
+would need to keep terrain depth available to the later passes without the
+two readbacks.
+
+### Reproduce
+
+Use a Windows Release build from `tools/setup.py` with the pinned framework,
+launcher and SDL described above. The workload is hole `normal:1:1`, 12
+rendering threads, a 1536×896 OpenGL window, VSync off and the benchmark's
+deterministic inputs and guarded runtime settings. The shot profile uses
+frames 350–1100. The orbit profile uses 502–1100 to exclude orbit entry.
+
+```powershell
+$exe = "local/guarded-build/KirbyDreamCourseRecomp.exe"
+$paired = @("--executable", $exe, "--baseline", $exe, "--backend", "opengl",
+            "--window-size", "1536x896", "--threads", "12", "--display")
+python tools/benchmark_hd.py @paired --scenario shot --gpu-hd --warmup 1 --repeat 4 --hd 0 1 --no-captures
+python tools/benchmark_hd.py @paired --scenario orbit --profile-start 502 --gpu-orbit --warmup 1 --repeat 4 --hd 1 --no-captures
+python tools/benchmark_hd.py @paired --scenario shot --gpu-hd --hd 1 --verify-presents
+python tools/benchmark_hd.py @paired --scenario orbit --profile-start 502 --gpu-orbit --hd 1 --verify-presents
+```
+
+The harness keeps the timed runs free of readback probes. The separate
+`--verify-presents` replays compare per-presentation pixel CRCs, per-frame
+CPU registers and WRAM CRCs, and a frame-800 PPM. The first mismatching trace
+line is reported if a comparison fails. The ROM-free OpenGL fixtures run the
+same terrain and tile scenes through both renderers and compare whole images.
+
+```powershell
+cmake --build local/guarded-build --target kdc_hd_gpu_fixture kdc_orbit_gpu_fixture
+./local/guarded-build/kdc_hd_gpu_fixture.exe
+./local/guarded-build/kdc_orbit_gpu_fixture.exe
+```
+
+### Results
+
+Windows x64 Release on a Ryzen 9 3900X and RTX 3080 with NVIDIA 630.20,
+MinGW GCC 15.2.0 and SDL 3.4.10. The measured executable SHA-256 is
+`51602d8e0f0f4d040a478b64c60efa51c880f81312b80bbab98845f017dfe69f`.
+Each comparison uses one discarded warmup per case and four measured
+pairs in alternating order. Values are medians of run means in
+milliseconds, with the range of measured run means in brackets. Renderer
+time sums raster capture, surface acquisition, composition and present
+submission. It measures host wall time.
+
+| Workload | CPU renderer time | GPU renderer time | Change | Median run interval p99, CPU → GPU |
+| --- | ---: | ---: | ---: | ---: |
+| Normal shot, HD on | 7.34 [7.23–7.53] | 4.14 [4.11–4.16] | −43.6% | 13.00 → 9.51 |
+| Normal shot, HD off control | 1.17 [1.14–1.23] | 1.16 [1.12–1.18] | Overlapping ranges | 5.98 → 5.83 |
+| Warm orbit, HD on | 5.02 [5.00–5.16] | 9.15 [8.95–9.30] | +82.4% | 12.66 → 21.35 |
+
+Normal HD raster capture fell from 5.24 to 3.78 ms and present submission
+from 1.49 to 0.06 ms. Warm orbit composition increased from 2.07 to 6.22 ms.
+The HD-on renderer-time ranges did not overlap in either scenario. The
+orbit result covers the terrain shader, its colour and depth transfers, and
+the remaining CPU composition as a whole.
+
+The GPU fixtures matched 27 PPU fields and 20 orbit fields, including
+indexed priority, flips, native fallback, RGBA alpha, colour windows and
+colour math, orbit occlusion and native HUD pixels. Separate deterministic
+shot and orbit replays matched every presentation CRC and guest-state
+record through frame 1100, and both frame-800 PPMs matched byte for byte.
+The default OpenGL settings also matched the CPU control through orbit
+entry and a scripted reset to normal view at frame 1000. The Python suite
+ran 139 tests with 31 opt-in or environment skips.
+Benchmark JSON and ROM-dependent captures are kept in ignored `local/`.
+
+These results use the CPU compositor as the HD oracle. Linux, Android,
+other GPU drivers, external artwork packs, shader presets and paced
+high-refresh performance still need qualification.
