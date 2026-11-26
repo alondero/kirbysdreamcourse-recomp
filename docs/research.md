@@ -2,6 +2,9 @@
 
 Research snapshot: 2026-10-28. Project descriptions are self-reported; status and dependency revisions change. Links are primary project sources.
 
+[Root mode-menu contract](root-mode-menu.md) records the original-ROM caller,
+stack, upload and mod evidence and the decision to retain the scoped hooks.
+
 Optional pacing investigation, 2026-11-15: [score and hole transitions](faster-transitions.md)
 records candidate boundaries, deterministic reference acknowledgement experiments,
 and unresolved score/RNG safety gates. No pacing option is enabled or shipped.
