@@ -1,6 +1,7 @@
 #include "course_terrain.h"
 #include "hd_image.h"
 #include "hd_scaler.h"
+#include "host_parallel.h"
 #include "snes/ppu.h"
 
 #include <stdio.h>
@@ -10,6 +11,7 @@
 static Ppu ppu;
 static uint8_t ram[0x20000];
 static int failures;
+enum { kSerialStripHeight = 4 * 8 };
 
 #define CHECK(condition, ...) do { if (!(condition)) { \
     fprintf(stderr, "%s:%d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); \
@@ -63,6 +65,11 @@ int main(void)
     CHECK(terrain->hd != NULL, "progressive enlargement never completed");
     CHECK(calls > 1 && calls < 128, "unexpected progressive enlargement call count %u", calls);
     if (!terrain->hd) return 1;
+    const unsigned serial_calls = ((unsigned)terrain->height + kSerialStripHeight - 1) /
+                                  kSerialStripHeight;
+    if (KdcParallelThreads() > 1)
+        CHECK(calls <= (serial_calls + 1) / 2,
+              "parallel construction took %u updates (serial: %u)", calls, serial_calls);
 
     const size_t source_pixels = (size_t)terrain->width * terrain->height;
     const size_t hd_bytes = source_pixels * kKdcTerrainScale * kKdcTerrainScale;
@@ -75,11 +82,8 @@ int main(void)
     KdcHdImage image = {.src = terrain->native, .width = terrain->width, .height = terrain->height,
         .src_stride = terrain->width, .dst = expected,
         .dst_stride = terrain->width * kKdcTerrainScale, .luma = luma};
-    const int rows = terrain->height / 8;
-    for (int strip = 0; strip * 4 < rows; ++strip) {
-        const int y0 = strip * 32;
-        const int y1 = (strip + 1) * 32 < terrain->height ? (strip + 1) * 32 : terrain->height;
-        CHECK(KdcHdImageUpdate(&image, 0, y0, terrain->width, y1),
+    for (int y = 0; y < terrain->height; y += kSerialStripHeight) {
+        CHECK(KdcHdImageUpdate(&image, 0, y, terrain->width, y + kSerialStripHeight),
               "fresh comparison strip enlargement failed");
     }
     size_t differences = 0, first = 0;

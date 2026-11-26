@@ -24,8 +24,11 @@ class CourseTerrainProgressiveTest(unittest.TestCase):
                                      '-lm', '-lpthread', '-o', str(executable)],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result = subprocess.run([str(executable)], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            for threads in (1, 4):
+                with self.subTest(threads=threads):
+                    result = subprocess.run([str(executable)], capture_output=True, text=True,
+                                            env=dict(os.environ, KDC_THREADS=str(threads)))
+                    self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
 
 if __name__ == '__main__':
