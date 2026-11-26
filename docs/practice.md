@@ -72,13 +72,13 @@ already uses and the two arrow pairs should look alike. Tiles 0, 5, 8, 26, 30,
 Local 65816 disassembly identifies these game-specific sites:
 
 - `$83BBD8` finishes constructing a menu, before the tilemap upload. Stack
-  returns `$BB46` and `$B744` identify the root mode menu. Append a choice to
-  its `$EA8E`/`$EA97` coordinates and `$EAA0` return-value arrays, and write
-  PRACTICE into the `$39DA` tilemap using the game's glyph indices. Other
-  callers of the shared builder are unaffected. Unlocked root choices are
-  retained, with practice appended after them. The count is at direct-page
-  offset `$4A`, with observed D=`$1E00`; reading absolute `$004A` incorrectly
-  prevented the entry from appearing in the first runtime probe.
+  returns `$BB46` and `$B744` identify the [root mode menu](root-mode-menu.md).
+  Append a choice to its `$EA8E`/`$EA97` coordinates and `$EAA0` return-value
+  arrays, and write PRACTICE into the `$39DA` tilemap using the game's glyph
+  indices. Other callers of the shared builder are unaffected. Unlocked root
+  choices are retained, with practice appended after them. The count is at
+  direct-page offset `$4A`, with observed D=`$1E00`; reading absolute `$004A`
+  incorrectly prevented the entry from appearing in the first runtime probe.
 - `$83B74E` receives the root menu result. Result 6 selects practice; redirect
   to `$83B720` on the original stack and rebuild the menu. Results 0–5 continue
   through the original code.
