@@ -64,6 +64,42 @@ def summarize_runs(results):
             for (name, hd), runs in groups.items()]
 
 
+def paired_comparison(results):
+    """Compare non-warmup baseline/candidate run distributions without hiding overlap."""
+    groups = {}
+    for row in results:
+        if row.get('warmup') or row.get('build') not in ('baseline', 'candidate'):
+            continue
+        groups.setdefault((row['hd'], row['build']), []).append(row)
+    comparison = {}
+    for hd in sorted({key[0] for key in groups}):
+        baseline = groups.get((hd, 'baseline'), [])
+        candidate = groups.get((hd, 'candidate'), [])
+        if not baseline or not candidate:
+            continue
+        stages = sorted(set().union(*(row['mean_ms'] for row in baseline + candidate)))
+        stage_rows = {}
+        for stage in stages:
+            left = [row['mean_ms'][stage] for row in baseline if stage in row['mean_ms']]
+            right = [row['mean_ms'][stage] for row in candidate if stage in row['mean_ms']]
+            if not left or not right:
+                continue
+            left_median = statistics.median(left)
+            right_median = statistics.median(right)
+            delta = right_median - left_median
+            overlap = max(min(left), min(right)) <= min(max(left), max(right))
+            assessment = ('inconclusive: baseline/candidate run ranges overlap' if overlap else
+                          'consistent direction: baseline/candidate run ranges do not overlap')
+            stage_rows[stage] = dict(baseline_median=left_median, candidate_median=right_median,
+                                     baseline_range=[min(left), max(left)],
+                                     candidate_range=[min(right), max(right)],
+                                     delta_ms=delta,
+                                     delta_percent=(delta / left_median * 100) if left_median else None,
+                                     ranges_overlap=overlap, assessment=assessment)
+        comparison[f'hd{hd}'] = dict(mean_ms=stage_rows)
+    return comparison
+
+
 def frame_timings(path):
     with path.open(newline='') as stream:
         rows = list(csv.DictReader(stream))
@@ -307,6 +343,14 @@ def main():
         if args.baseline and not args.no_captures and not warmup:
             for hd in args.hd:
                 assert captures['baseline', hd] == captures['candidate', hd], f'HD={hd}: image changed'
+    comparison = paired_comparison(results)
+    (output / 'paired-comparison.json').write_text(json.dumps(comparison, indent=2) + '\n')
+    for hd, row in comparison.items():
+        for stage in ('raster-capture', 'compose', 'upload-present'):
+            stats = row['mean_ms'].get(stage)
+            if stats:
+                print(f'paired {hd} {stage}: median delta {stats["delta_ms"]:+.3f} ms '
+                      f'({stats["delta_percent"]:+.1f}%); {stats["assessment"]}', flush=True)
     print('Completed; baseline images match.' if args.baseline and not args.no_captures else 'Completed.')
 
 

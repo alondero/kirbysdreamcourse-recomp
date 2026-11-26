@@ -9,6 +9,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef KDC_TERRAIN_BLOCK_CACHE_LIMIT
+#ifdef __ANDROID__
+#define KDC_TERRAIN_BLOCK_CACHE_LIMIT (16u * 1024u * 1024u)
+#else
+#define KDC_TERRAIN_BLOCK_CACHE_LIMIT (48u * 1024u * 1024u)
+#endif
+#endif
+
+#ifndef KDC_TERRAIN_PROGRESSIVE_PIXELS
+#define KDC_TERRAIN_PROGRESSIVE_PIXELS (128 * 1024)
+#endif
+
 enum {
     kRows = 1024,          /* rows of the three row tables at $8BB0/$93B0/$9BB0 */
     kMapBytes = 2 * 0x6800, /* both planes' packed tile words at $13000 */
@@ -17,12 +29,9 @@ enum {
     kStrip = 4,            /* character rows enlarged per parallel piece */
     kBlockCols = 8,        /* character columns per cached animated terrain block */
     kTerrainBlockSlots = 16,
-#ifdef __ANDROID__
-    kMaxTerrainBlockCacheBytes = 16u * 1024u * 1024u,
-#else
-    kMaxTerrainBlockCacheBytes = 48u * 1024u * 1024u,
-#endif
+    kMaxTerrainBlockCacheBytes = KDC_TERRAIN_BLOCK_CACHE_LIMIT,
     kReach = (kKdcHdImageReach + 7) / 8,
+    kProgressiveSourcePixels = KDC_TERRAIN_PROGRESSIVE_PIXELS,
     /* Updates a palette's luma must hold still before the enlargement's edge
      * decisions follow it. Colours always come from the live palette; only
      * where edges are drawn waits, so cycling animations cost nothing while
@@ -53,7 +62,8 @@ static struct {
     uint16_t *words;       /* both planes' tile word for every grid cell */
     int columns, rows;     /* grid size in characters, including the border */
     int first_column, first_row;
-    bool valid, hd_valid;
+    bool valid, hd_valid, prewarm_active;
+    unsigned prewarm_next_strip;
     uint8_t tables[3 * 2 * kRows];
     uint8_t map[kMapBytes];
     uint16_t chars[kCharWords];
@@ -175,7 +185,8 @@ void KdcTerrainReset(void)
     free(state.words);
     state.native = state.mask = state.hd = state.dirty = state.reach = NULL;
     state.words = NULL;
-    state.valid = state.hd_valid = false;
+    state.valid = state.hd_valid = state.prewarm_active = false;
+    state.prewarm_next_strip = 0;
 }
 
 void KdcTerrainGetStats(KdcTerrainStats *stats)
@@ -295,6 +306,7 @@ typedef struct Enlarge {
     KdcHdImage image;
     const uint8_t *marked; /* per grid cell, or NULL for every cell */
     bool use_block_cache;
+    unsigned first_strip;
     _Atomic uint64_t scaled_tiles;
 } Enlarge;
 
@@ -313,6 +325,33 @@ static size_t PackPaddedBlock(const KdcHdImage *image, int bx0, int by0, int bx1
         offset += row_bytes;
     }
     return offset;
+}
+
+/* Reserve a replacement's net bytes before allocating it. Each cache entry is
+ * owned by one strip worker, but the shared ceiling is not: without making the
+ * check and reservation one atomic step, parallel strips can all pass the check
+ * before any of them records its allocation. */
+static bool ReserveTerrainBlockBytes(size_t old_bytes, size_t new_bytes)
+{
+    size_t cur = atomic_load_explicit(&state.block_cache_bytes, memory_order_relaxed);
+    for (;;) {
+        if (cur < old_bytes || cur - old_bytes + new_bytes > kMaxTerrainBlockCacheBytes)
+            return false;
+        const size_t next = cur - old_bytes + new_bytes;
+        if (atomic_compare_exchange_weak_explicit(&state.block_cache_bytes, &cur, next,
+                                                  memory_order_relaxed, memory_order_relaxed))
+            return true;
+    }
+}
+
+static void ReleaseTerrainBlockBytes(size_t old_bytes, size_t new_bytes)
+{
+    if (new_bytes >= old_bytes)
+        atomic_fetch_sub_explicit(&state.block_cache_bytes, new_bytes - old_bytes,
+                                  memory_order_relaxed);
+    else
+        atomic_fetch_add_explicit(&state.block_cache_bytes, old_bytes - new_bytes,
+                                  memory_order_relaxed);
 }
 
 static bool EnlargeBlockCached(const Enlarge *job, unsigned strip_index, unsigned bcol,
@@ -359,25 +398,20 @@ static bool EnlargeBlockCached(const Enlarge *job, unsigned strip_index, unsigne
             const size_t old_bytes = (victim->padded ? victim->padded_bytes : 0) +
                                      (victim->hd ? victim->hd_bytes : 0);
             const size_t new_bytes = padded_bytes + hd_bytes;
-            const size_t cur = atomic_load_explicit(&state.block_cache_bytes, memory_order_relaxed);
-            if (cur - old_bytes + new_bytes <= kMaxTerrainBlockCacheBytes) {
-                uint8_t *np = malloc(padded_bytes);
-                uint8_t *nh = malloc(hd_bytes);
-                if (np && nh) {
-                    free(victim->padded);
-                    free(victim->hd);
-                    victim->padded = np;
-                    victim->hd = nh;
-                    victim->padded_bytes = padded_bytes;
-                    victim->hd_bytes = hd_bytes;
-                    atomic_fetch_add_explicit(&state.block_cache_bytes, new_bytes - old_bytes,
-                                              memory_order_relaxed);
-                } else {
-                    free(np);
-                    free(nh);
-                    return false;
-                }
+            if (!ReserveTerrainBlockBytes(old_bytes, new_bytes)) return false;
+            uint8_t *np = malloc(padded_bytes);
+            uint8_t *nh = malloc(hd_bytes);
+            if (np && nh) {
+                free(victim->padded);
+                free(victim->hd);
+                victim->padded = np;
+                victim->hd = nh;
+                victim->padded_bytes = padded_bytes;
+                victim->hd_bytes = hd_bytes;
             } else {
+                free(np);
+                free(nh);
+                ReleaseTerrainBlockBytes(old_bytes, new_bytes);
                 return false;
             }
         }
@@ -400,7 +434,7 @@ static bool EnlargeBlockCached(const Enlarge *job, unsigned strip_index, unsigne
 static void EnlargeStrip(void *context, unsigned index)
 {
     Enlarge *job = context;
-    const int r0 = (int)index * kStrip;
+    const int r0 = (int)(job->first_strip + index) * kStrip;
     const int r1 = r0 + kStrip < state.rows ? r0 + kStrip : state.rows;
     if (job->use_block_cache && state.block_cache) {
         uint64_t missed_tiles = 0;
@@ -412,7 +446,7 @@ static void EnlargeStrip(void *context, unsigned index)
                 for (int col = c0; col < c1; ++col)
                     marked_count += job->marked[(size_t)row * state.columns + col] != 0;
             if (!marked_count) continue;
-            if (!EnlargeBlockCached(job, index, bcol, c0, c1, r0, r1))
+            if (!EnlargeBlockCached(job, job->first_strip + index, bcol, c0, c1, r0, r1))
                 missed_tiles += marked_count;
         }
         if (missed_tiles)
@@ -436,7 +470,7 @@ static void EnlargeStrip(void *context, unsigned index)
     }
 }
 
-static uint64_t EnlargeMarked(const uint8_t *marked)
+static uint64_t EnlargeMarkedRange(const uint8_t *marked, unsigned first_strip, unsigned strip_count)
 {
     const unsigned strips = (unsigned)((state.rows + kStrip - 1) / kStrip);
     const bool use_cache = marked != NULL;
@@ -454,11 +488,28 @@ static uint64_t EnlargeMarked(const uint8_t *marked)
                   .dst_stride = state.view.width * kKdcHdImageScale, .luma = state.luma},
         .marked = marked,
         .use_block_cache = use_cache && state.block_cache != NULL,
+        .first_strip = first_strip,
     };
     atomic_init(&job.scaled_tiles, 0);
-    KdcParallelFor(strips, EnlargeStrip, &job);
+    KdcParallelFor(strip_count, EnlargeStrip, &job);
     return atomic_load_explicit(&job.scaled_tiles, memory_order_relaxed);
 }
+
+static uint64_t EnlargeMarked(const uint8_t *marked)
+{
+    const unsigned strips = (unsigned)((state.rows + kStrip - 1) / kStrip);
+    return EnlargeMarkedRange(marked, 0, strips);
+}
+
+static bool ProgressiveEnlargeStep(void)
+{
+    const unsigned strips = (unsigned)((state.rows + kStrip - 1) / kStrip);
+    if (state.prewarm_next_strip >= strips) return true;
+    (void)EnlargeMarkedRange(NULL, state.prewarm_next_strip, 1);
+    ++state.prewarm_next_strip;
+    return state.prewarm_next_strip >= strips;
+}
+
 
 const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bool hd)
 {
@@ -485,6 +536,8 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     state.view.colors[0] = 0;
     memcpy(state.seen, luma, sizeof(luma));
     const bool enlarge_all = hd && !state.hd_valid;
+    const bool progressive_initial = enlarge_all &&
+        (size_t)state.view.width * state.view.height >= kProgressiveSourcePixels;
     unsigned luma_dirty = 0;
     for (unsigned p = 0; p < 8; ++p) {
         if (moved & (1u << p)) state.steady[p] = 0;
@@ -496,7 +549,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     /* A complete enlargement uses the current luma; otherwise only settled
      * palettes move on. */
     for (unsigned p = 0; p < 8; ++p)
-        if (enlarge_all || all || (luma_dirty & (1u << p)))
+        if ((enlarge_all && !state.prewarm_active) || all || (luma_dirty & (1u << p)))
             memcpy(state.luma + p * 16, luma + p * 16, 16 * sizeof(*luma));
     const bool chars_changed = all || memcmp(vram, state.chars, sizeof(state.chars));
     const bool map_changed = all || memcmp(ram + 0x13000, state.map, kMapBytes);
@@ -506,9 +559,12 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         state.hd = NULL;
         state.view.hd = NULL;
         state.hd_valid = false;
+        state.prewarm_active = false;
+        state.prewarm_next_strip = 0;
     }
     if (!hd) luma_dirty = 0;
-    if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all) return &state.view;
+    if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all)
+        return &state.view;
 
     uint8_t char_dirty[1024];
     if (chars_changed && !all)
@@ -524,7 +580,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
 
     /* Enlarge what changed together with everything a change can reach. */
     const size_t cells = (size_t)state.columns * state.rows;
-    bool any = false;
+    bool any = false, repair = false;
     memset(state.reach, 0, cells);
     for (int row = 0; row < state.rows; ++row)
         for (int column = 0; column < state.columns; ++column) {
@@ -533,23 +589,52 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
             state.stats.composed_tiles += *dirty == 2;
             *dirty = 0;
             any = true;
-            if (!hd || enlarge_all) continue;
+            if (!hd || (enlarge_all && !progressive_initial)) continue;
             const int c0 = column > kReach ? column - kReach : 0;
             const int c1 = column + kReach < state.columns - 1 ? column + kReach : state.columns - 1;
             const int r0 = row > kReach ? row - kReach : 0;
-            const int r1 = row + kReach < state.rows - 1 ? row + kReach : state.rows - 1;
+            int r1 = row + kReach < state.rows - 1 ? row + kReach : state.rows - 1;
+            if (progressive_initial) {
+                /* Strips not built yet are enlarged fresh with current data,
+                 * so only the part of the change's reach that overlaps an
+                 * already-completed strip needs repairing. */
+                const int built = (int)state.prewarm_next_strip * kStrip - 1;
+                if (r1 > built) r1 = built;
+                if (r0 > r1) continue;
+            }
+            repair = true;
             for (int r = r0; r <= r1; ++r)
                 memset(state.reach + (size_t)r * state.columns + c0, 1, (size_t)(c1 - c0 + 1));
         }
     if (!hd) return &state.view;
     if (enlarge_all) {
-        state.hd = calloc((size_t)state.view.width * state.view.height,
-                          kKdcHdImageScale * kKdcHdImageScale);
+        if (!state.hd)
+            state.hd = malloc((size_t)state.view.width * state.view.height *
+                              kKdcHdImageScale * kKdcHdImageScale);
         if (!state.hd) return &state.view; /* drawn from the source image */
-        state.hd_valid = true;
-        state.view.hd = state.hd;
-        EnlargeMarked(NULL);
-        state.stats.scaled_tiles += cells;
+        if (progressive_initial) {
+            state.prewarm_active = true;
+            const bool complete = ProgressiveEnlargeStep();
+            if (repair) {
+                const uint64_t scaled = EnlargeMarked(state.reach);
+                if (state.block_cache)
+                    state.stats.scaled_tiles += scaled;
+                else
+                    for (size_t i = 0; i < cells; ++i) state.stats.scaled_tiles += state.reach[i];
+            }
+            if (complete) {
+                state.prewarm_active = false;
+                state.prewarm_next_strip = 0;
+                state.hd_valid = true;
+                state.view.hd = state.hd;
+                state.stats.scaled_tiles += cells;
+            }
+        } else {
+            state.hd_valid = true;
+            state.view.hd = state.hd;
+            EnlargeMarked(NULL);
+            state.stats.scaled_tiles += cells;
+        }
     } else if (any) {
         const uint64_t scaled = EnlargeMarked(state.reach);
         if (state.block_cache)

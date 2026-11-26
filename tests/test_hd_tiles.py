@@ -31,6 +31,8 @@ class HdTilesTest(unittest.TestCase):
             subprocess.run([compiler, '-std=c11', '-O1', '-ffunction-sections', '-fdata-sections',
                             '-Wl,--gc-sections', '-I', str(root / 'src'), '-I', str(source),
                             str(root / 'tests/hd_textures_policy_test.c'),
+                            str(root / 'tests/hd_environment_cache_probe.c'),
+                            '-Wl,--wrap=getenv',
                             str(root / 'src/hd_textures.c'),
                             str(root / 'src/course_hud.c'),
                             str(root / 'src/course_view.c'),

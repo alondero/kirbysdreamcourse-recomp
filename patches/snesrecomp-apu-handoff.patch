@@ -2,13 +2,39 @@ diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
 index 98fb3b6..76b17d2 100644
 --- a/runner/src/snes/interp_bridge.c
 +++ b/runner/src/snes/interp_bridge.c
+@@ -1555,6 +1555,25 @@ static void interp_hist_init(void) {
+ }
+ #endif
+
++/* Process-scoped timing configuration. Generated-code bounces are far too
++ * frequent to scan the host environment for every decision. The tier2 bridge
++ * suite deliberately mutates this variable within one process; retain live
++ * lookups only for that test build unless it is explicitly probing the
++ * production cache. */
++static int bridge_apu_handoff_enabled(void) {
++#if defined(SNESRECOMP_TIER2_TEST) && !defined(SNESRECOMP_APU_HANDOFF_CACHE_PROBE)
++    const char *option = getenv("SNESRECOMP_APU_HANDOFF");
++    return option && option[0] && option[0] != '0';
++#else
++    static int enabled = -1;
++    if (enabled < 0) {
++        const char *option = getenv("SNESRECOMP_APU_HANDOFF");
++        enabled = option && option[0] && option[0] != '0';
++    }
++    return enabled;
++#endif
++}
++
+ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+                                  uint16_t s_exit, uint32_t *out_landing,
+                                  uint32_t *out_return_pc,
 @@ -2871,8 +2871,16 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                   * time is dropped — only deferred to the next real flush. (No-op
                   * under SNES_COSIM_APU_SHARED: pending never accumulates there, so
                   * the co-sim gates are unaffected.) */
 -                if (s_apu_pending_master >= bridge_bounce_flush_thresh())
-+                const char *_handoff_opt = getenv("SNESRECOMP_APU_HANDOFF");
-+                int _handoff = _handoff_opt && _handoff_opt[0] && _handoff_opt[0] != '0';
++                int _handoff =
++                    bridge_apu_handoff_enabled();
 +#ifdef SNES_COSIM
 +                if (cosim_apu_shared_clock()) _handoff = 0;
 +#endif
@@ -69,9 +95,9 @@ index 710649e..0a61a5f 100644
          g_aot_saw_site_pc24 = g_interp_wlog_pc24;
          cpu->A = (uint16)(cpu->A + 0x0100);     /* observable "compiled" work */
          cpu->S = (uint16)(cpu->S + 2);          /* models RTS popping its frame */
-@@ -548,6 +556,56 @@ int main(void) {
+@@ -548,6 +556,58 @@ int main(void) {
      g_test_snes.cart = &g_test_cart;
- 
+
      printf("S0 APU timeline policy remains cartridge-scoped\n");
 +    {
 +      double totals[2];
@@ -110,6 +136,7 @@ index 710649e..0a61a5f 100644
 +      CHECK(fabs(g_test_snes.apuCatchupCycles - totals[0]) < 0.00001,
 +            "already-synced path must not receive duplicate credit");
 +      g_aot_test_sync = 0;
++#ifndef SNESRECOMP_APU_HANDOFF_CACHE_PROBE
 +#ifdef _WIN32
 +      _putenv_s("SNESRECOMP_APU_HANDOFF", "");
 +#else
@@ -121,6 +148,7 @@ index 710649e..0a61a5f 100644
 +      CHECK(interp_bridge_run(&g_c, 0x008000) == 1, "disabled run returns");
 +      CHECK(fabs(g_test_snes.apuCatchupCycles - totals[0]) < 0.00001,
 +            "disabled handoff must preserve existing accounting");
++#endif
 +      g_aot_test_master = 0;
 +    }
      CHECK(!interp_bridge_use_absolute_apu_timeline(false, false, false),

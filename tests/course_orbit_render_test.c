@@ -1,6 +1,7 @@
 /* Synthetic geometry and planar graphics: no ROM assets or captured pixels. */
 #include "course_orbit.h"
 #include "course_hud.h"
+#include "course_terrain.h"
 #include "course_sprites.h"
 #include "snes/ppu.h"
 #include "snes/snes.h"
@@ -113,6 +114,20 @@ static void Draw(void)
     CheckPadding(pixels, width);
     assert(!memcmp(g_ram, saved_ram, sizeof(g_ram)));
     assert(!memcmp(&ppu, &saved_ppu, sizeof(ppu)));
+}
+
+/* Large courses build their enlarged terrain one strip per update, falling
+ * back to native-resolution sampling until every strip is complete. Pump the
+ * same update entry point the renderer uses so the assertions below observe
+ * final HD output rather than the construction window. */
+static void PrewarmTerrain(void)
+{
+    unsigned i;
+    for (i = 0; i < 256; ++i) {
+        const KdcTerrain *terrain = KdcTerrainUpdate(&ppu, g_ram, true);
+        if (terrain && terrain->hd) return;
+    }
+    assert(!"terrain prewarm did not complete");
 }
 
 static void NativeAngle(void)
@@ -525,6 +540,7 @@ static int Scenarios(void)
     Draw();
     memcpy(first, pixels, sizeof(first));
     hd_enabled = true;
+    PrewarmTerrain();
     Draw();
     EXPECT(memcmp(first, pixels, sizeof(first)) != 0);
     memcpy(first, pixels, sizeof(first));
@@ -577,6 +593,7 @@ static int Scenarios(void)
      * including reuse of unchanged checker entries on the next draw. */
     memcpy(ppu.vram + 16, checker_words, sizeof(checker_words));
     hd_enabled = true;
+    PrewarmTerrain();
     Snapshot();
     Draw();
     EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
@@ -716,6 +733,7 @@ static void HdEdgeHud(void)
     enum { w = 342 * 4, h = height * 4 };
     static uint32_t output[w * h];
     hd_enabled = true;
+    PrewarmTerrain();
     assert(KdcOrbitDrawHd((uint8_t *)output, w * 4, NULL, 342, height, 1, 4));
     /* 43px margin + 20px source X - 51px shift = 12px from left. */
     assert(output[(179 * 4) * w + 12 * 4] == 0xffffff00);
@@ -831,6 +849,7 @@ int main(void)
     enum { hd_width = width * 4, hd_height = height * 4, hd_stride = hd_width + padding };
     static uint32_t hd_pixels[hd_stride * hd_height + 8];
     hd_enabled = true;
+    PrewarmTerrain();
     Fill(hd_pixels, sizeof(hd_pixels) / sizeof(*hd_pixels));
     assert(KdcOrbitDrawHd((uint8_t *)hd_pixels, hd_stride * 4, (uint8_t *)native_field,
                          width, height, 1, 4));
