@@ -31,7 +31,7 @@ scene restores margin objects. Its camera Y is -31 and PPU scroll is 993.
 A 14,600-frame prefix of the existing 17,000-frame hole-1-2 recording
 (original SHA-256 `537d4c7c310d82ca3353d35fe78442698107b56f51d004d94242e962ac6d18fa`)
 used zero initial SRAM and the four guarded timing options in
-`tools/play_experimental.ps1`. All 110 retained center images and WRAM dumps
+`tools/play.ps1`. All 110 retained center images and WRAM dumps
 at frames 14490-14599 match before/after. The first intended margin change is
 frame 14546: live vertical scroll changes from 0 to 1023 while staged WRAM
 camera Y is already -2. At frame 14550 a tree and enemy previously cut at the
@@ -92,7 +92,7 @@ initial SRAM SHA-256 is
 The executable SHA-256 was
 `3a062c076dc566dc3c374aced81d31dfd4099333033ff906325c2712206b3aea`.
 Both runs enabled the three APU timing switches documented in
-`tools/play_experimental.ps1`, native bounce, and 272 extra columns per side.
+`tools/play.ps1`, native bounce, and 272 extra columns per side.
 
 All ten retained WRAM dumps and complete images at host frames 8190-8199 matched
 byte for byte. No first divergence occurred within that sampled interval. This
