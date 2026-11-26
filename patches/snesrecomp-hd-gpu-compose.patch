@@ -51,7 +51,7 @@ index 55296b6..85b6ee7 100644
    if (g_hd_bound_scale && g_ppu)
      PpuBindMode7HdSurface(g_ppu, NULL, 0, 0, 0, 0, 0);
    g_hd_bound_scale = 0;
-@@ -1498,7 +1517,35 @@ static int HdPresentScale(void) {
+@@ -1498,7 +1517,48 @@ static int HdPresentScale(void) {
    return (int)g_hd_bound_scale;
  }
  
@@ -87,8 +87,21 @@ index 55296b6..85b6ee7 100644
 +static unsigned HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
    const int w = g_snes_width, h = g_snes_height;
    const size_t native_pitch = (size_t)w * 4u;
++#ifndef __ANDROID__
++  if (g_config.output_method == kOutputMethod_OpenGL &&
++      !snes_runahead_frames() &&
++      !(g_config.shader && *g_config.shader) &&
++      g_game->draw_gpu_hd_frame) {
++    unsigned tex = g_game->draw_gpu_hd_frame(g_my_pixels, w, h,
++                                             g_present_alpha, (unsigned)scale);
++    if (tex) {
++      debug_server_note_composed_frame(NULL, 0, 0, 0);
++      return tex;
++    }
++  }
++#endif
    bool hd_composed = g_game->draw_hd_frame &&
-@@ -1522,7 +1569,7 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
+@@ -1522,7 +1582,7 @@ static void HdDrawFrame(uint8 *dst, size_t pitch, int scale) {
          memcpy(dst + (size_t)y * pitch, g_hd_surface + (size_t)y * hd_stride, row_bytes);
      }
      debug_server_note_composed_frame(g_hd_native, (unsigned)native_pitch, w, h);
@@ -187,7 +200,7 @@ index 085d8bc..f1c6380 100644
  struct SpcPlayer;
  struct RecompLauncherCModProvider;
  struct RecompLauncherCGameInfo;
-@@ -234,6 +235,11 @@ typedef struct SnesDesktopHostGame {
+@@ -234,6 +235,15 @@ typedef struct SnesDesktopHostGame {
     * ordinary draw_frame/PPU fallback. Guest state must remain unchanged. */
    int (*draw_hd_frame)(uint8_t *dst, size_t pitch, const uint8_t *field,
                         int width, int height, double alpha, unsigned scale);
@@ -196,6 +209,10 @@ index 085d8bc..f1c6380 100644
 +  struct PpuHdGpuFrame *(*begin_gpu_hd)(unsigned width, unsigned height, unsigned scale);
 +  unsigned (*draw_gpu_hd)(const struct PpuHdGpuFrame *, const uint8_t *native,
 +                          const uint32_t *cpu);
++  /* Optional GPU-resident replacement for draw_hd_frame on desktop OpenGL.
++   * Returns a complete, display-sized RGBA8 texture, or 0 to use draw_hd_frame. */
++  unsigned (*draw_gpu_hd_frame)(const uint8_t *field, int width, int height,
++                                double alpha, unsigned scale);
    /* Bounded host fast-forward: 1 (default) or 2..3. Every guest frame and
     * input tick still executes. Accelerated output is muted and discarded;
     * SPC/DSP processing continues. Netplay bypasses this local pacing hook. */

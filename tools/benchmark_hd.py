@@ -165,7 +165,7 @@ def main():
     parser.add_argument('--gpu-hd', action='store_true',
                         help='Enable OpenGL HD composition for the candidate only')
     parser.add_argument('--gpu-orbit', action='store_true',
-                        help='Enable experimental OpenGL orbit terrain rasterization for the candidate only')
+                        help='Enable OpenGL orbit composition for the candidate only')
     parser.add_argument('--verify-presents', action='store_true',
                         help='Compare per-presentation pixel CRCs and guest state in separate paired replays')
     parser.add_argument('--rom', type=Path, default=Path("Kirby's Dream Course (USA).sfc"))
@@ -265,8 +265,7 @@ def main():
                        SNESRECOMP_SCREENSHOT_FRAME=str(scenario['screenshot']))
             env.update(RUNTIME_ENV)
             env['KDC_HD_GPU'] = str(int(args.gpu_hd and name == 'candidate'))
-            if args.gpu_orbit and name == 'candidate':
-                env['KDC_ORBIT_GPU'] = '1'
+            env['KDC_ORBIT_GPU'] = str(int(args.gpu_orbit and name == 'candidate'))
             if args.threads is not None:
                 env['KDC_THREADS'] = str(args.threads)
             if args.orbit_profile:
@@ -305,8 +304,8 @@ def main():
             log = (case / 'run.log').read_text()
             if args.gpu_hd and name == 'candidate' and hd and 'GPU HD composition active' not in log:
                 raise AssertionError(f'{case}: GPU HD compositor did not present a frame')
-            if args.gpu_orbit and name == 'candidate' and hd and 'GPU orbit terrain active' not in log:
-                raise AssertionError(f'{case}: GPU orbit terrain did not render a frame')
+            if args.gpu_orbit and name == 'candidate' and hd and 'GPU orbit composition active' not in log:
+                raise AssertionError(f'{case}: GPU orbit compositor did not render a frame')
             if args.diagnostic_costs:
                 assert (case / 'cost.csv').is_file(), 'Missing diagnostic costs; use the diagnostic build'
                 if args.backend == 'opengl':

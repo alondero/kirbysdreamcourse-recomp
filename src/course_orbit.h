@@ -17,6 +17,12 @@ int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
 /* Native dimensions/field, HD destination. */
 int KdcOrbitDrawHd(uint8_t *dst, size_t pitch, const uint8_t *field,
                   int width, int height, double alpha, unsigned scale);
+#ifndef __ANDROID__
+/* GPU-resident OpenGL HD composition. Returns an RGBA8 texture ID or 0 to
+ * fall back to CPU composition. */
+unsigned KdcOrbitDrawHdGpu(const uint8_t *field, int width, int height,
+                           double alpha, unsigned scale);
+#endif
 /* True when the latest KdcOrbitDraw composed the presented frame and the
  * view is still ready, so the PPU's own HD tile composition would not be
  * shown. A declined draw clears it, so the next frame keeps its HD tiles. */

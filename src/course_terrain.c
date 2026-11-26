@@ -135,6 +135,7 @@ enum {
 typedef struct SceneryFrame {
     uint64_t hash;
     uint64_t last_use;
+    uint64_t revision;
     float luma[32];
     uint8_t *native;
     uint8_t *hd;
@@ -568,11 +569,19 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
         state.hd_valid = false;
         state.prewarm_active = false;
         state.prewarm_next_strip = 0;
+        state.view.texture_revision = ++texture_revision;
+        state.view.dirty_y0 = 0;
+        state.view.dirty_y1 = state.view.height;
     }
     if (!hd) luma_dirty = 0;
     if (!chars_changed && !map_changed && !luma_dirty && !enlarge_all)
         return &state.view;
-    state.view.texture_revision = ++texture_revision;
+    const bool texels_may_change = chars_changed || map_changed || luma_dirty || !progressive_initial;
+    if (texels_may_change) {
+        state.view.texture_revision = ++texture_revision;
+        state.view.dirty_y0 = 0;
+        state.view.dirty_y1 = state.view.height;
+    }
 
     uint8_t char_dirty[1024];
     if (chars_changed && !all)
@@ -589,6 +598,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     /* Enlarge what changed together with everything a change can reach. */
     const size_t cells = (size_t)state.columns * state.rows;
     bool any = false, repair = false;
+    int dirty_r0 = state.rows, dirty_r1 = 0;
     memset(state.reach, 0, cells);
     for (int row = 0; row < state.rows; ++row)
         for (int column = 0; column < state.columns; ++column) {
@@ -597,11 +607,17 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
             state.stats.composed_tiles += *dirty == 2;
             *dirty = 0;
             any = true;
-            if (!hd || (enlarge_all && !progressive_initial)) continue;
+            if (!hd || (enlarge_all && !progressive_initial)) {
+                if (row < dirty_r0) dirty_r0 = row;
+                if (row + 1 > dirty_r1) dirty_r1 = row + 1;
+                continue;
+            }
             const int c0 = column > kReach ? column - kReach : 0;
             const int c1 = column + kReach < state.columns - 1 ? column + kReach : state.columns - 1;
             const int r0 = row > kReach ? row - kReach : 0;
             int r1 = row + kReach < state.rows - 1 ? row + kReach : state.rows - 1;
+            if (r0 < dirty_r0) dirty_r0 = r0;
+            if (r1 + 1 > dirty_r1) dirty_r1 = r1 + 1;
             if (progressive_initial) {
                 /* Strips not built yet are enlarged fresh with current data,
                  * so only the part of the change's reach that overlaps an
@@ -614,6 +630,10 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
             for (int r = r0; r <= r1; ++r)
                 memset(state.reach + (size_t)r * state.columns + c0, 1, (size_t)(c1 - c0 + 1));
         }
+    if (!all && !enlarge_all) {
+        state.view.dirty_y0 = dirty_r0 < dirty_r1 ? dirty_r0 * 8 : 0;
+        state.view.dirty_y1 = dirty_r0 < dirty_r1 ? dirty_r1 * 8 : 0;
+    }
     if (!hd) return &state.view;
     if (enlarge_all) {
         if (!state.hd)
@@ -635,6 +655,9 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
                 state.prewarm_next_strip = 0;
                 state.hd_valid = true;
                 state.view.hd = state.hd;
+                state.view.texture_revision = ++texture_revision;
+                state.view.dirty_y0 = 0;
+                state.view.dirty_y1 = state.view.height;
                 state.stats.scaled_tiles += cells;
             }
         } else {
@@ -681,6 +704,7 @@ static void EnlargeScenery(void *context, unsigned index)
 
 const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bool hd)
 {
+    static uint64_t scenery_revision;
     if (!ppu || !ram) return NULL;
     const uint16_t *vram = PpuRenderVram(ppu);
     float luma[32] = {0};
@@ -700,6 +724,7 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     scenery.view.native = scenery.native;
     if (!hd && scenery.hd_valid) {
         FreeSceneryFrames();
+        scenery.view.texture_revision = ++scenery_revision;
     }
     scenery.view.hd = scenery.hd;
     /* Only cells whose map word or character changed are redrawn: the HUD
@@ -737,7 +762,10 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     if (!changed && !enlarge_all) return &scenery.view;
     ++state.stats.scenery_builds;
     if (luma_changed || !scenery.hd_valid) memcpy(scenery.luma, luma, sizeof(luma));
-    if (!hd) return &scenery.view;
+    if (!hd) {
+        scenery.view.texture_revision = ++scenery_revision;
+        return &scenery.view;
+    }
     /* Backdrops often loop through animated frames. Compare a 64-bit hash
      * first, then verify the complete decoded image and settled luma, never
      * trusting a hash alone. Retaining lazily allocated frames up to
@@ -756,6 +784,7 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
             !memcmp(frame->native, scenery.native, kSceneryNativeBytes)) {
             frame->last_use = scenery.use_clock;
             scenery.view.hd = scenery.hd = frame->hd;
+            scenery.view.texture_revision = frame->revision;
             scenery.hd_valid = true;
             ++state.stats.scenery_cache_hits;
             return &scenery.view;
@@ -815,8 +844,10 @@ const KdcScenery *KdcSceneryUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
     memcpy(frame->luma, scenery.luma, sizeof(frame->luma));
     frame->hash = hash;
     frame->last_use = scenery.use_clock;
+    frame->revision = ++scenery_revision;
     frame->valid = true;
     scenery.hd_valid = true;
     scenery.view.hd = scenery.hd;
+    scenery.view.texture_revision = frame->revision;
     return &scenery.view;
 }

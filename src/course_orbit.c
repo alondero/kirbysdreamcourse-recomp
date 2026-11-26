@@ -64,12 +64,8 @@ void KdcOrbitConfigure(bool enabled, bool controls)
 enum { kBandRows = 8, kMaxBands = 32 }; /* native rows per band: one BG3 character row */
 typedef KdcOrbitTexture Texture;
 typedef KdcOrbitFace Face;
-static KdcOrbitTerrainRaster *terrain_raster;
 
-void KdcOrbitSetTerrainRaster(KdcOrbitTerrainRaster *raster)
-{
-    terrain_raster = raster;
-}
+struct Art;
 
 /* A sprite piece with everything derived from the camera resolved. */
 typedef struct Piece {
@@ -82,7 +78,7 @@ typedef struct Piece {
     bool masked;
     /* Ground decals: output pixel and depth to original projected position. */
     double inverse[4][3], plane[3][2], step;
-    const uint32_t *const *art; /* enlarged image per 8x8 cell, or NULL */
+    struct Art *const *art;   /* enlarged cache entry per 8x8 cell, or NULL */
     unsigned base;             /* OBJ character base in VRAM words */
     const uint32_t *colors;    /* the piece's 16 palette colours */
 } Piece;
@@ -102,7 +98,6 @@ typedef struct Render {
     const KdcTerrain *terrain;
     Texture texture;
     bool smooth;   /* antialiased texture sampling */
-    bool terrain_drawn;
     int samples;   /* per axis, when one pixel spans several texels */
     const Face *faces;
     unsigned face_count;
@@ -259,22 +254,25 @@ static unsigned TilePixel(const uint16_t *vram, unsigned tile,
 /* Share the PPU's palette-locked tile source with the composed view. The
  * source is stable during a draw; revalidate content once per draw so VRAM
  * uploads, animation and palette cycling cannot leave stale replacements. */
+enum { kArtCacheCount = 4096, kArtSide = 8 * kKdcHdScale };
+struct Art {
+    unsigned address, palette, bpp;
+    uint64_t generation;
+    uint64_t atlas_epoch;
+    unsigned atlas_slot;
+    bool rom, valid;
+    PpuHdTileQuery query;
+    uint32_t pixels[kArtSide * kArtSide];
+    bool pack;
+};
 static uint64_t art_generation;
-static const uint32_t *HdArtTileLookup(const Render *render, unsigned address, bool rom,
-                                unsigned palette, unsigned bpp)
+static struct Art *HdArtTileFind(const Render *render, unsigned address, bool rom,
+                                 unsigned palette, unsigned bpp)
 {
-    enum { count = 4096, side = 8 * kKdcHdScale };
-    static struct Art {
-        unsigned address, palette, bpp;
-        uint64_t generation;
-        bool rom, valid;
-        PpuHdTileQuery query;
-        uint32_t pixels[side * side];
-        bool pack;
-    } cache[count];
+    static struct Art cache[kArtCacheCount];
     unsigned hash = address ^ (palette << 17) ^ (rom ? 0x55555555u : 0) ^ (bpp << 25);
     hash ^= hash >> 16; hash *= 0x7feb352du; hash ^= hash >> 15;
-    unsigned bucket = (hash & (count / 4 - 1)) * 4;
+    unsigned bucket = (hash & (kArtCacheCount / 4 - 1)) * 4;
     struct Art *entry = NULL, *available = NULL;
     bool same = false;
     for (unsigned i = 0; i < 4; ++i) {
@@ -301,20 +299,29 @@ static const uint32_t *HdArtTileLookup(const Render *render, unsigned address, b
         const bool pack = KdcHdPackAvailable();
         if (!same || pack != entry->pack || memcmp(&q, &entry->query, sizeof(q))) {
             if (!pack || !KdcHdPackTile(&q, entry->pixels)) {
-                uint8_t indices[side * side];
+                uint8_t indices[kArtSide * kArtSide];
                 if (!KdcHdSmoothTile(&q, indices, NULL))
                     KdcHdNearestTile(&q, indices, NULL);
                 uint32_t colors[16] = {0};
                 for (unsigned k = 1; k < (1u << bpp); ++k) colors[k] = Color(q.colors[k]);
-                for (unsigned k = 0; k < side * side; ++k) entry->pixels[k] = colors[indices[k]];
+                for (unsigned k = 0; k < kArtSide * kArtSide; ++k) entry->pixels[k] = colors[indices[k]];
             }
             entry->pack = pack;
             entry->query = q;
+            entry->atlas_epoch = 0;
+            entry->atlas_slot = 0;
         }
         entry->address = address; entry->palette = palette; entry->bpp = bpp;
         entry->rom = rom; entry->valid = true; entry->generation = art_generation;
     }
-    return entry->pixels;
+    return entry;
+}
+
+static inline const uint32_t *HdArtTileLookup(const Render *render, unsigned address,
+                                              bool rom, unsigned palette, unsigned bpp)
+{
+    const struct Art *entry = HdArtTileFind(render, address, rom, palette, bpp);
+    return entry ? entry->pixels : NULL;
 }
 
 
@@ -499,7 +506,7 @@ static bool MeshUpdate(const KdcCourseGeometry *geometry)
 
 /* Project the mesh for this camera. The projection is affine, so three
  * multiplications replace trigonometry per vertex. */
-static bool ProjectFaces(Render *render)
+static bool ProjectFaces(Render *render, bool build_bands)
 {
     if (!MeshUpdate(&render->geometry)) return false;
     const int width = render->width, height = render->height;
@@ -588,6 +595,14 @@ static bool ProjectFaces(Render *render)
         face->textured = triangle->kind != kMeshWallFlat && texture->texels;
         ++count;
     }
+    render->faces = mesh.faces;
+    render->face_count = count;
+    if (!build_bands) {
+        render->band_faces = NULL;
+        render->band_offset = NULL;
+        render->band_count = 0;
+        return true;
+    }
     const int band_h = kBandRows * render->scale;
     const unsigned bands = (unsigned)((height + band_h - 1) / band_h);
     unsigned band_counts[kMaxBands] = {0};
@@ -617,8 +632,6 @@ static bool ProjectFaces(Render *render)
         if (b1 >= bands) b1 = bands - 1;
         for (unsigned b = b0; b <= b1; ++b) mesh.band_faces[cursor[b]++] = i;
     }
-    render->faces = mesh.faces;
-    render->face_count = count;
     render->band_faces = mesh.band_faces;
     render->band_offset = mesh.band_offset;
     render->band_count = bands;
@@ -970,7 +983,7 @@ static void HudWindowRows(const Render *render, int row0, int row1)
     }
 }
 
-static const uint32_t *hud_art_table[8192];
+static struct Art *hud_art_table[8192];
 static uint64_t hud_art_stamp[8192];
 static uint64_t hud_art_gen;
 
@@ -979,8 +992,8 @@ static void WarmHudTile(const Render *render, uint16_t tile)
     const unsigned key = (((tile >> 10) & 7u) << 10) | (tile & 0x3ffu);
     if (hud_art_stamp[key] == hud_art_gen) return;
     hud_art_stamp[key] = hud_art_gen;
-    hud_art_table[key] = HdArtTileLookup(render, (0x4000u + (tile & 0x3ffu) * 8u) & 0x7fffu,
-                                         false, ((tile >> 10) & 7u) * 4u, 2);
+    hud_art_table[key] = HdArtTileFind(render, (0x4000u + (tile & 0x3ffu) * 8u) & 0x7fffu,
+                                       false, ((tile >> 10) & 7u) * 4u, 2);
 }
 
 static void PrepareHudArt(const Render *render)
@@ -1103,7 +1116,8 @@ static void HudBg3HdRows(const Render *render, int row0, int row1)
                 py = (int)(v & 7);
             }
             const unsigned key = (((tile >> 10) & 7u) << 10) | (tile & 0x3ffu);
-            const uint32_t *art = hud_art_stamp[key] == hud_art_gen ? hud_art_table[key] : NULL;
+            const struct Art *entry = hud_art_stamp[key] == hud_art_gen ? hud_art_table[key] : NULL;
+            const uint32_t *art = entry ? entry->pixels : NULL;
             if (!art) {
                 const unsigned pixel = TilePixel(render->vram, tile, 0x4000, px & 7, py & 7, 2);
                 if (!pixel) continue;
@@ -1242,7 +1256,8 @@ static uint32_t PieceColor(const Render *render, const Piece *piece,
         return 0;
     if (attr & 0x4000) sx = size - 1 - sx;
     if (attr & 0x8000) sy = size - 1 - sy;
-    const uint32_t *art = piece->art ? piece->art[(sy >> 3) * (size / 8) + (sx >> 3)] : NULL;
+    const struct Art *entry = piece->art ? piece->art[(sy >> 3) * (size / 8) + (sx >> 3)] : NULL;
+    const uint32_t *art = entry ? entry->pixels : NULL;
     unsigned pixel;
     if (art) {
         /* The enlarged character, at the continuous flipped position. */
@@ -1362,7 +1377,7 @@ static void BodyRows(const Render *render, const Piece *piece, bool world, int b
 }
 
 static Piece piece_buffer[sizeof(sprite_buffer) / sizeof(sprite_buffer[0])];
-static const uint32_t *art_cells[16384];
+static struct Art *art_cells[16384];
 
 /* Resolve the camera-dependent placement and artwork of every piece once,
  * in drawing order: decals, upright bodies, then screen pieces. */
@@ -1478,7 +1493,7 @@ static void PreparePieces(Render *render)
                     const unsigned tile = ((((attr & 255) >> 4) + cy) << 4) | (((attr & 15) + cx) & 15);
                     const unsigned view_tile = size <= 16 ? sprite->view_tiles[cell] : 0;
                     const bool from_rom = view_tile && view_tile + 32 <= g_snes->cart->romImageSize;
-                    art_cells[cells_used + cell] = HdArtTileLookup(render,
+                    art_cells[cells_used + cell] = HdArtTileFind(render,
                         from_rom ? view_tile : (piece->base + tile * 16) & 0x7fff, from_rom,
                         0x80 + 16 * ((attr >> 9) & 7), 4);
                 }
@@ -1765,10 +1780,8 @@ static void DrawBand(void *context, unsigned index)
     const int row0 = (int)index * kBandRows;
     const int row1 = row0 + kBandRows < native_height ? row0 + kBandRows : native_height;
     const int y0 = row0 * render->scale, y1 = row1 * render->scale;
-    if (!render->terrain_drawn) {
-        ClearDepthRows(render, y0, y1);
-        TerrainRows(render, index, y0, y1);
-    }
+    ClearDepthRows(render, y0, y1);
+    TerrainRows(render, index, y0, y1);
     BackgroundRows(render, row0, row1);
     for (unsigned i = 0; i < render->decal_count; ++i) DecalRows(render, &render->decals[i], y0, y1);
     for (unsigned i = 0; i < render->body_count; ++i) BodyRows(render, &render->bodies[i], true, y0, y1);
@@ -1839,31 +1852,29 @@ static void ReportProfile(double prepared, double drawn)
     frames = 0;
 }
 
-static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
-                int width, int height, double alpha, unsigned scale)
+static bool PrepareRender(Render *render, uint8_t *dst, size_t pitch, const uint8_t *field,
+                          int width, int height, double alpha, unsigned scale, bool build_bands)
 {
     const bool have_prepared = prepared_geometry_valid;
     prepared_geometry_valid = false;
-    if (!scale || scale > kKdcHdScale || !dst || pitch < (size_t)width * scale * 4 ||
-        !CanCompose(width, height)) return 0;
-    const double started = Milliseconds();
-    Render render = {.pixels = dst, .pitch = pitch, .width = width, .height = height,
-                     .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled(), .scale = scale,
-                     .vram = PpuRenderVram(g_snes->ppu), .field = field};
+    if (!scale || scale > kKdcHdScale || !CanCompose(width, height)) return false;
+    *render = (Render){.pixels = dst, .pitch = pitch, .width = width, .height = height,
+                       .depth = depth_buffer, .ppu = g_snes->ppu, .hd = KdcHdEnabled(), .scale = (int)scale,
+                       .vram = PpuRenderVram(g_snes->ppu), .field = field};
     if (have_prepared) {
-        render.geometry = prepared_geometry;
-    } else if (!KdcCourseGeometryInit(&render.geometry, g_ram, sizeof(g_ram),
+        render->geometry = prepared_geometry;
+    } else if (!KdcCourseGeometryInit(&render->geometry, g_ram, sizeof(g_ram),
         g_snes->cart->rom, g_snes->cart->romImageSize)) {
-        return 0;
+        return false;
     }
-    render.camera = ViewCamera(&render);
+    render->camera = ViewCamera(render);
     if (high_refresh) {
-        if (!current.valid || current.width != width || current.height != height) return 0;
-        Interpolate(&render, alpha);
+        if (!current.valid || current.width != width || current.height != height) return false;
+        Interpolate(render, alpha);
         ReportDraw(alpha);
     } else {
         sprite_count = 0;
-        KdcVisitOrbitSprites(render.ppu, g_ram, CollectSprite, NULL);
+        KdcVisitOrbitSprites(render->ppu, g_ram, CollectSprite, NULL);
     }
     /* Select artwork after interpolation, so the view uses the camera of
      * this presentation while the animation metadata remains frame-latched. */
@@ -1871,55 +1882,64 @@ static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
         KdcOrbitSprite *sprite = &sprite_buffer[i];
         if (sprite->world && !sprite->ground && sprite->view.family) {
             unsigned base = sprite->attributes & 0x100 ?
-                PPU_objTileAdr2(render.ppu) : PPU_objTileAdr1(render.ppu);
+                PPU_objTileAdr2(render->ppu) : PPU_objTileAdr1(render->ppu);
             if (base + (sprite->attributes & 255) * 16 !=
                 0x6000u + (sprite->attributes & 0x1ffu) * 16) continue;
             KdcApplySpriteView(g_snes->cart->rom, g_snes->cart->romImageSize,
-                render.vram, sprite->view, render.camera.yaw,
-                SpriteSize(render.ppu, sprite), sprite);
+                render->vram, sprite->view, render->camera.yaw,
+                SpriteSize(render->ppu, sprite), sprite);
         }
     }
     /* Scale only the presentation transform, after native-space camera
      * framing and interpolation. Lead offsets are intentionally unzoomed. */
-    render.width *= scale;
-    render.height *= scale;
-    render.camera.zoom *= scale;
-    render.camera.lead_x *= scale;
-    render.camera.lead_y *= scale;
+    render->width *= (int)scale;
+    render->height *= (int)scale;
+    render->camera.zoom *= scale;
+    render->camera.lead_x *= scale;
+    render->camera.lead_y *= scale;
     OrderAttachments();
     ++art_generation;
 
     /* The terrain texture is rebuilt only where its inputs changed. Above
      * one output pixel per source pixel the enlarged level adds detail;
      * at or below it the source image already has more than is shown. */
-    render.terrain = KdcTerrainUpdate(render.ppu, g_ram, render.hd);
-    if (render.terrain) {
-        const KdcTerrain *terrain = render.terrain;
-        const bool enlarged = terrain->hd && render.camera.zoom > 1.000001;
-        render.texture = (Texture){
+    render->terrain = KdcTerrainUpdate(render->ppu, g_ram, render->hd);
+    if (render->terrain) {
+        const KdcTerrain *terrain = render->terrain;
+        const bool enlarged = terrain->hd && render->camera.zoom > 1.000001;
+        render->texture = (Texture){
             .texels = enlarged ? terrain->hd : terrain->native,
             .scale = enlarged ? kKdcTerrainScale : 1,
             .left = terrain->left, .top = terrain->top, .colors = terrain->colors,
             .revision = terrain->texture_revision,
+            .dirty_y0 = terrain->dirty_y0 * (enlarged ? kKdcTerrainScale : 1),
+            .dirty_y1 = terrain->dirty_y1 * (enlarged ? kKdcTerrainScale : 1),
         };
-        render.texture.width = terrain->width * render.texture.scale;
-        render.texture.height = terrain->height * render.texture.scale;
-        render.texture.stride = render.texture.width;
-        render.smooth = enlarged;
+        render->texture.width = terrain->width * render->texture.scale;
+        render->texture.height = terrain->height * render->texture.scale;
+        render->texture.stride = render->texture.width;
+        render->smooth = enlarged;
     }
-    render.samples = render.smooth ? 1 : Samples(render.camera.zoom);
-    render.backdrop = Color(render.ppu->cgram[0]);
-    if (SceneryLayout(render.ppu))
-        render.scenery = KdcSceneryUpdate(render.ppu, g_ram, render.hd && scale > 1);
-    render.hd_hud = render.hd && KdcHdPackAvailable() && (scale > 1 || native_raster_skipped);
-    if (!ProjectFaces(&render)) return 0;
-    PreparePieces(&render);
-    PrepareHudArt(&render);
+    render->samples = render->smooth ? 1 : Samples(render->camera.zoom);
+    render->backdrop = Color(render->ppu->cgram[0]);
+    if (SceneryLayout(render->ppu))
+        render->scenery = KdcSceneryUpdate(render->ppu, g_ram, render->hd && scale > 1);
+    render->hd_hud = render->hd && KdcHdPackAvailable() && (scale > 1 || native_raster_skipped);
+    if (!ProjectFaces(render, build_bands)) return false;
+    PreparePieces(render);
+    PrepareHudArt(render);
+    return true;
+}
+
+static int Draw(uint8_t *dst, size_t pitch, const uint8_t *field,
+                int width, int height, double alpha, unsigned scale)
+{
+    if (!dst || pitch < (size_t)width * scale * 4) return 0;
+    const double started = Milliseconds();
+    Render render;
+    if (!PrepareRender(&render, dst, pitch, field, width, height, alpha, scale, true))
+        return 0;
     const double prepared = Milliseconds();
-    if (terrain_raster && scale > 1)
-        render.terrain_drawn = terrain_raster(render.faces, render.face_count,
-            &render.texture, render.samples, render.smooth, dst, pitch,
-            render.depth, render.width, render.height);
     KdcParallelFor((unsigned)((height + kBandRows - 1) / kBandRows), DrawBand, &render);
     ReportProfile(prepared - started, Milliseconds() - prepared);
     return 1;
@@ -1938,6 +1958,460 @@ static int RecordDraw(int drawn, int width, int height, unsigned scale)
     }
     return composed;
 }
+
+static KdcOrbitGpuBeginFn *gpu_orbit_begin;
+static KdcOrbitGpuComposeFn *gpu_orbit_compose;
+
+void KdcOrbitSetGpuCompositor(KdcOrbitGpuBeginFn *begin, KdcOrbitGpuComposeFn *compose)
+{
+    gpu_orbit_begin = begin;
+    gpu_orbit_compose = compose;
+}
+
+#ifndef __ANDROID__
+static unsigned ResolveArtSlot(struct Art *entry, const KdcOrbitGpuAtlas *atlas)
+{
+    if (entry->atlas_epoch != atlas->epoch) {
+        entry->atlas_slot = atlas->add_hd_tile(entry->pixels);
+        entry->atlas_epoch = atlas->epoch;
+    }
+    return entry->atlas_slot;
+}
+
+static bool AppendGpuPieces(const Render *render, const KdcOrbitGpuAtlas *atlas,
+                            const Piece *src, unsigned count,
+                            KdcOrbitGpuPiece *dst, uint32_t *cells,
+                            unsigned *cell_cursor, unsigned max_cells)
+{
+    for (unsigned i = 0; i < count; ++i) {
+        const Piece *p = &src[i];
+        const unsigned grid = (unsigned)(p->size / 8);
+        const unsigned cell_count = grid * grid;
+        if (*cell_cursor + cell_count > max_cells) return false;
+        const unsigned cell_offset = *cell_cursor;
+        *cell_cursor += cell_count;
+        const unsigned attr = p->sprite->attributes;
+        for (unsigned cell = 0; cell < cell_count; ++cell) {
+            struct Art *entry = p->art ? p->art[cell] : NULL;
+            if (entry) {
+                const unsigned slot = ResolveArtSlot(entry, atlas);
+                if (!slot) return false;
+                cells[cell_offset + cell] = slot << 1;
+            } else {
+                const unsigned cx = cell % grid, cy = cell / grid;
+                const unsigned tile = ((((attr & 255) >> 4) + cy) << 4) |
+                                      (((attr & 15) + cx) & 15);
+                const unsigned view_tile = p->size <= 16 ? p->sprite->view_tiles[cell] : 0;
+                const bool from_rom = view_tile && view_tile + 32 <= g_snes->cart->romImageSize;
+                uint32_t tmp[64];
+                bool any = false;
+                for (unsigned py = 0; py < 8; ++py) {
+                    for (unsigned px = 0; px < 8; ++px) {
+                        unsigned pixel;
+                        if (from_rom) {
+                            const uint8_t *data = g_snes->cart->rom + view_tile + py * 2;
+                            const unsigned shift = 7 - px;
+                            pixel = ((data[0] >> shift) & 1) | (((data[1] >> shift) & 1) << 1) |
+                                    (((data[16] >> shift) & 1) << 2) | (((data[17] >> shift) & 1) << 3);
+                        } else {
+                            pixel = TilePixel(render->vram, tile, p->base, (int)px, (int)py, 4);
+                        }
+                        const uint32_t c = pixel ? p->colors[pixel] : 0;
+                        tmp[py * 8 + px] = c;
+                        any |= c != 0;
+                    }
+                }
+                if (!any) {
+                    cells[cell_offset + cell] = 0;
+                } else {
+                    const unsigned slot = atlas->add_native_tile(tmp);
+                    if (!slot) return false;
+                    cells[cell_offset + cell] = (slot << 1) | 1u;
+                }
+            }
+        }
+        KdcOrbitGpuPiece *g = &dst[i];
+        *g = (KdcOrbitGpuPiece){
+            .x0 = p->x0, .x1 = p->x1, .y0 = p->y0, .y1 = p->y1,
+            .size = p->size, .samples = p->samples,
+            .attributes = attr, .masked = p->masked,
+            .cell_offset = cell_offset,
+            .native_x = p->native[0], .native_y = p->native[1],
+            .offset_x = p->sprite->offset_x, .offset_y = p->sprite->offset_y,
+            .sprite_z = p->sprite->z,
+            .step = p->step,
+            .point_y = p->point.y, .point_depth = p->point.depth,
+            .left = p->left, .top = p->top, .scale = p->scale,
+        };
+        memcpy(g->inverse, p->inverse, sizeof(g->inverse));
+        memcpy(g->plane, p->plane, sizeof(g->plane));
+    }
+    return true;
+}
+
+static void PushWindowRect(KdcOrbitGpuRect *rects, unsigned *count, unsigned max_rects,
+                           int row, int x0, int x1, int native_width, int scale)
+{
+    if (x0 < 0) x0 = 0;
+    if (x1 >= native_width) x1 = native_width - 1;
+    if (x0 > x1) return;
+    const int rx0 = x0 * scale, rx1 = (x1 + 1) * scale;
+    const int ry0 = row * scale, ry1 = (row + 1) * scale;
+    if (*count) {
+        KdcOrbitGpuRect *prev = &rects[*count - 1];
+        if (prev->x0 == rx0 && prev->x1 == rx1 && prev->y1 == ry0) {
+            prev->y1 = ry1;
+            return;
+        }
+    }
+    if (*count < max_rects)
+        rects[(*count)++] = (KdcOrbitGpuRect){rx0, rx1, ry0, ry1};
+}
+
+static bool BuildGpuHud(const Render *render, const KdcOrbitGpuAtlas *atlas,
+                        KdcOrbitGpuScene *scene)
+{
+    static KdcOrbitGpuRect win_rects[1024];
+    static uint32_t pre_buf[kPpuBufWidth * 240];
+    static uint32_t post_hd_buf[kPpuBufWidth * 240];
+    static uint32_t restore_buf[kPpuBufWidth * 240];
+    static uint8_t restore_mask[kPpuBufWidth * 240];
+    const int scale = render->scale;
+    const int native_w = render->width / scale;
+    const int native_h = render->height / scale;
+    const int extra = (native_w - 256) / 2;
+
+    if (render->hd_hud) {
+        /* 1. Window backing rects (HudWindowRows). */
+        unsigned rect_count = 0;
+        if (render->ppu->bgXsc[2] == 0x3c && PPU_bgTileAdr(render->ppu, 2) == 0x4000) {
+            scene->window_color = Color(render->ppu->fixedColor);
+            if (KdcHudActive(render->ppu) && render->ppu->presentationWindows) {
+                for (int row = 0; row < native_h; ++row) {
+                    int16_t edges[8] = {0};
+                    uint8_t count = 0, bits = 0;
+                    if (!render->ppu->presentationWindows(render->ppu, 0, row + 1, edges, &count, &bits))
+                        continue;
+                    for (unsigned i = 0; i < count; ++i)
+                        if ((bits >> i) & 1u)
+                            PushWindowRect(win_rects, &rect_count, 1024, row,
+                                           edges[i] + extra, edges[i + 1] - 1 + extra,
+                                           native_w, scale);
+                }
+            } else if (render->ppu->windowsel == 0x220000 && render->ppu->fixedColor == 0x7fff) {
+                const bool multi = KdcReadWord(g_ram, 0x17ff) == 1;
+                const unsigned top_v = multi ? (render->vram[0x3c00 + 21 * 32 + 4] == 0x34e7 ? 172u : 196u) : 180u;
+                for (int row = 0; row < native_h; ++row) {
+                    const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+                    if (multi && v >= 8 && v < 168) continue;
+                    int left, right;
+                    if (v < top_v || v >= 212u ||
+                        !KdcHudSpan(render->vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2], &left, &right))
+                        continue;
+                    PushWindowRect(win_rects, &rect_count, 1024, row,
+                                   (multi ? left + 4 : 56) + extra, right - 4 + extra,
+                                   native_w, scale);
+                }
+            }
+        }
+        scene->window_rects = win_rects;
+        scene->window_rect_count = rect_count;
+
+        /* 2. HD BG3 HUD map (HudBg3HdRows). */
+        if ((render->scenery || KdcHudActive(render->ppu)) &&
+            render->ppu->bgXsc[2] == 0x3c && PPU_bgTileAdr(render->ppu, 2) == 0x4000) {
+            const uint16_t scroll = render->ppu->hScroll[2];
+            const bool edge_hud = KdcHudActive(render->ppu);
+            const bool multi = KdcReadWord(g_ram, 0x17ff) == 1;
+            const int inset = extra > 96 ? extra - 96 : 0;
+            const int hud_left = -extra + inset + 12;
+            const int hud_right = 256 + extra - inset - 12 - 32;
+            const int star_shift0 = hud_left - (multi ? 16 : 20);
+            const int star_shift1 = hud_right - 208;
+            int y0 = native_h, y1 = 0;
+            uint8_t touched[240] = {0};
+            for (int row = 0; row < native_h; ++row) {
+                const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+                const int y_line = row + 1;
+                const bool in_cards = y_line >= kKdcHudCardY0 && y_line < kKdcHudCardY1;
+                const bool in_stars = multi && y_line >= 8 && y_line < 168;
+                const bool in_top_strip = multi && y_line >= kKdcHudMultiTopY0 && y_line < kKdcHudMultiTopY1;
+                const bool margin_has_hud = edge_hud && (in_cards || in_stars);
+                const int x_begin = (edge_hud && !margin_has_hud && extra > 0) ? extra : 0;
+                const int x_end = (edge_hud && !margin_has_hud && extra > 0) ? extra + 256 : native_w;
+                uint32_t *dst_row = post_hd_buf + (size_t)row * native_w;
+                for (int x = x_begin; x < x_end; ++x) {
+                    const int screen_x = x - extra;
+                    uint16_t tile;
+                    int px, py;
+                    if (edge_hud) {
+                        bool relocated_x = in_cards ||
+                            (in_top_strip && screen_x >= kKdcHudMultiTopX0 && screen_x < kKdcHudMultiTopX1) ||
+                            (in_stars && ((screen_x >= 8 && screen_x < 24) ||
+                                          (screen_x >= 232 && screen_x < 248) ||
+                                          (screen_x >= 8 + star_shift0 && screen_x < 24 + star_shift0) ||
+                                          (screen_x >= 232 + star_shift1 && screen_x < 248 + star_shift1)));
+                        if (in_cards && !in_top_strip) {
+                            const bool in_card_x = multi
+                                ? ((screen_x >= hud_left + 32 && screen_x < hud_left + 116) ||
+                                   (screen_x >= hud_right - 84 && screen_x < hud_right))
+                                : ((screen_x >= hud_left - 4 && screen_x < hud_left + 116) ||
+                                   (screen_x >= hud_right - 84 && screen_x < hud_right + 36));
+                            if (!in_card_x && (screen_x < 0 || screen_x >= 256)) continue;
+                            if (!in_card_x && y_line >= (multi ? 168 : 176)) continue;
+                        }
+                        if (!relocated_x) {
+                            if (screen_x < 0 || screen_x >= 256) continue;
+                            const unsigned index = (((unsigned)y_line >> 3) & 31u) * 32u + ((unsigned)screen_x >> 3);
+                            tile = render->vram[0x3c00 + index];
+                            if (tile == KdcReadWord(g_ram, 0xdadc + 2 * index)) {
+                                x += 7 - (screen_x & 7);
+                                continue;
+                            }
+                            px = screen_x & 7;
+                            py = y_line & 7;
+                        } else {
+                            bool flip;
+                            unsigned col_c = KdcReflectedColumn(screen_x, 0, &flip) & 31;
+                            uint16_t clean = KdcReadWord(g_ram, 0xdadc + 2 * ((((row + 1) >> 3) & 31) * 32 + col_c)) ^
+                                             (flip ? 0x4000 : 0);
+                            tile = (screen_x >= 0 && screen_x < 256) ?
+                                render->vram[0x3c00 + (((row + 1) >> 3) & 31) * 32 + (screen_x >> 3)] : clean;
+                            px = screen_x & 7;
+                            py = y_line & 7;
+                            KdcHudSample(render->ppu, 2, screen_x, y_line, &tile, &px, &py, NULL);
+                            if (tile == clean) continue;
+                        }
+                    } else {
+                        if (screen_x < 0 || screen_x >= 256) continue;
+                        const unsigned u = (unsigned)(screen_x + scroll) & 255;
+                        const unsigned index = (v / 8) * 32 + u / 8;
+                        tile = render->vram[0x3c00 + index];
+                        if (tile == KdcReadWord(g_ram, 0xdadc + 2 * index)) {
+                            x += 7 - (int)(u & 7);
+                            continue;
+                        }
+                        px = (int)(u & 7);
+                        py = (int)(v & 7);
+                    }
+                    const unsigned key = (((tile >> 10) & 7u) << 10) | (tile & 0x3ffu);
+                    struct Art *entry = hud_art_stamp[key] == hud_art_gen ? hud_art_table[key] : NULL;
+                    uint32_t encoded;
+                    if (!entry) {
+                        const unsigned pixel = TilePixel(render->vram, tile, 0x4000, px & 7, py & 7, 2);
+                        if (!pixel) continue;
+                        encoded = 0x01000000u |
+                            (Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + pixel]) & 0xffffffu);
+                    } else {
+                        const unsigned slot = ResolveArtSlot(entry, atlas);
+                        if (!slot) return false;
+                        encoded = 0x80000000u | (slot << 8) |
+                            ((tile & 0x8000u) ? 128u : 0u) |
+                            ((tile & 0x4000u) ? 64u : 0u) |
+                            (((unsigned)py & 7u) << 3) | ((unsigned)px & 7u);
+                    }
+                    if (!touched[row]) {
+                        memset(dst_row, 0, (size_t)native_w * sizeof(*dst_row));
+                        touched[row] = 1;
+                        if (row < y0) y0 = row;
+                        if (row + 1 > y1) y1 = row + 1;
+                    }
+                    dst_row[x] = encoded;
+                }
+            }
+            if (y0 < y1) {
+                for (int r = y0; r < y1; ++r)
+                    if (!touched[r])
+                        memset(post_hd_buf + (size_t)r * native_w, 0, (size_t)native_w * sizeof(uint32_t));
+                scene->post_hd_hud = post_hd_buf + (size_t)y0 * native_w;
+                scene->post_hd_hud_y0 = y0;
+                scene->post_hd_hud_y1 = y1;
+            }
+        }
+        return true;
+    }
+
+    /* Non-HD HUD: 1. Pre-screen native BG3 HUD (HudRows). */
+    if (render->scenery && !KdcHudActive(render->ppu)) {
+        const uint16_t scroll = render->ppu->hScroll[2];
+        int y0 = native_h, y1 = 0;
+        uint8_t touched[240] = {0};
+        for (int row = 0; row < native_h; ++row) {
+            const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+            uint32_t *dst_row = pre_buf + (size_t)row * native_w;
+            for (int screen_x = 0; screen_x < 256; ++screen_x) {
+                const unsigned u = (unsigned)(screen_x + scroll) & 255;
+                const unsigned index = (v / 8) * 32 + u / 8;
+                const unsigned tile = render->vram[0x3c00 + index];
+                if (tile == KdcReadWord(g_ram, 0xdadc + 2 * index)) {
+                    screen_x += 7 - (int)(u & 7);
+                    continue;
+                }
+                const unsigned pixel = TilePixel(render->vram, tile, 0x4000, (int)(u & 7), (int)(v & 7), 2);
+                if (!pixel) continue;
+                if (!touched[row]) {
+                    memset(dst_row, 0, (size_t)native_w * sizeof(*dst_row));
+                    touched[row] = 1;
+                    if (row < y0) y0 = row;
+                    if (row + 1 > y1) y1 = row + 1;
+                }
+                dst_row[screen_x + extra] = Color(render->ppu->cgram[((tile >> 10) & 7) * 4 + pixel]);
+            }
+        }
+        if (y0 < y1) {
+            for (int r = y0; r < y1; ++r)
+                if (!touched[r])
+                    memset(pre_buf + (size_t)r * native_w, 0, (size_t)native_w * sizeof(uint32_t));
+            scene->pre_hud = pre_buf + (size_t)y0 * native_w;
+            scene->pre_hud_y0 = y0;
+            scene->pre_hud_y1 = y1;
+        }
+    }
+
+    /* Non-HD HUD: 2. Post-screen native field restore (RestoreRows). */
+    if (render->field && render->ppu->bgXsc[2] == 0x3c &&
+        PPU_bgTileAdr(render->ppu, 2) == 0x4000) {
+        const uint32_t *field = (const uint32_t *)(const void *)render->field;
+        int y0 = native_h, y1 = 0;
+        uint8_t touched[240] = {0};
+        if (KdcHudActive(render->ppu)) {
+            for (int row = 0; row < native_h; ++row) {
+                uint32_t *dst_row = restore_buf + (size_t)row * native_w;
+                uint8_t *m_row = restore_mask + (size_t)row * native_w;
+                const uint32_t *f_row = field + (size_t)row * native_w;
+                for (int x = 0; x < native_w; ++x) {
+                    if (!KdcHudOverlayPixel(render->ppu, x - extra, row + 1)) continue;
+                    if (!touched[row]) {
+                        memset(m_row, 0, (size_t)native_w);
+                        touched[row] = 1;
+                        if (row < y0) y0 = row;
+                        if (row + 1 > y1) y1 = row + 1;
+                    }
+                    m_row[x] = 1;
+                    dst_row[x] = f_row[x];
+                }
+            }
+        } else {
+            const bool multi = KdcReadWord(g_ram, 0x17ff) == 1;
+            for (int row = 0; row < native_h; ++row) {
+                const unsigned v = (unsigned)(row + render->ppu->vScroll[2] + 1) & 255;
+                uint32_t *dst_row = restore_buf + (size_t)row * native_w;
+                uint8_t *m_row = restore_mask + (size_t)row * native_w;
+                const uint32_t *f_row = field + (size_t)row * native_w;
+                if (multi && v >= 8 && v < 168) {
+                    for (int x = 0; x < 256; ++x) {
+                        unsigned u = (x + render->ppu->hScroll[2]) & 255;
+                        unsigned index = (v / 8) * 32 + u / 8;
+                        unsigned tile = render->vram[0x3c00 + index];
+                        if (tile != KdcReadWord(g_ram, 0xdadc + 2 * index) &&
+                            TilePixel(render->vram, tile, 0x4000, (int)(u & 7), (int)(v & 7), 2)) {
+                            if (!touched[row]) {
+                                memset(m_row, 0, (size_t)native_w);
+                                touched[row] = 1;
+                                if (row < y0) y0 = row;
+                                if (row + 1 > y1) y1 = row + 1;
+                            }
+                            m_row[x + extra] = 1;
+                            dst_row[x + extra] = f_row[x + extra];
+                        }
+                    }
+                    continue;
+                }
+                int left, right;
+                if (!KdcHudSpan(render->vram + 0x3c00, g_ram, v, (uint16_t)render->ppu->hScroll[2],
+                                &left, &right)) continue;
+                left += extra;
+                right += extra;
+                if (left < 0) left = 0;
+                if (right >= native_w) right = native_w - 1;
+                if (left > right) continue;
+                memset(m_row, 0, (size_t)native_w);
+                memset(m_row + left, 1, (size_t)(right - left + 1));
+                memcpy(dst_row + left, f_row + left, (size_t)(right - left + 1) * sizeof(uint32_t));
+                touched[row] = 1;
+                if (row < y0) y0 = row;
+                if (row + 1 > y1) y1 = row + 1;
+            }
+        }
+        if (y0 < y1) {
+            for (int r = y0; r < y1; ++r)
+                if (!touched[r])
+                    memset(restore_mask + (size_t)r * native_w, 0, (size_t)native_w);
+            scene->restore_pixels = restore_buf + (size_t)y0 * native_w;
+            scene->restore_mask = restore_mask + (size_t)y0 * native_w;
+            scene->restore_y0 = y0;
+            scene->restore_y1 = y1;
+        }
+    }
+    return true;
+}
+
+unsigned KdcOrbitDrawHdGpu(const uint8_t *field, int width, int height,
+                           double alpha, unsigned scale)
+{
+    static KdcOrbitGpuPiece gpu_pieces[sizeof(sprite_buffer) / sizeof(sprite_buffer[0])];
+    static uint32_t gpu_cells[16384];
+    if (scale <= 1 || scale > kKdcHdScale || !gpu_orbit_begin || !gpu_orbit_compose ||
+        !CanCompose(width, height))
+        return 0;
+    const KdcOrbitGpuAtlas *atlas = gpu_orbit_begin();
+    if (!atlas) return 0;
+    const double started = Milliseconds();
+    Render render;
+    if (!PrepareRender(&render, NULL, 0, field, width, height, alpha, scale, false))
+        return 0;
+
+    unsigned cell_cursor = 0;
+    const unsigned max_cells = (unsigned)(sizeof(gpu_cells) / sizeof(gpu_cells[0]));
+    KdcOrbitGpuPiece *decals = gpu_pieces;
+    KdcOrbitGpuPiece *bodies = decals + render.decal_count;
+    KdcOrbitGpuPiece *screen = bodies + render.body_count;
+    if (!AppendGpuPieces(&render, atlas, render.decals, render.decal_count,
+                         decals, gpu_cells, &cell_cursor, max_cells) ||
+        !AppendGpuPieces(&render, atlas, render.bodies, render.body_count,
+                         bodies, gpu_cells, &cell_cursor, max_cells) ||
+        !AppendGpuPieces(&render, atlas, render.screen, render.screen_count,
+                         screen, gpu_cells, &cell_cursor, max_cells))
+        return 0;
+
+    KdcOrbitGpuScene scene = {
+        .width = render.width, .height = render.height, .scale = render.scale,
+        .faces = render.faces, .face_count = render.face_count,
+        .texture = &render.texture,
+        .samples = render.samples, .smooth = render.smooth,
+        .terrain_mask = render.terrain ? render.terrain->mask : NULL,
+        .terrain_left = render.terrain ? render.terrain->left : 0,
+        .terrain_top = render.terrain ? render.terrain->top : 0,
+        .terrain_width = render.terrain ? render.terrain->width : 0,
+        .terrain_height = render.terrain ? render.terrain->height : 0,
+        .terrain_dirty_y0 = render.terrain ? render.terrain->dirty_y0 : 0,
+        .terrain_dirty_y1 = render.terrain ? render.terrain->dirty_y1 : 0,
+        .terrain_mask_revision = render.terrain ? render.terrain->texture_revision : 0,
+        .backdrop = render.backdrop,
+        .has_scenery = render.scenery != NULL,
+        .scenery_texels = render.scenery
+            ? (render.scenery->hd && render.scale > 1 ? render.scenery->hd : render.scenery->native)
+            : NULL,
+        .scenery_hd = render.scenery != NULL && render.scenery->hd != NULL && render.scale > 1,
+        .scenery_revision = render.scenery ? render.scenery->texture_revision : 0,
+        .scenery_colors = render.scenery ? render.scenery->colors : NULL,
+        .scenery_hscroll = render.ppu->hScroll[2],
+        .scenery_vscroll = render.ppu->vScroll[2],
+        .decals = decals, .bodies = bodies, .screen = screen,
+        .decal_count = render.decal_count, .body_count = render.body_count,
+        .screen_count = render.screen_count,
+        .piece_cells = gpu_cells, .piece_cell_count = cell_cursor,
+        .hd_hud = render.hd_hud,
+    };
+    if (!BuildGpuHud(&render, atlas, &scene)) return 0;
+    const double prepared = Milliseconds();
+    const unsigned tex = gpu_orbit_compose(&scene);
+    if (!tex) return 0;
+    ReportProfile(prepared - started, Milliseconds() - prepared);
+    RecordDraw(1, width, height, scale);
+    return tex;
+}
+#endif
 
 int KdcOrbitDraw(uint8_t *dst, size_t pitch, const uint8_t *field,
                   int width, int height, double alpha)

@@ -20,26 +20,18 @@
 static unsigned compared_fields;
 static uint8_t gpu_output[kPpuBufWidth * 4 * 4 * 240 * 4];
 
-static bool RenderGpuTerrain(const KdcOrbitFace *faces, unsigned count,
-    const KdcOrbitTexture *texture, int samples, bool smooth,
-    uint8_t *pixels, size_t pitch, float *depth, int width, int height)
-{
-    assert(KdcOrbitGlTerrain(faces, count, texture, samples, smooth,
-        pixels, pitch, depth, width, height));
-    return true;
-}
-
 static int DrawHdDifferential(uint8_t *dst, size_t pitch, const uint8_t *field,
                               int w, int h, double alpha, unsigned scale)
 {
     int drew = KdcOrbitDrawHd(dst, pitch, field, w, h, alpha, scale);
     if (!drew) return drew;
+    if (scale <= 1) return drew;
     const size_t bytes = pitch * (size_t)h * scale;
     assert(bytes <= sizeof(gpu_output));
     memcpy(gpu_output, dst, bytes);
-    KdcOrbitSetTerrainRaster(RenderGpuTerrain);
-    assert(KdcOrbitDrawHd(gpu_output, pitch, field, w, h, alpha, scale));
-    KdcOrbitSetTerrainRaster(NULL);
+    unsigned tex = KdcOrbitDrawHdGpu(field, w, h, alpha, scale);
+    assert(tex != 0);
+    assert(KdcOrbitGlReadback(tex, gpu_output, pitch, w * (int)scale, h * (int)scale));
     if (memcmp(dst, gpu_output, bytes)) {
         for (size_t i = 0; i < bytes; ++i) {
             if (dst[i] == gpu_output[i]) continue;
@@ -79,12 +71,16 @@ void PpuSetBackgroundSample(Ppu *p, bool (*sample)(const Ppu *, unsigned, int, i
 static bool hd_enabled;
 bool KdcHdEnabled(void) { return hd_enabled; }
 static bool hd_pack_enabled;
+static bool hd_pack_alpha_tile;
 bool KdcHdPackAvailable(void) { return hd_pack_enabled; }
 bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *out)
 {
-    (void)q;
-    (void)out;
-    return false;
+    if (!hd_pack_alpha_tile) return false;
+    const unsigned side = 8 * q->scale;
+    for (unsigned y = 0; y < side; ++y)
+        for (unsigned x = 0; x < side; ++x)
+            out[y * side + x] = ((uint32_t)(((x + y) % 4) * 85u) << 24) | 0x3894c2u;
+    return true;
 }
 bool KdcOrbitEnabled(void) { return true; }
 
@@ -806,6 +802,22 @@ static void HdEdgeHud(void)
     assert(output[(7 * 4) * w + 322 * 4] == 0xff123456);
     assert(output[(7 * 4) * w + (43 + 8) * 4] != 0xff123456);
     assert(output[(7 * 4) * w + (43 + 232) * 4] != 0xff123456);
+    /* Exercise decals, world bodies, zoomed-out supersampling, and HD pack
+     * RGBA blending through KdcOrbitDrawHd (and the GPU differential path). */
+    draw_ground = true;
+    use_custom = false;
+    hd_pack_enabled = true;
+    hd_pack_alpha_tile = true;
+    NativeAngle();
+    QuarterTurn();
+    assert(KdcOrbitDrawHd((uint8_t *)output, w * 4, (uint8_t *)native_field,
+                          342, height, 1, 4));
+    Zoom(32767, 120);
+    assert(KdcOrbitDrawHd((uint8_t *)output, w * 4, (uint8_t *)native_field,
+                          342, height, 1, 4));
+    hd_pack_alpha_tile = false;
+    hd_pack_enabled = false;
+    draw_ground = false;
     Word(0x17ff, 0);
     hd_enabled = false; use_custom = false;
     KdcPrepareHud(&ppu, g_ram, 0, false);
@@ -816,6 +828,7 @@ int main(void)
 {
 #ifdef KDC_TEST_GPU_ORBIT
     OpenGlFixture(3, 3);
+    KdcOrbitSetGpuCompositor(KdcOrbitGlBegin, KdcOrbitGlCompose);
 #endif
     cart.rom = rom;
     cart.romImageSize = sizeof(rom);

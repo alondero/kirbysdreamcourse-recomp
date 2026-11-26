@@ -29,6 +29,7 @@ typedef struct KdcTerrain {
      * was not requested. */
     const uint8_t *hd;
     uint64_t texture_revision; /* changes when cached texel storage is updated */
+    int dirty_y0, dirty_y1;    /* native pixel rows touched by latest revision */
     /* 0xffRRGGBB for each palette index, from the live palette. */
     uint32_t colors[128];
 } KdcTerrain;
@@ -44,6 +45,7 @@ const KdcTerrain *KdcTerrainUpdate(const struct Ppu *ppu, const uint8_t *ram, bo
 typedef struct KdcScenery {
     const uint8_t *native; /* 256 x 256 CGRAM indices 1..31, 0 transparent */
     const uint8_t *hd;     /* 1024 x 1024, or NULL when not requested */
+    uint64_t texture_revision; /* changes when cached texel storage is updated */
     uint32_t colors[32];   /* 0xffRRGGBB */
 } KdcScenery;
 
