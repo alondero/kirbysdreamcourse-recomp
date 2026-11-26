@@ -11,6 +11,8 @@ Snes *g_snes;
 uint8_t g_ram[0x20000];
 
 static unsigned art_fills;
+static uint64_t pack_revision;
+static uint32_t pack_ink;
 extern bool KdcHdSmoothTile(const PpuHdTileQuery *, uint8_t *, void *);
 bool CountedArt(const PpuHdTileQuery *q, uint8_t *pixels, void *context)
 {
@@ -21,9 +23,15 @@ bool CountedArt(const PpuHdTileQuery *q, uint8_t *pixels, void *context)
 /* Unused host-facing paths still need symbols on Windows linkers. */
 bool KdcIsCourse(const Ppu *ppu) { (void)ppu; return true; }
 bool KdcHdEnabled(void) { return true; }
-bool KdcHdPackAvailable(void) { return false; }
+bool KdcHdPackAvailable(void) { return pack_revision != 0; }
+uint64_t KdcHdPackRevision(void) { return pack_revision; }
 bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *pixels)
-{ (void)q; (void)pixels; return false; }
+{
+    if (q->address != 16) return false;
+    for (unsigned i = 0; i < 64 * q->scale * q->scale; ++i)
+        pixels[i] = pack_ink;
+    return true;
+}
 bool KdcHudActive(const Ppu *ppu) { (void)ppu; return false; }
 bool KdcHudOverlayPixel(const Ppu *ppu, int x, int y)
 { (void)ppu; (void)x; (void)y; return false; }
@@ -84,6 +92,17 @@ int main(void)
     for (unsigned i = 0; i < 4096; ++i)
         (void)HdArtTileLookup(&render, (i * 16) & 0x7fff, false, (i / 2048) * 16, 4);
     assert(art_fills == warmed);
+    pack_revision = 1;
+    pack_ink = 0xff123456;
+    ++art_generation;
+    assert(Centre(&render, 16) == pack_ink);
+    ++pack_revision;
+    pack_ink = 0xffabcdef;
+    ++art_generation;
+    assert(Centre(&render, 16) == pack_ink);
+    pack_revision = 0;
+    ++art_generation;
+    assert(Centre(&render, 16) == Color(0x7fff));
     puts("orbit art cache: per-draw reuse, streamed updates and pressure passed");
     return 0;
 }

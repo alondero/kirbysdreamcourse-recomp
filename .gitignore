@@ -4,6 +4,7 @@
 *.fig
 *.ips
 *.bin
+*.pack
 *.sav
 *.srm
 *.state

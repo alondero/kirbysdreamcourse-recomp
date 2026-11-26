@@ -34,6 +34,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 enum { kLv2Coefficient = 2 };
 

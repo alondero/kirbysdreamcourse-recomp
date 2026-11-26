@@ -33,7 +33,9 @@ bool KdcHdTexturesEnabled(void) { return true; }
 bool KdcCheckerNeedsContext(const uint16_t words[16]) { (void)words; return false; }
 bool KdcOrbitComposing(void) { return false; }
 static bool pack_available;
+static uint64_t pack_revision = 1;
 bool KdcHdPackAvailable(void) { return pack_available; }
+uint64_t KdcHdPackRevision(void) { return pack_revision; }
 
 bool KdcHdNearestTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 {
@@ -48,11 +50,12 @@ bool KdcHdSmoothTile(const PpuHdTileQuery *q, uint8_t *indices, void *context)
 }
 
 static bool use_rgba;
+static uint32_t pack_ink = 0x80783456;
 bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *pixels)
 {
     if (!use_rgba || q->layer != 2) return false;
     for (unsigned i = 0; i < 64 * q->scale * q->scale; ++i)
-        pixels[i] = 0x80783456;
+        pixels[i] = pack_ink;
     return true;
 }
 
@@ -221,6 +224,23 @@ int main(void)
     p->cgadsub = 4; /* Add white to BG3 before blending its coverage. */
     ppu_drawCapturedLine(p, 1, true);
     assert(HdAt(40, 1) == 0x808080);
+
+    /* Switch packs with the same VRAM, palette and callbacks. */
+    p->cgadsub = 0;
+    pack_ink = 0xff123456;
+    ++pack_revision;
+    assert(KdcHdScale() == kScale);
+    ppu_drawCapturedLine(p, 1, true);
+    assert(HdAt(40, 1) == 0x123456);
+
+    /* Removing the pack keeps course scaling and restores the native HUD. */
+    pack_available = false;
+    p->screenEnabled[1] = 2; /* Keep the terrain plane active for the course policy. */
+    assert(KdcHdScale() == kScale);
+    ppu_drawCapturedLine(p, 1, true);
+    ppu_drawCapturedLine(p, 102, true);
+    assert(HdAt(40, 1) == hd_color);
+    assert(HdAt(142, 102) == native_color);
     ppu_free(p);
     return 0;
 }

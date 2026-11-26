@@ -1,9 +1,21 @@
 /* HD interface texture pack: lookup by character content, recolour live. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "hd_pack.h"
-#include "snes/ppu.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#undef FORCEINLINE
+#else
+#include <unistd.h>
+#endif
+#include "snes/ppu.h"
 
 enum { kPackHeader = 24, kPackEntry = 16, kPackTile = 32 * 32 * 5, kPackAnyAddress = 0xffff };
 
@@ -14,20 +26,35 @@ typedef struct PackEntry {
     uint32_t offset;
 } PackEntry;
 
-static struct {
+typedef struct {
     uint8_t *data;
     PackEntry *entries;
     unsigned count;
-    bool tried;
-} g_pack;
+} Pack;
+
+static Pack g_pack;
+static bool tried;
+static uint64_t revision;
+static const char config_path[] = "kdc-hd-ui.cfg";
+static const char default_path[] = "kdc-hd-ui.pack";
+static const char invalid_pack[] = "Invalid HD interface pack.";
+static const char unavailable_pack[] = "Could not read the HD interface pack.";
+static const char out_of_memory[] = "Insufficient memory to load the HD interface pack.";
 
 static uint32_t Le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
+static void FreePack(Pack *pack)
+{
+    free(pack->data);
+    free(pack->entries);
+    *pack = (Pack){0};
+}
+
 void KdcHdPackUnload(void)
 {
-    free(g_pack.data);
-    free(g_pack.entries);
-    memset(&g_pack, 0, sizeof(g_pack));
+    if (g_pack.count) ++revision;
+    FreePack(&g_pack);
+    tried = false;
 }
 
 static int Compare(uint64_t hash, unsigned bpp, unsigned layer, unsigned address, const PackEntry *e)
@@ -39,23 +66,16 @@ static int Compare(uint64_t hash, unsigned bpp, unsigned layer, unsigned address
     return 0;
 }
 
-bool KdcHdPackLoadMemory(const void *source, size_t size)
+static const char *ParsePack(Pack *pack, uint8_t *data, size_t size)
 {
-    KdcHdPackUnload();
-    g_pack.tried = true;
-    const uint8_t *p = source;
-    if (!p || size < kPackHeader || memcmp(p, "KDCHDUI1", 8) || Le32(p + 8) != 1 || Le32(p + 16) != 4)
-        return false;
-    const uint32_t count = Le32(p + 12);
-    if (count > (size - kPackHeader) / kPackEntry) return false;
-    PackEntry *entries = calloc(count ? count : 1, sizeof(*entries));
-    uint8_t *data = malloc(size);
-    if (!entries || !data) {
-        free(entries);
-        free(data);
-        return false;
-    }
-    memcpy(data, p, size);
+    if (size < kPackHeader || memcmp(data, "KDCHDUI1", 8)) return invalid_pack;
+    if (Le32(data + 8) != 1 || Le32(data + 16) != 4)
+        return "Unsupported HD interface pack version or scale.";
+    const uint32_t count = Le32(data + 12);
+    if (!count || count > (size - kPackHeader) / kPackEntry) return invalid_pack;
+    const size_t tiles_start = kPackHeader + (size_t)count * kPackEntry;
+    PackEntry *entries = calloc(count, sizeof(*entries));
+    if (!entries) return out_of_memory;
     for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *e = data + kPackHeader + (size_t)i * kPackEntry;
         PackEntry *out = &entries[i];
@@ -64,51 +84,184 @@ bool KdcHdPackLoadMemory(const void *source, size_t size)
         out->bpp = e[10];
         out->layer = e[11];
         out->offset = Le32(e + 12);
-        if ((out->bpp != 2 && out->bpp != 4) || out->offset > size || size - out->offset < kPackTile ||
+        if ((out->bpp != 2 && out->bpp != 4) || (out->layer > 2 && out->layer != 4) ||
+            out->offset < tiles_start || out->offset > size || size - out->offset < kPackTile ||
             (i && Compare(out->hash, out->bpp, out->layer, out->address, &entries[i - 1]) <= 0)) {
             free(entries);
-            free(data);
-            return false;
+            return invalid_pack;
         }
     }
-    g_pack.data = data;
-    g_pack.entries = entries;
-    g_pack.count = count;
+    *pack = (Pack){data, entries, count};
+    return NULL;
+}
+
+bool KdcHdPackLoadMemory(const void *source, size_t size)
+{
+    KdcHdPackUnload();
+    tried = true;
+    if (!source || size < kPackHeader) return false;
+    uint8_t *data = malloc(size);
+    if (!data) return false;
+    memcpy(data, source, size);
+    if (ParsePack(&g_pack, data, size)) {
+        free(data);
+        return false;
+    }
+    ++revision;
     return true;
+}
+
+static FILE *OpenPackFile(const char *path, bool override)
+{
+#ifdef _WIN32
+    if (override) {
+        const wchar_t *wide = _wgetenv(L"KDC_HD_PACK");
+        return wide ? _wfopen(wide, L"rb") : fopen(path, "rb");
+    }
+    wchar_t wide[kKdcHdPackPathMax];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                            kKdcHdPackPathMax))
+        return _wfopen(wide, L"rb");
+    errno = EINVAL;
+    return NULL;
+#else
+    (void)override;
+    return fopen(path, "rb");
+#endif
+}
+
+static const char *ReadPackFile(Pack *pack, const char *path, bool override, bool missing_ok)
+{
+    FILE *file = OpenPackFile(path, override);
+    if (!file) {
+        if (errno == ENOENT)
+            return missing_ok ? NULL : "HD interface pack file was not found.";
+        return unavailable_pack;
+    }
+    const char *error = unavailable_pack;
+    if (fseek(file, 0, SEEK_END) == 0) {
+        long size = ftell(file);
+        if (size >= 0 && size < kPackHeader) {
+            error = invalid_pack;
+        } else if (size >= kPackHeader && fseek(file, 0, SEEK_SET) == 0) {
+            uint8_t *data = malloc((size_t)size);
+            if (!data) {
+                error = out_of_memory;
+            } else {
+                if (fread(data, 1, (size_t)size, file) == (size_t)size)
+                    error = ParsePack(pack, data, (size_t)size);
+                if (error) free(data);
+            }
+        }
+    }
+    fclose(file);
+    return error;
 }
 
 bool KdcHdPackLoadFile(const char *path)
 {
     KdcHdPackUnload();
-    g_pack.tried = true;
-    FILE *f = path ? fopen(path, "rb") : NULL;
-    if (!f) return false;
-    bool ok = false;
-    if (fseek(f, 0, SEEK_END) == 0) {
-        long size = ftell(f);
-        if (size > 0 && fseek(f, 0, SEEK_SET) == 0) {
-            uint8_t *buffer = malloc((size_t)size);
-            if (buffer && fread(buffer, 1, (size_t)size, f) == (size_t)size)
-                ok = KdcHdPackLoadMemory(buffer, (size_t)size);
-            free(buffer);
+    tried = true;
+    if (!path || ReadPackFile(&g_pack, path, false, false)) return false;
+    ++revision;
+    return true;
+}
+
+KdcHdPackSettings KdcHdPackReadSettings(void)
+{
+    KdcHdPackSettings settings = {.enabled = true};
+    FILE *file = fopen(config_path, "rb");
+    if (!file) {
+        if (errno == ENOENT) memcpy(settings.path, default_path, sizeof(default_path));
+        return settings;
+    }
+    const int enabled = fgetc(file);
+    if ((enabled == '0' || enabled == '1') && fgetc(file) == '\n') {
+        const size_t length = fread(settings.path, 1, sizeof(settings.path), file);
+        if (length < sizeof(settings.path) && !ferror(file) && !memchr(settings.path, 0, length)) {
+            settings.enabled = enabled == '1';
+        } else {
+            settings.path[0] = '\0';
         }
     }
-    fclose(f);
-    g_pack.tried = true;
+    fclose(file);
+    return settings;
+}
+
+bool KdcHdPackSaveSettings(const KdcHdPackSettings *settings)
+{
+#ifdef _WIN32
+    wchar_t temporary[MAX_PATH];
+    if (!GetTempFileNameW(L".", L"khd", 0, temporary)) return false;
+    FILE *file = _wfopen(temporary, L"wb");
+#else
+    char temporary[] = "kdc-hd-ui.cfg.XXXXXX";
+    const int fd = mkstemp(temporary);
+    if (fd < 0) return false;
+    FILE *file = fdopen(fd, "wb");
+    if (!file) close(fd);
+#endif
+    bool ok = file && fprintf(file, "%d\n%s", settings->enabled, settings->path) >= 0;
+    if (file && fclose(file) != 0) ok = false;
+#ifdef _WIN32
+    if (ok) ok = MoveFileExW(temporary, L"kdc-hd-ui.cfg", MOVEFILE_REPLACE_EXISTING) != 0;
+    if (!ok) DeleteFileW(temporary);
+#else
+    if (ok) ok = rename(temporary, config_path) == 0;
+    if (!ok) remove(temporary);
+#endif
     return ok;
+}
+
+bool KdcHdPackOverridden(void)
+{
+    const char *path = getenv("KDC_HD_PACK");
+    return path && *path;
+}
+
+static const char *ReadSelection(Pack *pack, const KdcHdPackSettings *settings, bool inspect)
+{
+    const char *override = getenv("KDC_HD_PACK");
+    if (override && *override)
+        return ReadPackFile(pack, override, true, false);
+    if ((!inspect && !settings->enabled) || !settings->path[0]) return NULL;
+    const bool missing_ok = strcmp(settings->path, default_path) == 0;
+    return ReadPackFile(pack, settings->path, false, missing_ok);
+}
+
+const char *KdcHdPackInspect(const KdcHdPackSettings *settings, bool *available)
+{
+    Pack pack = {0};
+    const char *error = ReadSelection(&pack, settings, true);
+    *available = pack.count != 0;
+    FreePack(&pack);
+    return error;
+}
+
+const char *KdcHdPackReload(const KdcHdPackSettings *settings)
+{
+    KdcHdPackUnload();
+    tried = true;
+    const char *error = ReadSelection(&g_pack, settings, false);
+    if (error)
+        fprintf(stderr, "[hd] %s (%s)\n", error,
+                KdcHdPackOverridden() ? getenv("KDC_HD_PACK") : settings->path);
+    if (g_pack.count) ++revision;
+    return error;
 }
 
 void KdcHdPackPrewarm(void)
 {
-    if (g_pack.tried) return;
-    const char *path = getenv("KDC_HD_PACK");
-    if (!KdcHdPackLoadFile(path && *path ? path : "kdc-hd-ui.pack") && path && *path)
-        fprintf(stderr, "[hd] texture pack '%s' could not be loaded\n", path);
+    if (tried) return;
+    const KdcHdPackSettings settings = KdcHdPackReadSettings();
+    KdcHdPackReload(&settings);
 }
 
 bool KdcHdPackAvailable(void) { return g_pack.count != 0; }
 
 unsigned KdcHdPackCount(void) { return g_pack.count; }
+
+uint64_t KdcHdPackRevision(void) { return revision; }
 
 static uint64_t HashWords(const uint16_t *words, unsigned count)
 {

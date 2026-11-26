@@ -1,0 +1,12 @@
+diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/imgui/launcher_imgui.cpp
+--- a/src/common/backends/imgui/launcher_imgui.cpp
++++ b/src/common/backends/imgui/launcher_imgui.cpp
+@@ -6912,7 +6912,7 @@ static void pick_mod_feature_resource(
+             } else {
+                 stored = true;
+                 std::snprintf(m->mod_status, sizeof(m->mod_status),
+-                              "%s verified. Changes apply on PLAY.",
++                              "%s selected. Changes apply on Play or Resume.",
+                               res_label.c_str());
+             }
+         }

@@ -263,7 +263,7 @@ struct Art {
     bool rom, valid;
     PpuHdTileQuery query;
     uint32_t pixels[kArtSide * kArtSide];
-    bool pack;
+    uint64_t pack_revision;
 };
 static uint64_t art_generation;
 static struct Art *HdArtTileFind(const Render *render, unsigned address, bool rom,
@@ -296,9 +296,9 @@ static struct Art *HdArtTileFind(const Render *render, unsigned address, bool ro
                 (uint16_t)g_snes->cart->rom[address + 2 * i + 1] << 8 :
                 PpuRenderVram(render->ppu)[(address + i) & 0x7fff];
         for (unsigned i = 1; i < (1u << bpp); ++i) q.colors[i] = render->ppu->cgram[palette + i];
-        const bool pack = KdcHdPackAvailable();
-        if (!same || pack != entry->pack || memcmp(&q, &entry->query, sizeof(q))) {
-            if (!pack || !KdcHdPackTile(&q, entry->pixels)) {
+        const uint64_t pack_revision = KdcHdPackAvailable() ? KdcHdPackRevision() : 0;
+        if (!same || pack_revision != entry->pack_revision || memcmp(&q, &entry->query, sizeof(q))) {
+            if (!pack_revision || !KdcHdPackTile(&q, entry->pixels)) {
                 uint8_t indices[kArtSide * kArtSide];
                 if (!KdcHdSmoothTile(&q, indices, NULL))
                     KdcHdNearestTile(&q, indices, NULL);
@@ -306,7 +306,7 @@ static struct Art *HdArtTileFind(const Render *render, unsigned address, bool ro
                 for (unsigned k = 1; k < (1u << bpp); ++k) colors[k] = Color(q.colors[k]);
                 for (unsigned k = 0; k < kArtSide * kArtSide; ++k) entry->pixels[k] = colors[indices[k]];
             }
-            entry->pack = pack;
+            entry->pack_revision = pack_revision;
             entry->query = q;
             entry->atlas_epoch = 0;
             entry->atlas_slot = 0;
