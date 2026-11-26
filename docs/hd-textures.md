@@ -463,21 +463,32 @@ Offline, from memory dumps of five courses, a full build of the enlarged
 terrain took 6 to 45 ms (hole 8-8's map is 2160x1216), done once per hole. A
 changed character used across the map took 2 to 9 ms.
 
-Large first-time terrain enlargements (at or above 128k source pixels) are no
-longer synchronous: construction is amortized one four-row strip per update,
-and the enlarged image is exposed only once every strip is complete, so
-rendering falls back to native-resolution sampling instead of ever showing a
-partially built image as final. Character changes during construction are
-repaired in the update that consumes them, limited to the part of each
-change's reach that overlaps an already-completed strip, so the image is exact
-on the frame it is first exposed; the test asserts that exactness without any
-post-exposure update.
-Small courses keep the synchronous path. In the paired `orbit` benchmark the
-first-composition peak dropped from 12.5–17.2 ms to 8.8–9.7 ms, with warm
-means unchanged. The progressive steps do not run across the worker pool, so
-a single strip's serial cost still bounds the remaining spike; splitting the
-work further and deferring construction until the camera actually zooms in
-are follow-up work.
+Large first-time terrain enlargements (at or above 128k source pixels) build
+in full-width strips of four character rows. The first update builds one strip
+alongside the native image. Later updates submit up to four strips, limited by
+the number of rendering workers. Sampling uses the native image until all
+strips are complete. Each strip reads from the full source image, so parallel
+construction uses the same edge neighborhoods as serial construction. Character
+changes during construction are repaired in the update that consumes them,
+limited to the part of each change's reach that overlaps an already-completed
+strip. The progressive test compares the enlarged image to a fresh serial build
+on the frame it becomes available. Small courses use synchronous construction.
+
+Three paired `tools/benchmark_hd.py --scenario orbit` runs per hole compared
+the batched build with `7181048` on Windows (Ryzen 9 3900X, SDL dummy display,
+software renderer, 12 workers, HD enabled, frames 500–620). The compose figures
+are the median of each run's per-frame maximum, with the observed range in
+parentheses.
+
+| Hole | Construction updates, serial → batched | Serial peak compose (ms) | Batched peak compose (ms) |
+| --- | ---: | ---: | ---: |
+| 1-1 | 11 → 4 | 11.87 (10.10–11.97) | 10.35 (9.75–10.52) |
+| 8-8 | 38 → 11 | 13.24 (11.79–15.33) | 12.98 (12.91–18.88) |
+
+Separate diagnostic replays compared every texel at first publication with a
+fresh serial enlargement of the same source and luma. Both holes matched,
+including at cached-block boundaries. Both frame 800 screenshots matched the
+baseline.
 
 `tools/benchmark_hd.py --scenario orbit` (deterministic course with the orbit
 camera, SDL dummy display, 2026-11-11, Ryzen 9 3900X), before and after:

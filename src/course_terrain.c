@@ -27,6 +27,7 @@ enum {
     kCharWords = 0x4000,   /* 1024 4bpp characters from VRAM word 0 */
     kMaxTiles = 1 << 16,   /* refuse implausible maps instead of allocating */
     kStrip = 4,            /* character rows enlarged per parallel piece */
+    kProgressiveMaxStrips = 4,
     kBlockCols = 8,        /* character columns per cached animated terrain block */
     kTerrainBlockSlots = 16,
     kMaxTerrainBlockCacheBytes = KDC_TERRAIN_BLOCK_CACHE_LIMIT,
@@ -504,10 +505,15 @@ static uint64_t EnlargeMarked(const uint8_t *marked)
 static bool ProgressiveEnlargeStep(void)
 {
     const unsigned strips = (unsigned)((state.rows + kStrip - 1) / kStrip);
-    if (state.prewarm_next_strip >= strips) return true;
-    (void)EnlargeMarkedRange(NULL, state.prewarm_next_strip, 1);
-    ++state.prewarm_next_strip;
-    return state.prewarm_next_strip >= strips;
+    const unsigned remaining = strips - state.prewarm_next_strip;
+    /* Build one strip alongside the cold native image. Later updates can
+     * spread a bounded batch of full-width strips across the worker pool. */
+    unsigned count = state.prewarm_next_strip ? KdcParallelThreads() : 1;
+    if (count > kProgressiveMaxStrips) count = kProgressiveMaxStrips;
+    if (count > remaining) count = remaining;
+    (void)EnlargeMarkedRange(NULL, state.prewarm_next_strip, count);
+    state.prewarm_next_strip += count;
+    return state.prewarm_next_strip == strips;
 }
 
 
