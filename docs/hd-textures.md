@@ -23,10 +23,23 @@ any pixel the exactness check cannot reproduce, also stay native.
 
 A texture pack is a separate, game-derived mod authored outside this
 repository. Packs are never committed or distributed with the project. When
-HD textures are on, the game loads the file named by `KDC_HD_PACK`, or
-`kdc-hd-ui.pack` in the working directory. Installing the pack is the opt-in:
-there is no built-in modern/original interface-art option and no procedural
-replacement artwork in this repository.
+**HD textures** are on, enable **HD interface pack** on the launcher's
+**Mods** page on Windows or Linux. Select the row and choose **Select file**
+or **Change file** under **Files** to pick a `.pack` file. The pack applies
+on **Play** or **Resume**. The file and pack checkbox are saved in
+`kdc-hd-ui.cfg` beside the executable, independently of game saves.
+
+Untick **HD interface pack** to restore original interface art while keeping
+the file selected. **Clear selection** removes the selection. Either action
+leaves course scaling governed by **HD textures**. A missing, invalid or
+unsupported pack displays an error in the Mods page and uses the original
+interface art.
+
+Existing installs still auto-detect `kdc-hd-ui.pack` in the working directory
+until a file is selected or the selection is cleared. A nonempty
+`KDC_HD_PACK` overrides the saved file and pack checkbox for scripted and
+headless runs. It still requires HD textures to be on. Android's in-app pack
+picker and toggle are deferred.
 
 While a pack is loaded, interface lines participate in HD rendering so pack
 characters can be replaced. Characters the pack does not cover use the
@@ -197,8 +210,10 @@ ROM-free tests:
 - `tests/test_hd_scaler.py` checks the scaler: flat images are unchanged,
   diagonals become monotone staircases, output is palette-locked, and
   rotating the input rotates the output.
-- `tests/test_launcher_settings.py` covers the Mods page toggle and its
-  persistence. `tests/test_course_view.py` covers the HUD span rule.
+- `tests/test_launcher_settings.py` covers staging, persistence, clearing,
+  file errors and the environment override. The PPU and orbit renderer
+  tests switch packs with identical source tiles to check cache invalidation.
+  `tests/test_course_view.py` covers the HUD span rule.
 
 Opt-in real-ROM test, which needs the verified ROM and a local build:
 

@@ -316,7 +316,8 @@ if(NOT UI_GIT_RESULT EQUAL 0 OR NOT KDC_RECOMP_UI_HEAD STREQUAL KDC_RECOMP_UI_RE
     message(FATAL_ERROR "recomp-ui revision does not match the tested pin")
 endif()
 # Built-in providers hide external package management. Android borrows the SDLActivity window.
-set(KDC_UI_PATCHES recomp-ui-builtin-settings.patch)
+set(KDC_UI_PATCHES recomp-ui-builtin-settings.patch recomp-ui-resource-status.patch
+    recomp-ui-resource-clear-status.patch)
 if(ANDROID)
     list(APPEND KDC_UI_PATCHES recomp-ui-android-launcher.patch)
 endif()

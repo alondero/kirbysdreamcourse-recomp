@@ -58,7 +58,7 @@ class LauncherStartupTest(unittest.TestCase):
         self.assertEqual(len(cpu.splitlines()), 1, result.stdout + result.stderr)
 
     def test_missing_hd_pack_override_warns_once_only_with_hd_enabled(self):
-        warning = "[hd] texture pack 'missing.pack' could not be loaded"
+        warning = "[hd] HD interface pack file was not found. (missing.pack)"
         for enabled in ('0', '1'):
             with self.subTest(hd=enabled):
                 result, cpu = self.run_host(self.data, 'explicit_skip', KDC_HD=enabled,

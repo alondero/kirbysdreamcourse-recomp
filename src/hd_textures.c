@@ -141,8 +141,10 @@ unsigned KdcHdScale(void)
     static Ppu *bound;
     static PpuHdTileFill *bound_fill;
     static bool bound_pack;
+    static uint64_t bound_pack_revision;
     const bool want = KdcHdEnabled();
     const bool pack = want && KdcHdPackAvailable();
+    const uint64_t pack_revision = pack ? KdcHdPackRevision() : 0;
     Ppu *ppu = g_snes ? g_snes->ppu : NULL;
     static int nearest = -1;
     if (nearest < 0) {
@@ -152,7 +154,9 @@ unsigned KdcHdScale(void)
     PpuHdTileFill *fill = nearest ? KdcHdNearestTile : HdCourseTile;
     if (!want) fill = NULL;
     const bool next_course = ppu && KdcIsCourse(ppu);
-    if (ppu && next_course != course_active && pack) PpuInvalidateHdTiles(ppu);
+    if (ppu && pack && (next_course != course_active ||
+                       (bound_pack && pack_revision != bound_pack_revision)))
+        PpuInvalidateHdTiles(ppu);
     course_active = next_course;
     /* The PPU lives for the whole process; rebinding only follows the setting. */
     if (ppu != bound || fill != bound_fill || pack != bound_pack) {
@@ -166,6 +170,7 @@ unsigned KdcHdScale(void)
         bound_fill = fill;
         bound_pack = pack;
     }
+    bound_pack_revision = pack_revision;
     /* Without an interface pack, lines outside courses stay native; while
      * the orbit view composes the frame the host presents that composition
      * instead of the tiles. Either way the tile work would be discarded, so

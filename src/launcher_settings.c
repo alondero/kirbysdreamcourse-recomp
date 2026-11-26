@@ -34,6 +34,9 @@ typedef struct {
     int pending_orbit;
     int pending_high_refresh, pending_rate;
     int pending_hd;
+    KdcHdPackSettings saved_pack, pending_pack;
+    const char *pack_error;
+    bool pack_available, pack_selected;
     int pending_transitions;
     int pending_extra_courses;
     const char *expected_rom_hash;
@@ -195,7 +198,11 @@ static int Count(void *ctx)
 static int FeatureCount(void *ctx)
 {
     (void)ctx;
+#ifdef __ANDROID__
     return 6;
+#else
+    return 7;
+#endif
 }
 
 static int IsOrbit(const char *package, const char *feature)
@@ -210,6 +217,74 @@ static int IsHdTextures(const char *package, const char *feature)
            !strcmp(feature, "hd_textures");
 }
 
+static int IsHdPack(const char *package, const char *feature)
+{
+#ifdef __ANDROID__
+    (void)package;
+    (void)feature;
+    return 0;
+#else
+    return package && feature && !strcmp(package, "kdc.presentation") &&
+           !strcmp(feature, "hd-interface-pack");
+#endif
+}
+
+static void InspectHdPack(KdcLauncherSettingsState *state)
+{
+    state->pack_error = KdcHdPackInspect(&state->pending_pack, &state->pack_available);
+}
+
+static const char *HdPackStatus(const KdcLauncherSettingsState *state)
+{
+    if (state->pack_error) return state->pack_error;
+    if (KdcHdPackOverridden()) return "Pack selected by KDC_HD_PACK.";
+    if (!state->pending_pack.path[0]) return "No pack selected.";
+    if (!state->pack_available) return "No default pack found in the working directory.";
+    if (!state->pending_pack.enabled) return "Pack use is off.";
+    return "Pack verified.";
+}
+
+static int GetResourceCount(void *ctx, const char *package, const char *feature)
+{
+    (void)ctx;
+    return IsHdPack(package, feature);
+}
+
+static int GetResource(void *ctx, const char *package, const char *feature,
+                       int index, RecompLauncherCModResource *out)
+{
+    const KdcLauncherSettingsState *state = ctx;
+    if (!IsHdPack(package, feature) || index != 0 || !out) return 0;
+    *out = (RecompLauncherCModResource){0};
+    snprintf(out->id, sizeof(out->id), "pack");
+    snprintf(out->label, sizeof(out->label), "Interface pack file");
+    snprintf(out->file_patterns, sizeof(out->file_patterns), "*.pack");
+    snprintf(out->file_description, sizeof(out->file_description), "HD interface packs");
+    _Static_assert(sizeof(out->path) == kKdcHdPackPathMax, "Launcher resource path capacity");
+    if (!KdcHdPackOverridden() && (state->pack_available || state->pack_error))
+        snprintf(out->path, sizeof(out->path), "%s", state->pending_pack.path);
+    snprintf(out->status, sizeof(out->status), "%s%s", HdPackStatus(state),
+             state->pack_error ? " Original interface art will be used." : "");
+    out->verified = state->pack_available;
+    return 1;
+}
+
+static int SetResourcePath(void *ctx, const char *package, const char *feature,
+                           const char *resource, const char *path)
+{
+    KdcLauncherSettingsState *state = ctx;
+    if (!IsHdPack(package, feature) || !resource || strcmp(resource, "pack") || !path) return 0;
+    if (strlen(path) >= sizeof(state->pending_pack.path)) {
+        state->last_error = "The HD interface pack path is too long.";
+        return 0;
+    }
+    strcpy(state->pending_pack.path, path);
+    state->pack_selected = true;
+    InspectHdPack(state);
+    state->last_error = NULL;
+    return 1;
+}
+
 static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
 {
     const KdcLauncherSettingsState *state = ctx;
@@ -221,14 +296,15 @@ static int GetPackage(void *ctx, int index, RecompLauncherCModPackage *out)
     snprintf(out->license, sizeof(out->license), "PolyForm Noncommercial 1.0.0");
     out->enabled = state->pending_widescreen || state->pending_orbit ||
                    state->pending_high_refresh || state->pending_hd ||
-                   state->pending_transitions || state->pending_extra_courses;
+                   state->pending_transitions || state->pending_extra_courses ||
+                   (state->pending_pack.enabled && state->pack_available);
     return 1;
 }
 
 static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
 {
     const KdcLauncherSettingsState *state = ctx;
-    if (index < 0 || index >= 6 || !out) return 0;
+    if (index < 0 || index >= FeatureCount(ctx) || !out) return 0;
     *out = (RecompLauncherCModFeature){0};
     snprintf(out->id, sizeof(out->id), "widescreen");
     snprintf(out->package_id, sizeof(out->package_id), "kdc.presentation");
@@ -274,10 +350,19 @@ static int GetFeature(void *ctx, int index, RecompLauncherCModFeature *out)
         snprintf(out->name, sizeof(out->name), "HD textures");
         snprintf(out->description, sizeof(out->description),
                  "Redraws course terrain, scenery and sprites at 4x with smoothed "
-                 "edges. Checkerboard edges are reconstructed geometrically. An optional "
-                 "external interface pack can replace HUD, menu and font art while keeping "
-                 "the original colours and palette effects.");
+                 "edges. Checkerboard edges are reconstructed geometrically.");
         out->enabled = state->pending_hd;
+        out->option_count = 0;
+    } else if (index == 6) {
+        snprintf(out->id, sizeof(out->id), "hd-interface-pack");
+        snprintf(out->name, sizeof(out->name), "HD interface pack");
+        snprintf(out->description, sizeof(out->description),
+                 "Use an external .pack file for HUD, menu and font art. "
+                 "Requires HD textures. Changes apply on Play or Resume.%s",
+                 KdcHdPackOverridden() ? " KDC_HD_PACK overrides the file and pack toggle." : "");
+        snprintf(out->status, sizeof(out->status), "%s", HdPackStatus(state));
+        out->enabled = state->pending_pack.enabled;
+        out->has_error = state->pack_error != NULL;
         out->option_count = 0;
     }
     if (index == 2) {
@@ -314,6 +399,10 @@ static int EnableFeature(void *ctx, const char *package, const char *feature, in
     }
     if (IsHdTextures(package, feature)) {
         state->pending_hd = enabled != 0;
+        return 1;
+    }
+    if (IsHdPack(package, feature)) {
+        state->pending_pack.enabled = enabled != 0;
         return 1;
     }
     if (!IsFeature(package, feature)) return 0;
@@ -577,17 +666,6 @@ static int Commit(void *ctx, const char *rom)
         if (!ok) { state->last_error = "Could not save HUD settings."; return 0; }
         hud_edges = state->pending_hud;
     }
-    if (state->pending_hd != KdcHdTexturesEnabled()) {
-        FILE *file = fopen("kdc-hd.cfg", "w");
-        int ok = file && fprintf(file, "%d\n", state->pending_hd) > 0;
-        if (file && fclose(file) != 0) ok = 0;
-        if (!ok) {
-            state->last_error = "Could not save HD texture settings.";
-            return 0;
-        }
-        hd = state->pending_hd;
-        if (KdcHdEnabled()) KdcHdPackPrewarm();
-    }
     /* The desktop host persists g_config after the launcher's commit and
      * PrepareWideFrame reads this on the next frame. No guest restart. */
     if (state->pending_high_refresh != KdcHighRefreshEnabled() || state->pending_rate != rate) {
@@ -613,6 +691,46 @@ static int Commit(void *ctx, const char *rom)
         extra_courses = state->pending_extra_courses;
         KdcCoursePacksSetEnabled(extra_courses != 0);
     }
+    const bool was_hd = KdcHdEnabled();
+    if (state->pending_hd != KdcHdTexturesEnabled()) {
+        FILE *file = fopen("kdc-hd.cfg", "w");
+        int ok = file && fprintf(file, "%d\n", state->pending_hd) > 0;
+        if (file && fclose(file) != 0) ok = 0;
+        if (!ok) {
+            state->last_error = "Could not save HD texture settings.";
+            return 0;
+        }
+        hd = state->pending_hd;
+    }
+    const bool pack_changed = state->saved_pack.enabled != state->pending_pack.enabled ||
+                              strcmp(state->saved_pack.path, state->pending_pack.path);
+    const bool pack_saved = !pack_changed || KdcHdPackSaveSettings(&state->pending_pack);
+    if (pack_saved) state->saved_pack = state->pending_pack;
+    if (KdcHdEnabled()) {
+        const bool pack_allowed = state->saved_pack.enabled || KdcHdPackOverridden();
+        bool reload_pack = pack_changed || state->pack_selected;
+#ifndef __ANDROID__
+        /* A file may have disappeared or become available between visits. */
+        reload_pack |= KdcHdPackAvailable() != (pack_allowed && state->pack_available);
+#endif
+        if (pack_saved && reload_pack) {
+            const char *error = KdcHdPackReload(&state->saved_pack);
+            if (pack_allowed) {
+                state->pack_error = error;
+                state->pack_available = KdcHdPackAvailable();
+            }
+        } else if (!was_hd) {
+            KdcHdPackPrewarm();
+        }
+    } else if (was_hd) {
+        KdcHdPackUnload();
+    }
+    if (!pack_saved) {
+        state->last_error = "Could not save HD interface pack settings.";
+        fprintf(stderr, "[hd] %s\n", state->last_error);
+        return 0;
+    }
+    state->pack_selected = false;
     *state->widescreen = state->pending_widescreen != 0;
     return 1;
 }
@@ -639,6 +757,9 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .feature_option_get = GetOption,
         .feature_choice_get = GetChoice,
         .feature_set_option = SetOption,
+        .feature_resource_count = GetResourceCount,
+        .feature_resource_get = GetResource,
+        .feature_resource_set_path = SetResourcePath,
     };
     /* One modal launcher at a time: reset this singleton's staged state on
      * every open, discarding uncommitted edits from the previous visit. */
@@ -656,5 +777,10 @@ const struct RecompLauncherCModProvider *KdcLauncherSettings(bool *widescreen,
         .pending_extra_courses = KdcExtraCoursesEnabled(),
         .expected_rom_hash = rom_sha256,
     };
+#ifndef __ANDROID__
+    state.saved_pack = KdcHdPackReadSettings();
+    state.pending_pack = state.saved_pack;
+    InspectHdPack(&state);
+#endif
     return &provider;
 }

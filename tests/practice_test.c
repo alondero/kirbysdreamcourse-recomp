@@ -218,7 +218,7 @@ static void CheckPracticeBadgeHudPlacement(void)
 
 /* An installed texture pack that does not cover a portrait character must
  * leave the game's own pixels visible, not an empty hole in the panel. */
-static void CheckPortraitWithoutPackArt(void)
+static void CheckPortraitPackChange(void)
 {
     static Snes snes_state;
     static Cart cart;
@@ -229,6 +229,7 @@ static void CheckPortraitWithoutPackArt(void)
     memset(&cart, 0, sizeof(cart));
     memset(rom, 0, sizeof(rom));
     memset(rom, 0xff, 0x400);                  /* every portrait pixel uses colour 15 */
+    rom[0x14 * 0x8000 + 0x2849 + 29] = 0x7c;   /* colour 14 = pure blue */
     rom[0x14 * 0x8000 + 0x2849 + 30] = 0x1f;   /* colour 15 = pure red */
     cart.rom = rom;
     cart.romImageSize = sizeof(rom);
@@ -244,6 +245,20 @@ static void CheckPortraitWithoutPackArt(void)
     memset(fb, 0, sizeof(fb));
     KdcPracticeDrawHd((uint8_t *)fb, 1024 * 4, 256, 224, 4);
     CHECK(fb[(145 * 4) * 1024 + 97 * 4] == 0xffff0000);
+
+    /* Replace the pack without changing the selected ability or its palette. */
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    for (unsigned i = 0; i < 32; ++i)
+        hash = (hash ^ 0xffu) * UINT64_C(0x100000001b3);
+    for (unsigned i = 0; i < 8; ++i)
+        pack[24 + i] = (uint8_t)(hash >> (8 * i));
+    for (unsigned i = 40; i < sizeof(pack); i += 5) {
+        pack[i] = 14;
+        pack[i + 2] = 255;
+    }
+    CHECK(KdcHdPackLoadMemory(pack, sizeof(pack)));
+    KdcPracticeDrawHd((uint8_t *)fb, 1024 * 4, 256, 224, 4);
+    CHECK(fb[(145 * 4) * 1024 + 97 * 4] == 0xff0000ff);
     KdcHdPackUnload();
     g_snes = NULL;
 }
@@ -300,7 +315,7 @@ int main(void)
         if (i + 1 < KDC_PRACTICE_ABILITIES) Tap(SNES_PAD_RIGHT);
     }
     CHECK(!strcmp(KdcPracticeAbilityName(KdcPracticeCurrentView()->ability), "UFO"));
-    CheckPortraitWithoutPackArt();
+    CheckPortraitPackChange();
     /* The title-menu font sheet is not ASCII-ordered: it carries the
      * hyphen at 29, the space at 31, '<' at 10, '>' at 12, digits at
      * 16..25 and letters at 33..58. ASCII-32 would draw the question

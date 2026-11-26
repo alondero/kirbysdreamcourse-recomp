@@ -182,7 +182,9 @@ static void Ability(Canvas *c, int x, int y, unsigned ability)
     if (c->scale==4) {
         static uint32_t tiles[16][1024];
         static int cached=-1;
-        if ((int)ability!=cached) {
+        static uint64_t cached_pack_revision;
+        const uint64_t pack_revision = KdcHdPackRevision();
+        if ((int)ability!=cached || pack_revision != cached_pack_revision) {
             PpuHdTileQuery q={.scale=4,.layer=4,.bpp=4};
             for (unsigned k=1;k<16;++k) q.colors[k]=RomWord(0x94a849+k*2);
             for (unsigned i=0;i<16;++i) {
@@ -193,6 +195,7 @@ static void Ability(Canvas *c, int x, int y, unsigned ability)
                 if (!KdcHdPackTile(&q,tiles[i])) NearestTile(&q,tiles[i]);
             }
             cached=(int)ability;
+            cached_pack_revision = pack_revision;
         }
         for (unsigned i=0;i<16;++i) BlitArt(c,x+8*(i%4),y+8*(i/4),tiles[i]);
         return;

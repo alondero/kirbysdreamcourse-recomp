@@ -73,6 +73,7 @@ bool KdcHdEnabled(void) { return hd_enabled; }
 static bool hd_pack_enabled;
 static bool hd_pack_alpha_tile;
 bool KdcHdPackAvailable(void) { return hd_pack_enabled; }
+uint64_t KdcHdPackRevision(void) { return hd_pack_enabled ? 1 : 0; }
 bool KdcHdPackTile(const PpuHdTileQuery *q, uint32_t *out)
 {
     if (!hd_pack_alpha_tile) return false;

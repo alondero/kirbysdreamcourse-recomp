@@ -152,9 +152,11 @@ Enable **HD textures** on the launcher's **Mods** page to redraw course
 terrain, scenery and sprites at 4x. Supported checkerboard edges are drawn
 geometrically, including under orbit zoom; other art uses smoothed edges. Every HD pixel keeps
 one of the original character's palette colours, so palette effects still
-work. Menus and the HUD keep their original pixels unless you install a
-separate `kdc-hd-ui.pack` interface mod; no replacement interface artwork is
-built into this repository.
+work. On Windows and Linux, open **Mods → HD interface pack** and choose a
+player-supplied `.pack` file. Select **Play** or **Resume** to apply it. Use
+the pack checkbox or **Clear selection** to restore the original menu and HUD
+art while keeping course textures in HD. The launcher remembers the selection.
+Android's pack picker is deferred. Packs are supplied separately.
 HD textures are off by default. See [HD textures](docs/hd-textures.md) for
 how it works, validation and limits.
 

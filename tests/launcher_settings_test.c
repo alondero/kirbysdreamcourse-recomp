@@ -14,7 +14,10 @@
     } \
 } while (0)
 
-static unsigned rom_hashes, pack_prewarms;
+static unsigned rom_hashes;
+static const char package_id[] = "kdc.presentation";
+static const char pack_id[] = "hd-interface-pack";
+static const char pack_path[] = "interface \xc3\xa9.pack";
 
 void __real_recompui_sha256_compute(const uint8_t *data, size_t size, uint8_t out[32]);
 
@@ -25,7 +28,6 @@ void __wrap_recompui_sha256_compute(const uint8_t *data, size_t size, uint8_t ou
 }
 
 bool KdcHdEnabled(void) { return KdcHdTexturesEnabled(); }
-void KdcHdPackPrewarm(void) { ++pack_prewarms; }
 
 int main(int argc, char **argv)
 {
@@ -37,6 +39,29 @@ int main(int argc, char **argv)
         CHECK(KdcHudEdges());
         CHECK(KdcHighRefreshEnabled() && KdcPresentationFps() == 144);
         CHECK(!KdcHdTexturesEnabled());
+        bool widescreen = false;
+        const RecompLauncherCModProvider *provider = KdcLauncherSettings(&widescreen, argv[2]);
+        RecompLauncherCModResource resource;
+        CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+        if (!strcmp(argv[5], "reload")) {
+            CHECK(resource.verified && !strcmp(resource.path, pack_path));
+            CHECK(!KdcHdPackAvailable());
+            KdcHdPackPrewarm();
+            CHECK(KdcHdPackAvailable());
+        } else if (!strcmp(argv[5], "clear")) {
+            CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", ""));
+            CHECK(provider->commit(provider->ctx, argv[1]));
+            CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+            CHECK(!resource.path[0] && !resource.verified);
+        } else {
+            CHECK(!strcmp(argv[5], "override"));
+            CHECK(resource.verified && !resource.path[0]);
+            CHECK(strstr(resource.status, "KDC_HD_PACK"));
+            CHECK(provider->feature_enable(provider->ctx, package_id, pack_id, 0));
+            CHECK(provider->feature_enable(provider->ctx, package_id, "hd_textures", 1));
+            CHECK(provider->commit(provider->ctx, argv[1]));
+            CHECK(KdcHdPackAvailable());
+        }
         return 0;
     }
     RecompLauncherCGameInfo info = {.has_run_ahead = 1, .has_renderer = 1};
@@ -75,7 +100,7 @@ int main(int argc, char **argv)
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "unknown"));
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "hud", "edges"));
     CHECK(!KdcHudEdges());
-    CHECK(provider->feature_count(provider->ctx) == 6);
+    CHECK(provider->feature_count(provider->ctx) == 7);
     CHECK(!KdcExtraCoursesEnabled());
     CHECK(provider->feature_get(provider->ctx, 5, &feature));
     CHECK(!strcmp(feature.id, "extra-courses") && !feature.enabled && !feature.option_count);
@@ -125,8 +150,18 @@ int main(int argc, char **argv)
     CHECK(!provider->feature_set_option(provider->ctx, "kdc.presentation", "hd_textures", "ui", "original"));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
     CHECK(!KdcHdTexturesEnabled()); /* staged, not applied */
-    CHECK(!pack_prewarms);
-    CHECK(!provider->feature_get(provider->ctx, 6, &feature));
+    CHECK(!KdcHdPackAvailable());
+    CHECK(provider->feature_get(provider->ctx, 6, &feature));
+    CHECK(!strcmp(feature.id, pack_id) && feature.enabled);
+    CHECK(provider->feature_resource_count(provider->ctx, package_id, pack_id) == 1);
+    RecompLauncherCModResource resource;
+    CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+    CHECK(!strcmp(resource.file_patterns, "*.pack") && !resource.required && !resource.verified);
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", pack_path));
+    CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+    CHECK(resource.verified && !strcmp(resource.path, pack_path));
+    CHECK(!KdcHdPackAvailable());
+    CHECK(!provider->feature_get(provider->ctx, 7, &feature));
     CHECK(!provider->feature_get(provider->ctx, 0, NULL));
     CHECK(!provider->feature_enable(provider->ctx, "foreign", "widescreen", 1));
     CHECK(!provider->feature_enable(provider->ctx, NULL, NULL, 1));
@@ -137,6 +172,8 @@ int main(int argc, char **argv)
     CHECK(!widescreen);
     CHECK(KdcWidescreenAspect() == 0);
     provider = KdcLauncherSettings(&widescreen, hash);
+    CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+    CHECK(!resource.verified && !resource.path[0] && strstr(resource.status, "No default pack"));
     CHECK(provider->feature_get(provider->ctx, 5, &feature));
     CHECK(!feature.enabled); /* dismissed extra-courses edit */
     CHECK(provider->feature_get(provider->ctx, 4, &feature));
@@ -158,6 +195,7 @@ int main(int argc, char **argv)
     CHECK(provider->feature_set_option(provider->ctx, "kdc.presentation", "widescreen", "aspect", "21:9"));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "orbit", 0));
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "hd_textures", 1));
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", pack_path));
     CHECK(!provider->commit(provider->ctx, "missing.sfc"));
     CHECK(!KdcFasterTransitionsEnabled());
     CHECK(!KdcHdTexturesEnabled());
@@ -167,7 +205,7 @@ int main(int argc, char **argv)
     CHECK(!provider->commit(provider->ctx, argv[4])); /* same-size wrong hash */
     CHECK(!widescreen);
     CHECK(provider->commit(provider->ctx, rom));
-    CHECK(pack_prewarms == 1);
+    CHECK(KdcHdPackAvailable());
     const unsigned hashes_after_commit = rom_hashes;
     CHECK(!KdcValidateRomPath("./synthetic.sfc", hash));
     CHECK(KdcValidateRomPath("synthetic.sfc", "different expected hash"));
@@ -179,6 +217,40 @@ int main(int argc, char **argv)
     CHECK(KdcWidescreenAspect() == 2);
     CHECK(!provider->last_error(provider->ctx));
     provider = KdcLauncherSettings(&widescreen, hash);
+    const uint64_t first_revision = KdcHdPackRevision();
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", pack_path));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcHdPackAvailable() && KdcHdPackRevision() != first_revision);
+    CHECK(provider->feature_enable(provider->ctx, package_id, pack_id, 0));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(!KdcHdPackAvailable() && KdcHdTexturesEnabled());
+    CHECK(provider->feature_enable(provider->ctx, package_id, pack_id, 1));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcHdPackAvailable());
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", "vanishing.pack"));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcHdPackAvailable());
+    CHECK(remove("vanishing.pack") == 0);
+    provider = KdcLauncherSettings(&widescreen, hash);
+    CHECK(provider->feature_get(provider->ctx, 6, &feature) && feature.has_error);
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(!KdcHdPackAvailable());
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", pack_path));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", "missing.pack"));
+    CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+    CHECK(!resource.verified && strstr(resource.status, "not found"));
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", "unsupported.pack"));
+    CHECK(provider->feature_resource_get(provider->ctx, package_id, pack_id, 0, &resource));
+    CHECK(!resource.verified && strstr(resource.status, "Unsupported"));
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", "malformed.pack"));
+    CHECK(provider->feature_get(provider->ctx, 6, &feature) && feature.has_error);
+    CHECK(KdcHdPackAvailable()); /* Staging a bad file leaves active tiles alone. */
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(!KdcHdPackAvailable() && KdcHdTexturesEnabled());
+    CHECK(provider->feature_resource_set_path(provider->ctx, package_id, pack_id, "pack", pack_path));
+    CHECK(provider->commit(provider->ctx, rom));
+    CHECK(KdcHdPackAvailable());
     CHECK(provider->feature_get(provider->ctx, 0, &feature));
     CHECK(feature.enabled);
     CHECK(provider->feature_enable(provider->ctx, "kdc.presentation", "widescreen", 0));
