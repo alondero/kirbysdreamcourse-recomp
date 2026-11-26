@@ -261,7 +261,7 @@ static int GetResource(void *ctx, const char *package, const char *feature,
     snprintf(out->file_patterns, sizeof(out->file_patterns), "*.pack");
     snprintf(out->file_description, sizeof(out->file_description), "HD interface packs");
     _Static_assert(sizeof(out->path) == kKdcHdPackPathMax, "Launcher resource path capacity");
-    if (state->pack_available || state->pack_error)
+    if (!KdcHdPackOverridden() && (state->pack_available || state->pack_error))
         snprintf(out->path, sizeof(out->path), "%s", state->pending_pack.path);
     snprintf(out->status, sizeof(out->status), "%s%s", HdPackStatus(state),
              state->pack_error ? " Original interface art will be used." : "");

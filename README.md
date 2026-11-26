@@ -154,8 +154,8 @@ geometrically, including under orbit zoom; other art uses smoothed edges. Every 
 one of the original character's palette colours, so palette effects still
 work. On Windows and Linux, open **Mods → HD interface pack** and choose a
 player-supplied `.pack` file. Select **Play** or **Resume** to apply it. Use
-the pack checkbox or **Clear** to restore the original menu and HUD art
-while keeping course textures in HD. The launcher remembers the selection.
+the pack checkbox or **Clear selection** to restore the original menu and HUD
+art while keeping course textures in HD. The launcher remembers the selection.
 Android's pack picker is deferred. Packs are supplied separately.
 HD textures are off by default. See [HD textures](docs/hd-textures.md) for
 how it works, validation and limits.

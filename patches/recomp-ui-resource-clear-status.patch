@@ -1,0 +1,12 @@
+diff --git a/src/common/backends/imgui/launcher_imgui.cpp b/src/common/backends/imgui/launcher_imgui.cpp
+--- a/src/common/backends/imgui/launcher_imgui.cpp
++++ b/src/common/backends/imgui/launcher_imgui.cpp
+@@ -12509,7 +12509,7 @@
+                                     mod_note_error(m);
+                                 } else {
+                                     std::snprintf(m->mod_status, sizeof(m->mod_status),
+-                                        "%s selection cleared. Changes apply on PLAY.", resource.label);
++                                        "%s selection cleared. Changes apply on Play or Resume.", resource.label);
+                                 }
+                             }
+                         }

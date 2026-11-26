@@ -70,6 +70,8 @@ class LauncherSettingsTest(unittest.TestCase):
                                              text=True, cwd=directory, env=env)
                     self.assertEqual(cleared.returncode, 0, cleared.stdout + cleared.stderr)
                     self.assertEqual(pack_config.read_bytes(), b'1\n')
+                    # Exercise the override on an install with no pack settings.
+                    pack_config.unlink()
                     overridden = subprocess.run(args + ['override', 'check'], capture_output=True,
                                                 text=True, cwd=directory,
                                                 env={**env, 'KDC_HD_PACK': 'interface é.pack'})

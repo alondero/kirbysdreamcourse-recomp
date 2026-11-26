@@ -30,9 +30,10 @@ on **Play** or **Resume**. The file and pack checkbox are saved in
 `kdc-hd-ui.cfg` beside the executable, independently of game saves.
 
 Untick **HD interface pack** to restore original interface art while keeping
-the file selected. **Clear** removes the selection. Either action leaves
-course scaling governed by **HD textures**. A missing, invalid or unsupported
-pack displays an error in the Mods page and uses the original interface art.
+the file selected. **Clear selection** removes the selection. Either action
+leaves course scaling governed by **HD textures**. A missing, invalid or
+unsupported pack displays an error in the Mods page and uses the original
+interface art.
 
 Existing installs still auto-detect `kdc-hd-ui.pack` in the working directory
 until a file is selected or the selection is cleared. A nonempty
