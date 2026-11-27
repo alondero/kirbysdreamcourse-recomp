@@ -369,7 +369,7 @@ static const char kOrbitWorldBodyFragment[] = KDC_GLSL(
         if (c == 0u) discard;
         double below = (double(p.y) + 0.5lf - pcoeff(pieceBase, 5u)) * invScale;
         double d = pcoeff(pieceBase, 6u) + (below >= 0.0lf ? 2.0lf * below : -0.5lf * below) +
-                   0.25lf + double(pword(pieceBase + 4u)) * 0.5lf;
+                   0.25lf + 4.0lf;
         gl_FragDepth = mapDepth(float(d));
         color = unpackBgra(c);
     }

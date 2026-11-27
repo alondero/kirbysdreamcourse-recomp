@@ -1362,8 +1362,7 @@ static void BodyRows(const Render *render, const Piece *piece, bool world, int b
          * draws below the anchor (hole, shadows, feet) lie in front of
          * it on the ground plane instead of being buried beneath it. */
         const double below = (y + 0.5 - piece->point.y) * inv_scale;
-        const double depth = piece->point.depth + (below >= 0 ? 2 * below : -0.5 * below) +
-                             0.25 + piece->size * 0.5;
+        const double depth = piece->point.depth + (below >= 0 ? 2 * below : -0.5 * below) + 0.25 + 4.0;
         const double sy_src = (y + 0.5 - piece->top) * inv_scale;
         double sx_src = (piece->x0 + 0.5 - piece->left) * inv_scale;
         for (int x = piece->x0; x < piece->x1; ++x, sx_src += inv_scale) {

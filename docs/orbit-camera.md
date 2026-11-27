@@ -125,9 +125,10 @@ plane at the anchor's height in front of it instead of being buried in the
 terrain; terrain rising towards the camera can still cover them. Anchors within a quarter step below the mesh
 rest on it, absorbing fixed-point height quantization. A flat billboard would
 otherwise be sliced by a wall plane even when its anchor is on the camera side
-of that wall. Bodies therefore receive half their native sprite width as
-foreground depth before the depth test; large height discontinuities still
-occlude them from behind. Ground sprites (the
+of that wall. Bodies therefore use a bounded four-depth-unit foreground
+tolerance: half the minimum sprite width and half an elevation step. Because
+the tolerance is identical for every body, co-located pieces of different
+sizes still resolve by OBJ order. Ground sprites (the
 tee, separate ball shadows and guide marks) are projected onto the visible terrain as a decal:
 each pixel is unprojected to the course and mapped back through the native
 projection, so it turns with the course and follows slopes. Inherently 2D

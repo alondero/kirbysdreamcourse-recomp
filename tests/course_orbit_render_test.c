@@ -493,6 +493,9 @@ static int Scenarios(void)
         column += pixels[y * stride + 128] != blue;
     EXPECT(column >= 142 && column <= 146);
 
+    /* A sprite anchored just in front of a two-step plateau must keep its
+     * camera-facing edge at native and quarter-turn angles, while both small
+     * and large pieces remain occluded after rotating behind the wall. */
     TerrainElevation(2);
     memset(g_ram + 0x7390, 0, 16);
     g_ram[0x7390 + 1 * 4 + 2] = 2;
@@ -506,6 +509,14 @@ static int Scenarios(void)
     Draw();
     EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
     QuarterTurn();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
+    custom[0].large = true;
+    Snapshot();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
+    TerrainElevation(1);
+    Snapshot();
     Draw();
     EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
     TerrainElevation(0);
@@ -670,11 +681,14 @@ static int Scenarios(void)
     Draw();
     EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
     /* An attachment changes front/back order relative to its own body,
-     * without relying on a depth bias or the original queue order. */
+     * including mixed OAM sizes, without relying on a depth bias or the
+     * original queue order. */
     custom[0].view.family = KDC_SPRITE_VIEW_NONE;
     custom[0].view_tiles[0] = 0x68000;
     custom[0].motion_id = 0x100;
+    custom[0].large = true;
     custom[1] = custom[0];
+    custom[1].large = false;
     custom[1].motion_id = 0x300;
     custom[1].view.attachment = true;
     custom[1].view_tiles[0] = 0x68020;
@@ -682,6 +696,7 @@ static int Scenarios(void)
     custom_count = 2;
     Draw();
     EXPECT(CountColor(pixels, white, &cx, &cy) == 64);
+    custom[0].large = false;
     custom[1].view_tiles[0] = 0; /* UP/SIDE canopy stays in resident VRAM. */
     custom[1].attributes = 0x31c1;
     for (unsigned y = 0; y < 8; ++y) ppu.vram[0x7c10 + y] = 0xff00;
