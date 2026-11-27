@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 /* Reproduce the terrain block cache accounting race with real parallel workers.
  * Every cache allocation sleeps inside the wrapped allocator, stretching the
  * window between the old byte check and its recording so concurrent workers
