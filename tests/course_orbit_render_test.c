@@ -493,6 +493,24 @@ static int Scenarios(void)
         column += pixels[y * stride + 128] != blue;
     EXPECT(column >= 142 && column <= 146);
 
+    TerrainElevation(2);
+    memset(g_ram + 0x7390, 0, 16);
+    g_ram[0x7390 + 1 * 4 + 2] = 2;
+    custom[0] = Body(3.01, 1.5, 1, -8);
+    custom_count = 1;
+    Snapshot();
+    NativeAngle();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    QuarterTurn();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 64);
+    QuarterTurn();
+    Draw();
+    EXPECT(CountColor(pixels, red, &cx, &cy) == 0);
+    TerrainElevation(0);
+    custom_count = 0;
+
     /* Wide scenery margins use the PR #23 reflection of the clean map, not
      * a 256-pixel wrap. Row 12 has an opaque tile only in column 31. */
     Word(0xdadc + 2 * (12 * 32 + 31), 0x0c02);

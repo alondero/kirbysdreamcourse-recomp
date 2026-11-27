@@ -123,7 +123,11 @@ standing on their anchors; rows the original image draws below the anchor
 (shadow pieces drawn with an enemy body, feet) lie on a flat
 plane at the anchor's height in front of it instead of being buried in the
 terrain; terrain rising towards the camera can still cover them. Anchors within a quarter step below the mesh
-rest on it, absorbing fixed-point height quantization. Ground sprites (the
+rest on it, absorbing fixed-point height quantization. A flat billboard would
+otherwise be sliced by a wall plane even when its anchor is on the camera side
+of that wall. Bodies therefore receive half their native sprite width as
+foreground depth before the depth test; large height discontinuities still
+occlude them from behind. Ground sprites (the
 tee, separate ball shadows and guide marks) are projected onto the visible terrain as a decal:
 each pixel is unprojected to the course and mapped back through the native
 projection, so it turns with the course and follows slopes. Inherently 2D
@@ -172,6 +176,19 @@ Their shared registry anchor is the cell center. Projecting the whole cup
 onto the floor keeps its back rim from standing above Kirby when he first
 touches it; the ball still undergoes terrain depth testing as it sinks.
 Other actors and animation frames retain their original classification.
+
+The original game has no geometric depth test. It combines sprite enqueue
+ordering with per-request OBJ priority overrides: `$82:F4FD` classifies each
+ball against the collision heights and records its state in `$D96A/$D96C`,
+while the sprite expander at `$80:8D90-$80:8DA9` accepts a priority override
+and applies it at `$80:8E5F-$80:8E69`. `$A3B2` is a dynamic WRAM table indexed
+by the ball's diagonal cell sum. Negative words mean no occlusion record;
+otherwise they point to a count byte followed by five-byte records. Record
+bytes 0/1 delimit the U-cell range, byte 2 is the candidate visibility state,
+and byte 3 selects the collision-height cell to compare with the ball. If the
+ball is above that height the state becomes 3; otherwise the table state is
+kept. Thus the original mechanism is hardware priority and sprite ordering,
+not intersection with a volumetric wall.
 
 The original game also masks sprites with Mode 1 OBJ priority: priority 0/1
 pieces lie behind every opaque BG1/BG2 pixel, priority 2 behind
