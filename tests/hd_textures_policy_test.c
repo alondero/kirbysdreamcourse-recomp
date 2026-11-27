@@ -156,6 +156,24 @@ int main(void)
                                  kFullWidth, kHeight, kScale));
     KdcPrepareCourseView(p, g_ram, kExtra);
     KdcPrepareHud(p, g_ram, kExtra, true);
+
+    p->bgXsc[0] = 0x40;
+    p->bgXsc[1] = 0x48;
+    p->bgXsc[2] = 0x58;
+    p->bgTileAdr = 0x500;
+    p->screenEnabled[0] = 7;
+    p->screenEnabled[1] = 0;
+    assert(KdcHdScale() == 1);
+    pack_available = true;
+    assert(KdcHdScale() == kScale);
+    pack_available = false;
+
+    p->bgmode = 9;
+    p->bgXsc[0] = 0x51;
+    p->bgXsc[1] = 0x59;
+    p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    p->screenEnabled[0] = 23;
     assert(KdcHdScale() == kScale);
 
     /* Line 1 prepares line 0 (window 128..127) and triggers HdLinePolicy collection. */

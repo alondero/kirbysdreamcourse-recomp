@@ -99,7 +99,7 @@ class HdTexturesRuntimeTest(unittest.TestCase):
             # A title/menu scene keeps its native art.
             menu_native = self.capture(directory, 'menu-native', 300, False)
             menu_hd = self.capture(directory, 'menu-hd', 300, True)
-            self.assertEqual(self.compare(menu_native, menu_hd), 0)
+            self.assertEqual(menu_hd, menu_native)
 
     def test_interface_pack_replaces_hud_menus_and_fonts_at_4x(self):
         pack = os.environ.get('KDC_TEST_HD_PACK')
