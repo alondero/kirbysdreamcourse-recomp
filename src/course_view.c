@@ -40,14 +40,26 @@ static bool IsCourseFinale(const Ppu *ppu)
     return false;
 }
 
-bool KdcIsCourse(const Ppu *ppu)
+static bool HasEnabledTerrain(const Ppu *ppu)
 {
     /* The scorecard reuses the course maps and character base, but replaces
      * BG1 graphics and disables the second terrain plane. Map addresses
-     * alone cannot authorize terrain lookup or recovered gameplay sprites.
-     * The 2P finale keeps BG2 enabled while uploading replacement graphics. */
-    return HasCourseLayout(ppu) && !IsCourseFinale(ppu) &&
+     * alone cannot authorize terrain lookup. */
+    return HasCourseLayout(ppu) &&
            ((ppu->screenEnabled[0] | ppu->screenEnabled[1]) & 2) != 0;
+}
+
+bool KdcIsCourse(const Ppu *ppu)
+{
+    return HasEnabledTerrain(ppu) && !IsCourseFinale(ppu);
+}
+
+static bool CanExtendTerrain(const Ppu *ppu, const uint8_t *ram, bool finale)
+{
+    /* In solo play the stars replace BG3 while the course is still drawn
+     * on BG1/BG2. BG2 is disabled before the results graphics arrive.
+     * The versus finale can replace graphics while BG2 is still enabled. */
+    return HasEnabledTerrain(ppu) && (!finale || KdcReadWord(ram, 0x17ff) == 0);
 }
 
 static bool IsCourseSelect(const Ppu *ppu)
@@ -216,7 +228,7 @@ static uint16_t CourseTile(int layer, int screen_x, uint32_t scrolled_y,
         /* Toggle, rather than set: source artwork already uses flips. */
         return tile ^ (reflected ? 0x4000 : 0);
     }
-    if (!selection && !KdcIsCourse(source->ppu)) return native_tile;
+    if (!selection && !CanExtendTerrain(source->ppu, source->ram, finale)) return native_tile;
     /* Keep live raster fine scroll; WRAM only disambiguates its period. */
     int x = KdcCourseScroll(scroll_x, KdcReadWord(source->ram, 0x86)) + screen_x;
     int raster_y = source->ppu->vScroll[layer];
@@ -234,10 +246,12 @@ void KdcPrepareCourseView(Ppu *ppu, const uint8_t *ram, int extra)
     /* In streamed courses BG3 combines scenery and a tile-based HUD.
      * The runtime otherwise assumes BG3 is a centered status bar. Visible
      * SNES scanlines start at 1; zero disables the widening policy. */
-    bool world_scene = KdcIsCourse(ppu) || IsCourseSelect(ppu);
+    bool finale = IsCourseFinale(ppu);
+    bool selection = IsCourseSelect(ppu);
+    bool world_scene = CanExtendTerrain(ppu, ram, finale) || selection;
     /* Scorecards retain course scenery even though terrain is not live. */
-    bool scenery = HasCourseLayout(ppu) || IsCourseFinale(ppu) ||
-                   IsCourseSelect(ppu) || IsMembers(ppu) || IsCourseDance(ppu) ||
+    bool scenery = HasCourseLayout(ppu) || finale ||
+                   selection || IsMembers(ppu) || IsCourseDance(ppu) ||
                    IsVersusSelect(ppu);
     PpuSetWidescreenBg3Widen(ppu, extra && scenery ? 1 : 0);
     /* This ROM still emits ordinary signed 9-bit OAM coordinates. Do not

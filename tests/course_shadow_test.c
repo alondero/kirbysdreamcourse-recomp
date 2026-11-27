@@ -226,6 +226,7 @@ int main(void)
     p->bgXsc[0] = 0x51; p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x3c;
     p->bgTileAdr = 0x400;
     p->screenEnabled[0] = 0x17;
+    word(0x17ff, 1); /* Two-player mode. */
     for (unsigned y = 0; y < 2; ++y)
         for (unsigned x = 0; x < 32; ++x)
             p->vram[0x3c00 + y * 32 + x] = 0x1941 + 2 * y + (x & 1);

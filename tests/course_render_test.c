@@ -174,6 +174,7 @@ int main(void)
     p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x3c;
     p->bgTileAdr = 0x400;
     p->vScroll[2] = 0;
+    ram[0x17ff] = 1;
     for (unsigned tile = 0x100; tile < 0x180; ++tile)
         for (unsigned y = 0; y < 8; ++y)
             p->vram[0x4000 + tile * 8 + y] = (uint16_t)(tile * 1937 + y * 257);
@@ -233,6 +234,50 @@ int main(void)
                 }
             }
     }
+
+    /* The solo star upload changes BG3 while both terrain planes are still
+     * live. The packed course must still cover the stars at both edges. */
+    p->bgXsc[0] = 0x51; p->bgXsc[1] = 0x59; p->bgXsc[2] = 0x3c;
+    p->bgTileAdr = 0x400;
+    p->screenEnabled[0] = 0x17;
+    p->hScroll[2] = 0;
+    ram[0x17ff] = 0;
+    ram[0x86] = 0x40; ram[0x87] = 1; /* Camera X = 320. */
+    ram[0x9bb0] = 127;
+    for (unsigned layer = 0; layer < 2; ++layer) {
+        p->hScroll[layer] = 320;
+        p->vScroll[layer] = 0;
+        for (unsigned x = 0; x < 128; ++x)
+            ram[0x13000 + layer * 0x6800 + 2 * x] = 1;
+        for (unsigned column = 0; column < 64; ++column) {
+            unsigned from_camera = (column + 64 - 40) & 63;
+            unsigned address = 0x5000 + layer * 0x800 + (column / 32) * 0x400 + column % 32;
+            p->vram[address] = from_camera < 32 ? 1 : 0;
+        }
+    }
+    for (unsigned x = 0; x < 64; ++x)
+        p->vram[0x3c00 + x] = 0x1941 + 2 * (x / 32) + (x & 1);
+    for (unsigned y = 0; y < 8; ++y)
+        for (unsigned tile = 0x141; tile <= 0x144; ++tile)
+            p->vram[0x4000 + tile * 8 + y] = 0x00ff;
+    for (unsigned i = 0; i < sizeof(widths) / sizeof(widths[0]); ++i) {
+        int extra = widths[i];
+        PpuPixelPrioBufs pixels;
+        PpuSetExtraSpace(p, extra);
+        KdcPrepareCourseView(p, ram, extra);
+        for (unsigned layer = 0; layer < 2; ++layer) {
+            ClearBackdrop(p, &pixels);
+            PpuDrawBackground_2bpp(p, &pixels, 1, false, 2, 0x5100, 0x3100);
+            assert(pixels.data[kPpuExtraLeftRight - 1] == 0x3119);
+            PpuDrawBackground_4bpp(p, &pixels, 1, false, layer, 0xb100, 0x7100);
+            for (int x = -extra; x < 256 + extra; ++x)
+                assert(pixels.data[kPpuExtraLeftRight + x] == 0x7103);
+        }
+    }
+    p->screenEnabled[0] = 0x15; /* Solo results begin replacing terrain. */
+    KdcPrepareCourseView(p, ram, 43);
+    assert(PpuWidescreenLayerExtra(p, 0, 1, 43) == 0);
+    assert(WsShadowResolveTile8x8(0, 256, 0, 320, 0, 0x6789) == 0x6789);
     free(p);
     return 0;
 }

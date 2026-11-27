@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 struct Ppu;
-/* Live terrain, excluding scorecards that reuse the course layout. */
+/* Live gameplay, excluding the finale and scorecards. */
 bool KdcIsCourse(const struct Ppu *ppu);
 void KdcPrepareCourseView(struct Ppu *ppu, const uint8_t *ram, int extra);
 /* Course select: continue the scrolling sky into the side margins of the
