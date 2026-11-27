@@ -308,12 +308,13 @@ static OrbitAnchor SpecialEnemyAnchor(const CpuState *cpu, unsigned slot, int x,
     unsigned draw = AbsoluteWord(cpu, 0x519c + slot);
     bool cloud = type >= 0x51 && type <= 0x53 && draw == 0xe217 &&
                  AbsoluteWord(cpu, 0x5e1c + slot) == 0xccd3;
-    bool gordo = type == 0x4c && draw == 0xdf2f;
+    bool moving_gordo = type == 0x4c && draw == 0xdf2f;
+    bool stationary_gordo = type == 0x4d && draw == 0xde68;
+    bool gordo = moving_gordo || stationary_gordo;
     if (!cloud && !gordo) return anchor;
-    /* $84:E217 draws the cloud family and $84:DE68 draws Gordo. Both
-     * bypass E55E and submit their shadow separately through E60B. Verify
-     * the owning registry task as well as the live draw origin; other
-     * tasks reuse these fields for unrelated purposes. */
+    /* The cloud and Gordo drawers bypass E55E and submit their shadows
+     * separately through E60B. Verify the owning registry task and the
+     * live draw origin because other tasks reuse these fields. */
     unsigned ox = gordo && ground ? 0x561c : 0x5f1c;
     unsigned oy = gordo && ground ? 0x569c : 0x5f9c;
     if (x != (int16_t)AbsoluteWord(cpu, ox + slot) ||
@@ -337,11 +338,10 @@ static OrbitAnchor SpecialEnemyAnchor(const CpuState *cpu, unsigned slot, int x,
             anchor.x = u + 0.5; anchor.y = v + 0.5; anchor.z = Elevation(z);
             anchor.origin_x = (int16_t)(rx + 32); anchor.origin_y = ry;
         } else {
-            if (kind < 0x80 || kind > 0x93) continue;
-            /* $84:DF2F projects these fractional coordinates every draw,
-             * but updates only projected XY in the registry. Its original
-             * integer U/V cannot follow a moving Gordo. Avoid depending
-             * on a coincident (or expired) projector-cache entry. */
+            if (moving_gordo ? (kind < 0x80 || kind > 0x93) : kind != 0x94) continue;
+            /* Both variants store their centered world position in the task.
+             * The stationary variant leaves the registry's projected origin
+             * at the cell corner and can draw without rerunning projection. */
             anchor.x = Fixed(cpu->ram, 0x581c + slot, 0x589c + slot);
             anchor.y = Fixed(cpu->ram, 0x591c + slot, 0x599c + slot);
             anchor.z = Elevation(Fixed(cpu->ram, 0x5a1c + slot, 0x5a9c + slot));

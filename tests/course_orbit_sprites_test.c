@@ -92,6 +92,26 @@ static void SpecialEnemies(Ppu *ppu)
     assert(!SpecialEnemyAnchor(&cpu, 0, 393, 300, false).world);
     assert(!SpecialEnemyAnchor(&cpu, 1, 392, 300, false).world);
     assert(!SpecialEnemyAnchor(&cpu, 128, 392, 300, false).world);
+
+    /* The stationary Gordo keeps its registry origin at the cell corner.
+     * After a load clears projection history, both draw requests still need
+     * the center of that cell, even when it has scrolled off the native screen. */
+    KdcResetSprites(ppu);
+    Word(0xb4b8, 0x94); Word(0xb638, 352); Word(0xb678, 296);
+    Word(0x4e1c, 0x4d); Word(0x519c, 0xde68); Word(0x5e1c, 0xcc47);
+    Word(0x581c, 0x8000);
+    Word(0x5f1c, 384); Word(0x5f9c, 296); Word(0x561c, 384); Word(0x569c, 296);
+    Word(0x86, 448);
+    cpu.X = 384; cpu.Y = 296; cpu.A = 4;
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(request_count == 1 && requests[0].anchor.world && !requests[0].anchor.ground);
+    assert(requests[0].anchor.x == 8.5 && requests[0].anchor.y == 3.5 && requests[0].anchor.z == 1);
+    cpu.A = 8;
+    KdcObserveSprites(&cpu, 0x80e60b);
+    assert(request_count == 2 && requests[1].anchor.world && requests[1].anchor.ground);
+    assert(requests[1].anchor.x == 8.5 && requests[1].anchor.y == 3.5 && requests[1].anchor.z == 1);
+    Word(0xb4b8, 0x80); /* A moving Gordo registry ID cannot identify this drawer. */
+    assert(!SpecialEnemyAnchor(&cpu, 0, 384, 296, false).world);
 }
 int main(void)
 {
