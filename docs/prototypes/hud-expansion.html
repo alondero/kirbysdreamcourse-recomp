@@ -1,0 +1,139 @@
+<!doctype html>
+<!-- Throwaway revision of #31: quiet ability badge -> expanded status.
+     Original schematic art; no ROM assets or production renderer changes. -->
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Dream Course · quiet and expanded HUD</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#141620;color:#f4f0f6;font:15px/1.5 system-ui,sans-serif}header,main{max-width:1520px;margin:auto;padding:24px 32px}header{padding-bottom:0;display:flex;justify-content:space-between;align-items:center;gap:30px}h1{font-size:29px;letter-spacing:-1px;margin:4px 0}h2{font-size:23px;margin:4px 0 12px}p{margin:8px 0}.eyebrow{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#edb9d0}.muted{color:#b1b7cc}.controls{display:flex;flex-wrap:wrap;align-items:end;gap:14px;margin-bottom:16px}label{font-size:12px;color:#bfc4d6;display:grid;gap:5px}button,select,input{font:inherit}button,select{background:#272b3c;color:#f4f0f6;border:1px solid #51566d;border-radius:8px;padding:8px 12px;cursor:pointer}button:hover,button[aria-pressed=true]{background:#edb9d0;color:#26283b}button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid #ffdc83;outline-offset:3px}.check{display:flex;align-items:center;padding:10px 0}.modes{display:flex;gap:5px}.shell{padding:12px;border:1px solid #383e51;border-radius:12px;background:#090c14}.viewport{width:100%;position:relative;aspect-ratio:21/9;container-type:size;overflow:hidden;background:#bad6e8;isolation:isolate}.scene{position:absolute;inset:0;width:100%;height:100%}.hud{position:absolute;inset:0;--edge:3cqh;color:#283047;font:2.6cqh/1.2 ui-monospace,Consolas,monospace}.field{position:absolute;top:0;bottom:0;width:114.286cqh;left:50%;transform:translateX(-50%);border-inline:1px dashed #ffffffb0;pointer-events:none}.field:before{content:'Native field reference';position:absolute;top:1cqh;left:1cqh;font:1.7cqh system-ui;color:#35465c}.owner{position:absolute;bottom:5cqh;left:var(--edge);width:12cqh;height:12cqh;--accent:#c76597}.owner.p2{left:auto;right:var(--edge);--accent:#b39738}.badge{position:absolute;inset:0;width:12cqh;height:12cqh;z-index:2;border:.6cqh solid #765b92;background:#fbd5e8;box-shadow:0 0 0 .4cqh #fff9ee;display:grid;place-items:center}.p2 .badge{background:#ffe99b;border-color:#9e832e}.badge svg{width:9cqh;height:9cqh;display:block}.tray,.vitals,.context{background:#fff9ee;border:.5cqh solid #765b92;box-shadow:.5cqh .5cqh 0 #34344e38}.tray{position:absolute;height:14cqh;bottom:-1cqh;left:10cqh;width:77cqh;padding:1.4cqh 2cqh 1.4cqh 4cqh;display:flex;gap:2.6cqh;align-items:center}.p2 .tray{left:auto;right:10cqh;padding:1.4cqh 4cqh 1.4cqh 2cqh;border-color:#9e832e}.mini{font-size:1.7cqh;letter-spacing:.1cqh;color:#586177;text-transform:uppercase}.number{font-size:3.4cqh;font-weight:800;white-space:nowrap}.energy{display:flex;gap:.7cqh;align-items:center;margin:.8cqh 0}.pip{display:block;width:2.2cqh;height:2.2cqh;border-radius:50%;background:#d4567c;border:.3cqh solid #963255;flex-shrink:0}.pip.empty{background:transparent;opacity:.35}.p2 .pip{background:#e3b63d;border-color:#96731f}.p2 .pip.empty{background:transparent}.stock{font-size:2cqh;white-space:nowrap}.stamp{width:10cqh;height:10cqh;flex-shrink:0;background:#252a38;border:.4cqh solid #c4a5cc;display:grid;place-items:center}.stamp svg{width:7cqh;height:7cqh}.data{min-width:0}.vitals{display:none}.context{position:absolute;right:var(--edge);bottom:4cqh;min-height:14cqh;display:flex;align-items:center;gap:3cqh;padding:1.5cqh 2.5cqh}.context .stamp{width:9cqh;height:9cqh}.quiet .tray,.quiet .context,.quiet .vitals{display:none}.multi .tray{width:34cqh;gap:2cqh}.multi .tray .data{display:flex;flex-direction:column;gap:.3cqh}.multi .tray .mini{font-size:1.6cqh}.multi .tray .number{font-size:3cqh}.multi .tray .energy{gap:.45cqh}.multi .tray .pip{width:1.8cqh;height:1.8cqh}.multi .context{display:none}
+/* A: one shallow ribbon extends inwards from the unchanged badge. */
+.a .tray{border-radius:0}
+/* B: a compact elbow grows above the same badge; no full-width bar. */
+.b .tray{left:0;bottom:10cqh;width:33cqh;height:24cqh;padding:2cqh;flex-wrap:wrap;gap:1cqh 2cqh;border-radius:1.5cqh 1.5cqh 1.5cqh 0}.b .p2 .tray{left:auto;right:0;padding:2cqh;border-radius:1.5cqh 1.5cqh 0 1.5cqh}.b .tray .stamp{width:8cqh;height:8cqh}.b .tray .stamp svg{width:6cqh;height:6cqh}.b .tray .reserve{width:100%}.b.multi .tray{width:30cqh;height:19cqh}.b.multi .tray .data{flex-direction:row;align-items:center;gap:2cqh}
+/* C: energy remains visibly attached; administrative fields use other edges. */
+.c .tray{display:none}.c .vitals{display:flex;position:absolute;bottom:-1cqh;left:10cqh;height:14cqh;width:22cqh;padding:1.5cqh 1.5cqh 1.5cqh 4cqh;justify-content:center;flex-direction:column;border-radius:0 1.5cqh 1.5cqh 0}.c .p2 .vitals{left:auto;right:10cqh;padding:1.5cqh 4cqh 1.5cqh 1.5cqh;border-color:#9e832e;border-radius:1.5cqh 0 0 1.5cqh}.c.quiet .vitals{display:none}.c .context{border-radius:1.5cqh}.c.multi .context{display:flex;left:50%;right:auto;top:3cqh;bottom:auto;transform:translateX(-50%);min-height:0;gap:4cqh;padding:1.5cqh 3cqh}.c.multi .context .score{display:flex;align-items:center;gap:1cqh}.score.pink{color:#a83b6a}.score.yellow{color:#81600b}
+.b.multi .tray > .data{flex-direction:column;align-items:flex-start;gap:1cqh}
+.c.multi.quiet .context{display:none}.c.multi .vitals{width:24cqh}
+.shot{position:absolute;left:calc(50% - 46.43cqh);top:52.68cqh;width:26.8cqh;color:#283047;pointer-events:none}.instrument{display:flex;gap:1.2cqh;padding:1.3cqh;border:.5cqh solid #68587c;background:#fbeb9d}.spin{position:relative;width:16cqh;height:16cqh;border-radius:50%;background:#ed9bc0;border:.5cqh solid #93658e}.spin:before,.spin:after{content:'';position:absolute;background:#594e72}.spin:before{top:50%;left:0;right:0;height:.45cqh}.spin:after{left:50%;top:0;bottom:0;width:.45cqh}.marker{position:absolute;left:calc(50% - .9cqh);top:calc(50% - .9cqh);width:1.8cqh;height:1.8cqh;border:.35cqh solid #51486b;background:white;z-index:1}.power{position:relative;width:3.8cqh;height:16cqh;background:#eff6db;border:.45cqh solid #5e675b;overflow:hidden}.fill{position:absolute;bottom:0;left:0;right:0;height:68%;background:#7ab956}.shot-energy{margin:1cqh 0 0 1cqh}.shot.owner2 .spin{background:#f6da82}.shot.owner2 .pip{background:#e3b63d;border-color:#96731f}.note{display:flex;justify-content:space-between;gap:20px;font-size:12px;color:#b8bfd2;margin:12px 0 22px}.description{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:28px;padding-bottom:24px}.description p{color:#c3c8d7}.description small{color:#edb9d0;text-transform:uppercase;letter-spacing:1px}.switcher{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:7px;align-items:center;background:#1b1d2df5;border:1px solid #55536b;border-radius:14px;padding:8px;box-shadow:0 6px 25px #0009;z-index:5}.switcher .current{min-width:190px;text-align:center;font-size:13px}.evidence{padding:22px 0 100px;border-top:1px solid #383e51}.evidence summary{cursor:pointer;font-size:18px}.evidence table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px}.evidence th,.evidence td{padding:11px;text-align:left;border-bottom:1px solid #393d4e}a{color:#edb9d0}.fallback .owner{left:calc(50% - 50cqh)}.fallback .owner.p2{left:auto;right:calc(50% - 50cqh)}.fallback .context{right:calc(50% - 50cqh)}.fallback.a:not(.multi) .tray{width:85cqh}.fallback .shot{z-index:3}.quiet .owner{outline:none}
+@media(max-width:800px){header,main{padding:16px}header{display:block}h1{font-size:24px}.description{grid-template-columns:1fr;gap:12px}.switcher{max-width:98%;gap:4px}.switcher .direct{display:none}.shell{padding:4px}.controls{gap:10px}.evidence{overflow:auto}}
+</style>
+<header><div><div class="eyebrow">Issue 31 / revised study</div><h1>One ability badge. Two levels of detail.</h1></div><div class="muted">Quiet ↔ expanded<br><small>Shot HUD stays in the native field.</small></div></header>
+<main>
+<div class="controls">
+<div><label>Status preview</label><div class="modes"><button id="quiet" aria-pressed="false">Quiet · ability only</button><button id="expanded" aria-pressed="true">Expanded · full status</button></div></div>
+<label>Aspect<select id="aspect"><option>16:9</option><option selected>21:9</option><option>32:9</option><option>4:3</option></select></label>
+<label>Players<select id="players"><option value="1">Solo</option><option value="2">Two players</option></select></label>
+<label>Shot preview<select id="phase"><option value="aim">Hidden</option><option value="spin">Spin</option><option value="power" selected>Power</option><option value="flight">Ball in motion</option></select></label>
+<label>Active player<select id="active"><option value="1">P1 · pink</option><option value="2">P2 · yellow</option></select></label>
+<label>P1 ability<select id="ability"><option value="normal">Normal</option><option value="parasol" selected>Parasol</option><option value="fire">Fireball</option></select></label>
+<label>P1 energy<select id="energy"><option value="3">3 remaining</option><option value="1">1 remaining</option><option value="0">Empty</option></select></label>
+<label class="check"><input type="checkbox" id="reach" checked>21:9 reach limit</label>
+<label class="check"><input type="checkbox" id="guide">Native field</label>
+</div>
+<div class="shell"><div class="viewport" id="viewport"><canvas class="scene" id="scene" aria-label="Schematic course; original shot placement is illustrated within the native field"></canvas><div class="hud" id="hud"></div></div></div>
+<div class="note"><span id="state"></span><span>Sample values &amp; original schematic art · Space toggles detail</span></div>
+<div class="description"><div><small id="variantTag"></small><h2 id="name"></h2><p id="idea"></p></div><div><small>What appears when expanded</small><p id="details"></p></div><div><small>Practical tradeoff</small><p id="tradeoff"></p></div></div>
+<details class="evidence" open><summary>What is realistic here?</summary>
+<p>The ability badge has exactly the same position, size and symbol in both detail states. Only the surrounding information changes. Shot placement is a schematic native-field sample, identical across these layouts; implementation would retain the game's live shot coordinates, not force a new screen-center or ball-following rule.</p>
+<table><thead><tr><th>Known visible information</th><th>Use in these options</th><th>Evidence limit</th></tr></thead><tbody>
+<tr><td>Ability / conditions portrait</td><td>The persistent quiet badge; normal is still a portrait, not an empty box</td><td>Preserve the game's artwork and flashes in implementation</td></tr>
+<tr><td>Registered name/drawing, hole, shots, energy, stock</td><td>Solo expanded details; handwritten mark is separate from ability</td><td>Visible in existing captures; individual source groups still need mapping</td></tr>
+<tr><td>P1/P2 ability, six-slot energy and point totals</td><td>Both owners stay visible; expanded details mirror ownership</td><td>No stock or solo shot counters invented for versus</td></tr>
+<tr><td>Shot spin/power instrument and nearby energy row</td><td>Retained in the native field independently of status layout</td><td>Do not move shot-energy companions to the corner with the status bar</td></tr>
+<tr><td>Exact quiet/expanded trigger</td><td>Manual comparison toggle only</td><td>Must follow the game's actual visibility, not a new host timer or guessed phase rule</td></tr>
+</tbody></table>
+<p class="muted">The known shot energy row is intentionally retained even if an expanded status preview also shows energy. That combination is exposed for layout checking, not a claim it occurs in the original game. No new ability names, percentages, timers, predictions, alerts or current-hole score counters are added to the in-game preview.</p>
+<p><a href="hud-expansion.md">Evidence, recommendation and implementation boundaries →</a> · <a href="hud-prototype.html">Earlier five concepts (superseded)</a></p>
+</details>
+</main>
+<nav class="switcher" aria-label="Layout concepts"><button id="prev" aria-label="Previous concept">←</button><span class="current" id="current" aria-live="polite"></span><button class="direct" data-variant="A">A</button><button class="direct" data-variant="B">B</button><button class="direct" data-variant="C">C</button><button id="next" aria-label="Next concept">→</button></nav>
+<script>
+const $=id=>document.getElementById(id);
+const concepts={
+ A:['Attached ribbon','The closest evolution of the original HUD: the ability stays put and a shallow panel extends inward.','Solo: registered mark, hole, shots, energy and reserves. Versus: each badge gets its own points and energy extension.','Lowest conceptual change. Long solo ribbon still occupies the lower edge; relocating live artwork still needs tile/sprite grouping.'],
+ B:['Compact elbow','Grow the information upward from the badge instead of building a long bottom bar.','Same information as A, stacked into a small corner footprint. The badge remains the bottom outer corner of the expanded shape.','Less horizontal coverage, more height. Requires rearranging fields and the panel frame; the quiet state remains identical.'],
+ C:['Split essentials','Keep energy attached to the ability, and separate the less urgent information.','Solo: ability + energy at lower left; registered mark, hole, shots and reserves at lower right. Versus: ability + energy in each lower corner; totals together at top center.','Small local expansions and open lower middle. The eye travels farther for score; all extra groups disappear together when the game returns to quiet.']
+};
+let variant=new URLSearchParams(location.search).get('variant')||'A';if(!concepts[variant])variant='A';
+let expanded=true;
+function abilityIcon(kind){
+ const content=kind==='parasol'?'<path d="M8 24Q24 1 40 24H8M24 24V39Q24 45 30 41" fill="#f2b5d1" stroke="#654664" stroke-width="3"/>':kind==='fire'?'<path d="M24 4Q23 17 34 16Q45 34 31 42Q10 47 9 29Q10 21 18 16Q16 28 22 25Q29 20 24 4Z" fill="#e77e56" stroke="#794d61" stroke-width="2"/>':'<circle cx="24" cy="25" r="15" fill="#fff0e7" stroke="#71536f" stroke-width="2"/><path d="M19 23V27M29 23V27M20 33Q24 36 28 33" fill="none" stroke="#71536f" stroke-width="2"/>';
+ return `<svg viewBox="0 0 48 48" aria-hidden="true">${content}</svg>`;
+}
+function stamp(){return '<div class="stamp" role="img" aria-label="Example registered player drawing"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M5 28L13 11L18 28L24 11L31 28M9 23H30" fill="none" stroke="#faf1e8" stroke-width="3" stroke-linecap="round"/></svg></div>';}
+function energy(n,multi){const count=n===2?4:Number($('energy').value),slots=multi?6:4;return `<div class="energy" aria-label="P${n} energy ${count} of ${slots}">${Array.from({length:slots},(_,i)=>`<i class="pip ${i>=count?'empty':''}"></i>`).join('')}</div>`;}
+function counter(label,value){return `<div class="data"><div class="mini">${label}</div><div class="number">${value}</div></div>`;}
+function owner(n,multi){
+ const kind=n===1?$('ability').value:'normal';
+ const detail=multi?`<div class="data">${counter('P'+n+' points',n===1?'12':'09')}${energy(n,true)}</div>`:`${stamp()}${counter('Hole','03')}${counter('Shot','02')}<div class="reserve">${energy(n,false)}<div class="stock">Stock 02</div></div>`;
+ return `<section class="owner p${n}" aria-label="P${n} status"><div class="tray">${detail}</div><div class="vitals">${energy(n,multi)}</div><div class="badge" role="img" aria-label="P${n} ${kind} ability">${abilityIcon(kind)}</div></section>`;
+}
+function context(multi){return multi?'<section class="context" aria-label="Versus point totals"><div class="score pink"><span class="mini">P1</span><b class="number">12</b></div><span class="mini">Points</span><div class="score yellow"><span class="mini">P2</span><b class="number">09</b></div></section>':`<section class="context" aria-label="Hole information">${stamp()}${counter('Hole','03')}${counter('Shot','02')}${counter('Stock','02')}</section>`;}
+function shot(active,multi){return `<section class="shot owner${active}" aria-label="Original shot HUD schematic"><div class="instrument"><div class="spin"><i class="marker"></i></div><div class="power"><i class="fill"></i></div></div><div class="shot-energy">${energy(active,multi)}</div></section>`;}
+function render(){
+ const multi=$('players').value==='2',active=multi?Number($('active').value):1,ratio=$('aspect').value;
+ $('active').disabled=!multi;
+ const [rw,rh]=ratio.split(':').map(Number);$('viewport').style.aspectRatio=`${rw}/${rh}`;
+ const fallback=ratio==='4:3',layout=fallback?'a':variant.toLowerCase();
+ $('hud').className=`hud ${layout} ${expanded?'expanded':'quiet'} ${multi?'multi':''} ${fallback?'fallback':''}`;
+ $('hud').style.setProperty('--edge',$('reach').checked?'max(3cqh, calc((100cqw - 233.333cqh)/2 + 3cqh))':'3cqh');
+ let html=$('guide').checked?'<div class="field"></div>':'';
+ html+=owner(1,multi)+(multi?owner(2,true):'');
+ if(layout==='c')html+=context(multi);
+ if(['spin','power'].includes($('phase').value))html+=shot(active,multi);
+ $('hud').innerHTML=html;
+ $('quiet').setAttribute('aria-pressed',String(!expanded));$('expanded').setAttribute('aria-pressed',String(expanded));
+ const [name,idea,details,tradeoff]=concepts[variant];$('name').textContent=name;$('idea').textContent=idea;$('details').textContent=details;$('tradeoff').textContent=tradeoff;
+ $('variantTag').textContent=`Concept ${variant} / 03`;$('current').textContent=`${variant} · ${name}`;
+ $('state').textContent=`${ratio} · ${multi?'Versus':'Solo'} · ${expanded?'Expanded':'Quiet'} · ${fallback?'Centered ribbon fallback':$('reach').checked?'21:9 reach limit':'Outer edges'} · shot HUD unrelocated`;
+ document.querySelectorAll('[data-variant]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.variant===variant)));
+ drawScene();
+}
+function choose(key){variant=key;const url=new URL(location.href);url.searchParams.set('variant',key);history.replaceState(null,'',url);render();}
+function cycle(step){const keys=Object.keys(concepts);choose(keys[(keys.indexOf(variant)+step+3)%3]);}
+$('quiet').onclick=()=>{expanded=false;render();};$('expanded').onclick=()=>{expanded=true;render();};$('prev').onclick=()=>cycle(-1);$('next').onclick=()=>cycle(1);
+document.querySelectorAll('[data-variant]').forEach(b=>b.onclick=()=>choose(b.dataset.variant));document.querySelectorAll('.controls input,.controls select').forEach(e=>e.oninput=render);
+document.addEventListener('keydown',e=>{if(e.target.closest('input,textarea,select,button,[contenteditable]'))return;if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();cycle(e.key==='ArrowRight'?1:-1);}else if(e.code==='Space'){e.preventDefault();expanded=!expanded;render();}});
+window.addEventListener('popstate',()=>{const key=new URLSearchParams(location.search).get('variant');variant=concepts[key]?key:'A';render();});
+function drawScene(){
+ const canvas=$('scene'), box=$('viewport').getBoundingClientRect(), dpr=devicePixelRatio||1;
+ canvas.width=Math.round(box.width*dpr);canvas.height=Math.round(box.height*dpr);
+ const c=canvas.getContext('2d');c.scale(dpr,dpr);const w=box.width,h=box.height,s=h/600;
+ c.fillStyle='#b9d5e9';c.fillRect(0,0,w,h);
+ // All scenery is original vector geometry; no game art or captured assets.
+ c.fillStyle='#dce9ef';for(let i=0;i<8;i++){const x=(i*211+40)%(w+100);c.beginPath();c.ellipse(x,h*.19+(i%3)*h*.08,90*s,20*s,0,0,Math.PI*2);c.fill();}
+ // A sample native composition: active ball near (48,100), shot panel
+ // near (24,118) in a 256x224 field. This is not a new tracking policy.
+ const activeP2=$('players').value==='2'&&$('active').value==='2';
+ const ballX=activeP2?(6.6-5.4)*38:(5.8-6.4)*38;
+ const ballY=activeP2?(6.6+5.4)*18-13:(5.8+6.4)*18-14;
+ c.save();c.translate(w/2+(48-128)*h/224-ballX*s,100*h/224-(ballY-140)*s);c.scale(s,s);
+ const point=(x,y,z=0)=>[(x-y)*38,(x+y)*18-z];
+ function poly(pts,fill){c.fillStyle=fill;c.beginPath();pts.forEach((p,i)=>i?c.lineTo(...p):c.moveTo(...p));c.closePath();c.fill();}
+ const originY=-140; c.translate(0,originY);
+ for(let x=0;x<9;x++)for(let y=0;y<9;y++){
+  const a=point(x,y),b=point(x+1,y),d=point(x,y+1),e=point(x+1,y+1);
+  if(x===8)poly([b,e,[e[0],e[1]+65],[b[0],b[1]+65]],'#7c937c');
+  if(y===8)poly([d,e,[e[0],e[1]+65],[d[0],d[1]+65]],'#627e78');
+  poly([a,b,e,d],(x+y)%2?'#c1d6a0':'#dce7b8');
+ }
+ function orb(x,y,color,r=11){const p=point(x,y);c.fillStyle='#35574730';c.beginPath();c.ellipse(p[0],p[1]+3,r*1.1,5,0,0,Math.PI*2);c.fill();c.fillStyle=color;c.beginPath();c.arc(p[0],p[1]-r,r,0,Math.PI*2);c.fill();c.strokeStyle='#4a6470';c.lineWidth=2;c.stroke();}
+ const phase=$('phase').value;
+ if(!['flight','pause','score','unknown'].includes(phase)){
+  const isP2=$('players').value==='2'&&$('active').value==='2';
+  const start=isP2?point(6.6,5.4):point(5.8,6.4),end=point(2.5,3.1);c.beginPath();c.moveTo(start[0],start[1]-14);c.quadraticCurveTo(80,-55,end[0],end[1]-10);c.strokeStyle='#fffdf5';c.lineWidth=4;c.setLineDash([5,9]);c.stroke();c.setLineDash([]);
+  c.strokeStyle='#6c8b69';c.beginPath();c.ellipse(end[0],end[1],12,5,0,0,Math.PI*2);c.stroke();
+ }
+ const p2Moving=$('players').value==='2'&&$('active').value==='2';
+ orb(phase==='flight'&&!p2Moving?4:5.8,phase==='flight'&&!p2Moving?4.5:6.4,'#f393be',14);
+ if($('players').value==='2')orb(phase==='flight'&&p2Moving?4:6.6,phase==='flight'&&p2Moving?4.5:5.4,'#ffd96d',13);
+ for(const [x,y] of [[2,5],[6,2],[3,2]]){const p=point(x,y);c.fillStyle='#f0bb54';c.beginPath();for(let i=0;i<10;i++){const a=i*Math.PI/5-Math.PI/2,r=i%2?6:13;const px=p[0]+Math.cos(a)*r,py=p[1]-15+Math.sin(a)*r;i?c.lineTo(px,py):c.moveTo(px,py);}c.closePath();c.fill();}
+ const cup=point(1.8,2);c.fillStyle='#365760';c.beginPath();c.ellipse(cup[0],cup[1],12,6,0,0,Math.PI*2);c.fill();c.fillStyle='#fff7df';c.fillRect(cup[0]+10,cup[1]-50,3,50);poly([[cup[0]+13,cup[1]-50],[cup[0]+37,cup[1]-42],[cup[0]+13,cup[1]-33]],'#dd78a0');
+ c.restore();
+}
+
+new ResizeObserver(drawScene).observe($('viewport'));render();
+</script>
+</html>
