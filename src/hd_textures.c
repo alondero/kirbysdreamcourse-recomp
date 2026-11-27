@@ -175,8 +175,9 @@ unsigned KdcHdScale(void)
      * the orbit view composes the frame the host presents that composition
      * instead of the tiles. Either way the tile work would be discarded, so
      * skip it. */
+    const bool native_scene = !course_active && !pack;
     if (fill && ppu)
-        PpuPauseHdTiles(ppu, (!course_active && !pack) || KdcOrbitComposing());
+        PpuPauseHdTiles(ppu, native_scene || KdcOrbitComposing());
     /* Developer diagnostic: KDC_HD_STATS=1 prints cumulative counters. */
     static int reported = -1;
     static int stats = -1;
@@ -192,5 +193,5 @@ unsigned KdcHdScale(void)
                 (unsigned long long)s.lookups, (unsigned long long)s.misses,
                 (unsigned)s.cached_tiles);
     }
-    return fill ? kKdcHdScale : 1;
+    return fill && !native_scene ? kKdcHdScale : 1;
 }

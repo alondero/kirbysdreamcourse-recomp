@@ -16,7 +16,8 @@ the executable.
 Without an interface pack, live course terrain (BG1/BG2), course scenery
 (BG3), course sprites and orbit/high-refresh terrain are scaled at 4x. The
 title, menus, course select, scorecards and the HUD keep their original
-pixels. Lines using mosaic, interlace, pseudo-hires or 16x16 characters, and
+pixels; wholly native non-course scenes do not bind the 4x presentation
+surface. Lines using mosaic, interlace, pseudo-hires or 16x16 characters, and
 any pixel the exactness check cannot reproduce, also stay native.
 
 ### Interface texture packs
@@ -133,8 +134,10 @@ The work is split between a generic framework patch and a small game policy.
 5. **Presentation** (`patches/snesrecomp-hd-present.patch`). The desktop host
    binds a 4x surface for the next frame and presents it only after a whole
    frame has been drawn into it. A game-composed frame (the orbit view) is
-   nearest-scaled a row at a time instead. Screenshots taken while HD is active are 4x
-   (1024x896, or wider in widescreen). Thumbnails, frame dumps and the overlay
+   nearest-scaled a row at a time instead. Screenshots of HD-presented frames
+   are 4x (1024x896, or wider in widescreen). A pack-free menu or other scene
+   whose output is entirely native does not bind the 4x surface, so its
+   screenshots remain native-sized. Thumbnails, frame dumps and the overlay
    backdrop keep using the native frame.
 
 ### Procedural checker geometry
