@@ -27,10 +27,14 @@ ASSETS = {
 }
 
 
+ICON_RESOURCES = {"res/drawable/course_hole.xml", "res/mipmap-anydpi-v26/game_icon.xml"}
+
+
 def verify_apk(path):
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
         required = {"assets/" + name for name in ASSETS}
+        required.update(ICON_RESOURCES)
         required.update(("AndroidManifest.xml", "resources.arsc", "classes.dex", "lib/arm64-v8a/libmain.so"))
         unexpected = {n for n in names if n not in required and not re.fullmatch(
             r"classes[0-9]+\.dex|META-INF/com/android/build/gradle/app-metadata\.properties|"

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import zipfile
 
-from tools.build_android import ASSETS, verify_apk
+from tools.build_android import ASSETS, ICON_RESOURCES, verify_apk
 
 
 class AndroidPackageTests(unittest.TestCase):
@@ -12,7 +12,7 @@ class AndroidPackageTests(unittest.TestCase):
         header = b"\x7fELF\x02\x01" + bytes(10) + b"\x03\x00" + machine.to_bytes(2, "little")
         with zipfile.ZipFile(path, "w") as apk:
             for name in ("AndroidManifest.xml", "resources.arsc", "classes.dex",
-                         "META-INF/version-control-info.textproto", *extra):
+                         "META-INF/version-control-info.textproto", *ICON_RESOURCES, *extra):
                 apk.writestr(name, b"fixture")
             for name in ASSETS:
                 apk.writestr("assets/" + name, b"fixture")

@@ -1,0 +1,4 @@
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/course_sky"/>
+    <foreground android:drawable="@drawable/course_hole"/>
+</adaptive-icon>
