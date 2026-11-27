@@ -1,6 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
     <application android:label="Kirby's Dream Course Recompiled" android:allowBackup="false"
+        android:icon="@mipmap/game_icon"
         android:theme="@android:style/Theme.Material.NoActionBar" android:enableOnBackInvokedCallback="false">
         <activity android:name=".ImportActivity" android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenLayout|screenSize|smallestScreenSize">

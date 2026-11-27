@@ -56,6 +56,31 @@
 #endif
 #include "desktop/sdl_compat.h"
 #include "config.h"
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "recomp_launcher.h"
+
+static char window_icon_path[1024];
+
+static void ConfigureLinuxLauncher(struct RecompLauncherCGameInfo *info)
+{
+    KdcConfigureLauncher(info);
+    info->window_icon_path = window_icon_path;
+}
+
+static bool SDLCALL SetLinuxWindowIcon(void *unused, SDL_Event *event)
+{
+    (void)unused;
+    if (event->type == SDL_EVENT_WINDOW_SHOWN) {
+        SDL_Window *window = SDL_GetWindowFromID(event->window.windowID);
+        SDL_Surface *icon = SDL_LoadPNG(window_icon_path);
+        if (icon) {
+            SDL_SetWindowIcon(window, icon);
+            SDL_DestroySurface(icon);
+        }
+    }
+    return true;
+}
+#endif
 #ifdef __ANDROID__
 #include <jni.h>
 /* SDLActivity loads libmain.so and dlsyms its SDL_main. */
@@ -111,6 +136,10 @@ static const char *ValidateRomPath(const char *path)
 
 static void OnRomLoaded(const uint8_t *rom, size_t size)
 {
+#if defined(__linux__) && !defined(__ANDROID__)
+    /* SDL video is initialized and the host is about to create its game window. */
+    SDL_AddEventWatch(SetLinuxWindowIcon, NULL);
+#endif
     if (KdcHdEnabled()) KdcHdPackPrewarm();
     KdcCoursePackSetRom(rom, size);
     if (KdcDevUsesCoursePack()) {
@@ -219,7 +248,11 @@ static const SnesDesktopHostGame kGameHost = {
     .on_rom_loaded      = OnRomLoaded,
     .display_aspect_supported = 1,
     .mods_provider      = LauncherSettings,
+#if defined(__linux__) && !defined(__ANDROID__)
+    .configure_launcher = ConfigureLinuxLauncher,
+#else
     .configure_launcher = KdcConfigureLauncher,
+#endif
     .prepare_frame       = PrepareWideFrame,
     .before_run_frame    = BeforePresentationFrame,
     .end_sim_frame       = CapturePresentation,
@@ -287,6 +320,9 @@ int main(int argc, char **argv)
         if (snesrecomp_exe_dir_path("courses", courses_dir, sizeof(courses_dir)))
             (void)KdcCoursePacksSetDropinDir(courses_dir);
     }
+#endif
+#if defined(__linux__) && !defined(__ANDROID__)
+    snesrecomp_exe_dir_path("assets/img/course-hole.png", window_icon_path, sizeof(window_icon_path));
 #endif
     int dev = KdcDevParseArgs(&argc, argv);
     if (dev) return dev < 0 ? 2 : 0;

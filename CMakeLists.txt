@@ -122,6 +122,14 @@ if(ANDROID)
     target_link_options(KirbyDreamCourseRecomp PRIVATE "-Wl,-u,JNI_OnLoad")
 else()
     add_executable(KirbyDreamCourseRecomp)
+    if(WIN32)
+        enable_language(RC)
+        target_sources(KirbyDreamCourseRecomp PRIVATE assets/icon/game.rc)
+        set_property(SOURCE assets/icon/game.rc APPEND PROPERTY OBJECT_DEPENDS
+            "${CMAKE_SOURCE_DIR}/assets/icon/course-hole.ico")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        configure_file(assets/icon/course-hole.png assets/img/course-hole.png COPYONLY)
+    endif()
 endif()
 target_sources(KirbyDreamCourseRecomp PRIVATE ${SNESRECOMP_RUNNER_SOURCES}
     src/main.c src/host_contract.c src/game_rtl.c src/course_view.c src/course_sprites.c src/course_pack.c src/course_pack_runtime.c src/dev_start.c src/practice.c src/practice_draw.c src/gen_stubs.c
