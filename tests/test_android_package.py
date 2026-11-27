@@ -8,11 +8,12 @@ from tools.build_android import ASSETS, ICON_RESOURCES, verify_apk
 
 
 class AndroidPackageTests(unittest.TestCase):
-    def write_apk(self, path, extra=(), machine=183):
+    def write_apk(self, path, extra=(), machine=183, omitted=()):
         header = b"\x7fELF\x02\x01" + bytes(10) + b"\x03\x00" + machine.to_bytes(2, "little")
         with zipfile.ZipFile(path, "w") as apk:
             for name in ("AndroidManifest.xml", "resources.arsc", "classes.dex",
-                         "META-INF/version-control-info.textproto", *ICON_RESOURCES, *extra):
+                         "META-INF/version-control-info.textproto",
+                         *(name for name in ICON_RESOURCES if name not in omitted), *extra):
                 apk.writestr(name, b"fixture")
             for name in ASSETS:
                 apk.writestr("assets/" + name, b"fixture")
@@ -23,6 +24,11 @@ class AndroidPackageTests(unittest.TestCase):
             path = Path(temp) / "test.apk"
             self.write_apk(path)
             verify_apk(path)
+            for missing_icon in ICON_RESOURCES:
+                with self.subTest(missing_icon=missing_icon):
+                    self.write_apk(path, omitted=[missing_icon])
+                    with self.assertRaisesRegex(ValueError, "Unexpected APK contents"):
+                        verify_apk(path)
             for private in ("assets/course.sfc", "assets/assets/img/bank00.c", "assets/saves/save.srm"):
                 with self.subTest(private=private):
                     self.write_apk(path, [private])
