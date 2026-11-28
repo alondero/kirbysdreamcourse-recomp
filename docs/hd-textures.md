@@ -23,8 +23,11 @@ any pixel the exactness check cannot reproduce, also stay native.
 ### Interface texture packs
 
 A texture pack is a separate, game-derived mod authored outside this
-repository. Packs are never committed or distributed with the project. When
-**HD textures** are on, enable **HD interface pack** on the launcher's
+repository. Packs are never committed or distributed with the project.
+For maintainer installs and updates, see `CLAUDE.local.md` in a provisioned
+checkout for the pack source and checksum.
+
+When **HD textures** are on, enable **HD interface pack** on the launcher's
 **Mods** page on Windows or Linux. Select the row and choose **Select file**
 or **Change file** under **Files** to pick a `.pack` file. The pack applies
 on **Play** or **Resume**. The file and pack checkbox are saved in

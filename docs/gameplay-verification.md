@@ -50,14 +50,18 @@ Copy one of the examples and put local fixtures and investigations under
 | --- | --- |
 | `frames` | Required frame budget. |
 | `events` | Hand-authored holds with `frame` (one-based), `count` and `button`. Names include `a`, `start`, `up`, and chords such as `a+p2:b`. Leave an idle frame between holds. |
-| `recording` | Path to an existing local frame-numbered JSON recording. Use either `events` or `recording`. |
+| `recording` | Path to an existing local frame-numbered JSON recording. |
+| `host_script` | Path to a hand-authored framework script for host actions such as saving and loading a state. Choose one of `events`, `recording`, or `host_script`. |
 | `dev_hole`, `dev_two_player` | [Developer hole selector](dev-start.md) and optional two-player mode for `map:` starts. Omit these for ordinary game boot. |
 | `checks` | Named WRAM assertions with `label`, `frame`, `offset`, and `equals` or `min`/`max`. Offsets are relative to `$7E0000`, e.g. `"0xabb2"` for the map ID. Values are unsigned little-endian. `bytes` accepts 1, 2 (default) or 4. |
-| `capture_from` | First WRAM dump, defaulting to the earliest check or the final frame. Each subsequent frame through the end uses 128 KiB plus metadata. |
+| `capture_from` | First WRAM dump, defaulting to the earliest check or the last captured frame. Each frame through `capture_to` uses 128 KiB plus metadata. |
+| `capture_to` | Last WRAM dump, defaulting to the final frame. Set this explicitly if a save-state reload moves the guest frame counter backwards. The final WRAM hash refers to this dump. |
 | `screenshot` | Composed image frame. Defaults to the final frame. Set to `null` for state-only checks. |
 | `initial_sram` | Path to an 8192-byte starting save. Defaults to zeroed SRAM. |
 | `course_pack` | Path to a local IPS course pack. Use `pack:gdc:COURSE:HOLE` for a direct start in the first external pack. |
 | `camera_script` | Path to a text file of `frame horizontal vertical reset` rows. Camera frames are zero-based, axes range from −32768 to 32767, and `reset` accepts `0` or `1`. Axes hold until the next row. |
+| `widescreen` | Set to `true` to enable widescreen. Set the aspect in the `kdc-widescreen.cfg` preference. |
+| `orbit_sprite_log` | Set to `true` to capture the orbit renderer's sprite positions in `orbit-sprites.log`. |
 | `preferences` | Optional map of game preference filenames to file contents, for example `{"kdc-presentation.cfg": "1 120\n"}`. Use `--paced` when testing presentation timing. |
 
 WRAM checks and screenshots use **zero-based** completed frame indices.
@@ -69,11 +73,27 @@ dummy video with normal pacing. `--windowed` opens an actual game window with
 pacing. Use `--windowed --renderer OpenGL` to exercise the desktop OpenGL
 presenter and allow additional wall time with `--timeout` for long routes.
 
+### Course transition regressions
+
+- Run `python tools/run_game_scenario.py scenarios/solo-finale.json --renderer SDL-Software`
+  for Course 1 Hole 8. Inspect `screenshot.png` at frame 7500. Course terrain
+  should continue across both 4:3 boundaries over the stars.
+- Run `python tools/run_game_scenario.py scenarios/gordo-reload.json` for
+  Course 4 Hole 5. The host script saves and reloads just before the sink.
+  Pass the printed run directory to
+  `python tools/diagnostics/check_gordo_anchor.py RUN_DIRECTORY` to check
+  both the stationary Gordo and its shadow through the cup animation.
+- Repeat with `--fallback` to verify interpreter execution. For evidence
+  needed after worktree cleanup, copy the inspected screenshot, `result.json`,
+  and relevant log excerpt to `local/verification/pr-<number>/<commit>/`
+  in the main checkout. Keep saves, recordings, and raw dumps local.
+
 ### Reference comparison
 
 For an ordinary game boot, pass the run's `input.json` and `initial.srm` to
-the pinned reference. `--wram-frame` and `--image-frame` use the reference's
-one-based indices. The core identity is listed in [compatibility](compatibility.md).
+the pinned reference. Host scripts require the recomp host. `--wram-frame`
+and `--image-frame` use the reference's one-based indices. The core identity
+is listed in [compatibility](compatibility.md).
 
 ```powershell
 $run = 'local/scenarios/run-REPLACE_ME'

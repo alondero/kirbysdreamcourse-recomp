@@ -1,0 +1,14 @@
+{
+  "frames": 1290,
+  "dev_hole": "normal:4:5",
+  "host_script": "gordo-reload.script",
+  "camera_script": "gordo-camera.script",
+  "orbit_sprite_log": true,
+  "checks": [
+    {"label": "Course 4 Hole 5 map", "frame": 1262, "offset": "0xabb2", "equals": 28},
+    {"label": "Kirby sinks", "frame": 1262, "offset": "0xda4a", "equals": 1},
+    {"label": "Hole scored", "frame": 1276, "offset": "0x6b84", "equals": 0}
+  ],
+  "capture_to": 1278,
+  "screenshot": 1264
+}

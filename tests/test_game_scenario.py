@@ -2,10 +2,11 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from run_game_scenario import inspect_run, load_scenario, WRAM_SIZE
+from run_game_scenario import inspect_run, load_scenario, stage_run, WRAM_SIZE
 
 
 class GameScenarioTest(unittest.TestCase):
@@ -23,6 +24,31 @@ class GameScenarioTest(unittest.TestCase):
         check = dict(label='word', frame=0, offset='0x1ffff', equals=0)
         with self.assertRaisesRegex(ValueError, 'WRAM offset'):
             self.scenario(checks=[check])
+
+    def test_host_script_is_staged_with_its_render_options(self):
+        script = self.root / 'reload.script'
+        script.write_text('savestate 0\nloadstate 0\n', encoding='ascii')
+        exe = self.root / 'host'
+        exe.touch()
+        output = self.root / 'run'
+        output.mkdir()
+        args = SimpleNamespace(exe=exe, rom=self.root / 'rom', renderer='SDL',
+                               fallback=False, windowed=False, paced=False)
+        result = {}
+        scenario = self.scenario(host_script=script.name, widescreen=True, orbit_sprite_log=True,
+                                 capture_to=0)
+        command, env, _, event_count = stage_run(scenario, args, output, result)
+        resolved = load_scenario(output / 'scenario-resolved.json')
+        self.assertEqual(resolved['host_script'].read_bytes(), script.read_bytes())
+        self.assertEqual(command[-2:], ['--script', str(resolved['host_script'])])
+        self.assertEqual(event_count, 0)
+        self.assertEqual(env['KDC_ORBIT_SPRITE_LOG'], str(output / 'orbit-sprites.log'))
+        self.assertEqual(env['SNESRECOMP_FRAMEDUMP_START'], '0')
+        self.assertEqual(env['SNESRECOMP_FRAMEDUMP_END'], '0')
+        self.assertIn('Widescreen = 1\n', (output / 'config.ini').read_text())
+        self.assertNotIn('input_sha256', result)
+        with self.assertRaisesRegex(ValueError, 'choose one'):
+            self.scenario(host_script=script.name, events=[])
 
     def test_check_rejects_a_clean_exit_without_intended_state(self):
         scenario = self.scenario(checks=[dict(label='shot', frame=1, offset='0x1234', min=7)])
