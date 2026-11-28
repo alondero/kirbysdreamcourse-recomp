@@ -1,0 +1,33 @@
+{
+  "frames": 7809,
+  "dev_hole": "normal:1:8",
+  "widescreen": true,
+  "preferences": {"kdc-widescreen.cfg": "16:9\n"},
+  "events": [
+    {"frame": 630, "count": 1, "button": "l"},
+    {"frame": 640, "count": 1, "button": "l"},
+    {"frame": 750, "count": 1, "button": "a"},
+    {"frame": 900, "count": 1, "button": "a"},
+    {"frame": 970, "count": 1, "button": "a"},
+    {"frame": 2150, "count": 30, "button": "right"},
+    {"frame": 2300, "count": 1, "button": "a"},
+    {"frame": 2450, "count": 1, "button": "a"},
+    {"frame": 2495, "count": 1, "button": "a"},
+    {"frame": 3800, "count": 1, "button": "a"},
+    {"frame": 3950, "count": 1, "button": "a"},
+    {"frame": 3990, "count": 1, "button": "a"},
+    {"frame": 5350, "count": 1, "button": "a"},
+    {"frame": 5500, "count": 1, "button": "a"},
+    {"frame": 5540, "count": 1, "button": "a"},
+    {"frame": 6650, "count": 30, "button": "right"},
+    {"frame": 6800, "count": 1, "button": "a"},
+    {"frame": 6950, "count": 1, "button": "a"},
+    {"frame": 6965, "count": 1, "button": "a"}
+  ],
+  "checks": [
+    {"label": "Course 1 Hole 8 map", "frame": 7808, "offset": "0xabb2", "equals": 7},
+    {"label": "Solo mode", "frame": 7808, "offset": "0x17ff", "equals": 0},
+    {"label": "Player scored the final hole", "frame": 7808, "offset": "0x6b84", "equals": 0}
+  ],
+  "screenshot": 7500
+}

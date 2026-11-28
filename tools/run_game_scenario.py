@@ -39,10 +39,10 @@ def integer(value, name, minimum, maximum):
 
 def load_scenario(path):
     scenario = json.loads(path.read_text(encoding='utf-8-sig'))
-    fixtures = ('recording', 'initial_sram', 'course_pack', 'camera_script')
+    fixtures = ('recording', 'host_script', 'initial_sram', 'course_pack', 'camera_script')
     fields(scenario, 'scenario', ('frames',), (
-        'dev_hole', 'dev_two_player', 'events', 'capture_from', 'screenshot',
-        'checks', 'preferences', *fixtures,
+        'dev_hole', 'dev_two_player', 'events', 'capture_from', 'capture_to', 'screenshot',
+        'checks', 'preferences', 'widescreen', 'orbit_sprite_log', *fixtures,
     ))
     frames = integer(scenario['frames'], 'frames', 1, 2**31 - 1)
     dev_hole = scenario.get('dev_hole')
@@ -56,8 +56,11 @@ def load_scenario(path):
             if not isinstance(scenario[name], str) or not scenario[name].strip():
                 raise ValueError(f'{name} must be a fixture path')
             scenario[name] = (path.parent / scenario[name]).resolve(strict=True)
-    if 'recording' in scenario and 'events' in scenario:
-        raise ValueError('choose either events or recording')
+    if len(scenario.keys() & {'events', 'recording', 'host_script'}) > 1:
+        raise ValueError('choose one of events, recording or host_script')
+    for name in ('widescreen', 'orbit_sprite_log'):
+        if name in scenario and type(scenario[name]) is not bool:
+            raise ValueError(f'{name} must be a boolean')
 
     checks = scenario.setdefault('checks', [])
     if not isinstance(checks, list):
@@ -81,7 +84,10 @@ def load_scenario(path):
             integer(check[bound], bound, 0, 2**(8 * width) - 1)
         if check.get('min', 0) > check.get('max', 2**(8 * width) - 1):
             raise ValueError('check min must be at most max')
-    first_check = min((check['frame'] for check in checks), default=frames - 1)
+    last_check = max((check['frame'] for check in checks), default=0)
+    scenario['capture_to'] = integer(scenario.get('capture_to', frames - 1),
+                                     'capture_to', last_check, frames - 1)
+    first_check = min((check['frame'] for check in checks), default=scenario['capture_to'])
     scenario['capture_from'] = integer(scenario.get('capture_from', first_check),
                                        'capture_from', 0, first_check)
     screenshot = scenario.setdefault('screenshot', frames - 1)
@@ -117,7 +123,7 @@ def stage_run(scenario, args, output, result):
            if not name.upper().startswith(('SNESRECOMP_', 'KDC_', 'SDL_', 'LNG_'))}
     managed = dict(SDL_AUDIODRIVER='dummy', SNESRECOMP_RUN_FRAMES=str(scenario['frames']),
                    SNESRECOMP_FRAMEDUMP_START=str(scenario['capture_from']),
-                   SNESRECOMP_FRAMEDUMP_END=str(scenario['frames'] - 1),
+                   SNESRECOMP_FRAMEDUMP_END=str(scenario['capture_to']),
                    SNESRECOMP_APU_BEAM_ELAPSED='1', SNESRECOMP_APU_HANDOFF='1',
                    SNESRECOMP_APU_ABSOLUTE_PREANCHOR='1',
                    SNESRECOMP_LLE_BOUNCE='0' if args.fallback else '1')
@@ -147,6 +153,8 @@ def stage_run(scenario, args, output, result):
         result['camera_script_sha256'] = digest(camera)
         resolved['camera_script'] = camera.name
         managed['KDC_CAMERA_SCRIPT'] = str(camera)
+    if scenario.get('orbit_sprite_log'):
+        managed['KDC_ORBIT_SPRITE_LOG'] = str(output / 'orbit-sprites.log')
 
     saves = output / 'saves'
     if dev_hole.startswith(('pack:', 'pack-2p:')):
@@ -160,25 +168,33 @@ def stage_run(scenario, args, output, result):
     result['initial_sram_sha256'] = hashlib.sha256(sram).hexdigest()
     resolved['initial_sram'] = 'initial.srm'
 
-    recording = {'frames': scenario['frames'], 'events': scenario.get('events', [])}
-    if 'recording' in scenario:
-        recording = json.loads(scenario['recording'].read_text(encoding='utf-8-sig'))
-    validate_recording(recording)
-    if recording['frames'] != scenario['frames']:
-        raise ValueError('recording frame count differs from scenario')
-    write_json(output / 'input.json', recording)
-    result['input_sha256'] = digest(output / 'input.json')
-    resolved.pop('events', None)
-    resolved['recording'] = 'input.json'
-    if recording['events']:
-        script = output / 'input.script'
-        script.write_text(host_script(recording), encoding='ascii', newline='\n')
+    event_count = 0
+    script = output / 'input.script'
+    if 'host_script' in scenario:
+        shutil.copyfile(scenario['host_script'], script)
+        resolved['host_script'] = script.name
+        result['host_script_sha256'] = digest(script)
         command += ['--script', str(script)]
+    else:
+        recording = {'frames': scenario['frames'], 'events': scenario.get('events', [])}
+        if 'recording' in scenario:
+            recording = json.loads(scenario['recording'].read_text(encoding='utf-8-sig'))
+        validate_recording(recording)
+        if recording['frames'] != scenario['frames']:
+            raise ValueError('recording frame count differs from scenario')
+        write_json(output / 'input.json', recording)
+        result['input_sha256'] = digest(output / 'input.json')
+        resolved.pop('events', None)
+        resolved['recording'] = 'input.json'
+        event_count = len(recording['events'])
+        if event_count:
+            script.write_text(host_script(recording), encoding='ascii', newline='\n')
+            command += ['--script', str(script)]
 
     delay = 0 if args.paced or args.windowed else 1
     config = (f'[General]\nAutosave = 0\nDisableFrameDelay = {delay}\n'
               f'[Graphics]\nOutputMethod = {args.renderer}\nNewRenderer = 1\n'
-              'NoSpriteLimits = 0\nWidescreen = 0\n'
+              f'NoSpriteLimits = 0\nWidescreen = {int(scenario.get("widescreen", False))}\n'
               '[Sound]\nEnableAudio = 1\nAudioFreq = 32000\nAudioChannels = 2\nAudioSamples = 512\n'
               '[Controller]\nSourceP1 = 0\nSourceP2 = 0\n'
               '[GamepadMap]\nEnableGamepad1 = false\nEnableGamepad2 = false\n')
@@ -190,7 +206,7 @@ def stage_run(scenario, args, output, result):
     write_json(output / 'scenario-resolved.json', resolved)
 
     result.update(command=command, environment=managed)
-    return command, env | managed, saves / 'save.srm', len(recording['events'])
+    return command, env | managed, saves / 'save.srm', event_count
 
 
 def capture_png(ppm, target):
@@ -222,16 +238,25 @@ def inspect_run(scenario, output, result, sram, event_count):
         result['renderer'] = renderer[1]
     if event_count and f'script: loaded {event_count} entries from ' not in log:
         failures.append(f'host did not report loading {event_count} input events')
+    if 'host_script' in scenario and not re.search(r'script: loaded [1-9]\d* entries from ', log):
+        failures.append('host did not report loading the host script')
     if 'camera_script' in scenario and 'Camera script unavailable or invalid' in log:
         failures.append('host rejected the camera script')
+    if scenario.get('orbit_sprite_log'):
+        sprites = output / 'orbit-sprites.log'
+        if sprites.is_file() and sprites.stat().st_size:
+            result['orbit_sprite_log'] = dict(path=sprites.name, sha256=digest(sprites))
+        else:
+            failures.append('host did not log orbit sprites')
 
     def wram_path(frame):
         return output / 'frames' / f'frame_{frame:06}_wram.bin'
 
-    missing = next((frame for frame in range(scenario['capture_from'], frames)
+    last_capture = scenario['capture_to']
+    missing = next((frame for frame in range(scenario['capture_from'], last_capture + 1)
                     if not (path := wram_path(frame)).is_file() or path.stat().st_size != WRAM_SIZE), None)
     if missing is None:
-        result.update(final_wram_sha256=digest(wram_path(frames - 1)),
+        result.update(final_wram_sha256=digest(wram_path(last_capture)),
                       final_sram_sha256=digest(sram) if sram.is_file() else None)
     else:
         failures.append(f'first missing or incomplete WRAM dump at frame {missing}')
@@ -298,7 +323,8 @@ def main():
     output = Path(tempfile.mkdtemp(prefix='run-', dir=runs))
     print(output, flush=True)
     result = dict(schema=1, rom_sha256=rom_hash, frames=scenario['frames'],
-                  capture_from=scenario['capture_from'], timeout_seconds=args.timeout, failures=[])
+                  capture_from=scenario['capture_from'], capture_to=scenario['capture_to'],
+                  timeout_seconds=args.timeout, failures=[])
     try:
         shutil.copyfile(args.scenario, output / 'scenario.json')
         command, env, sram, event_count = stage_run(scenario, args, output, result)

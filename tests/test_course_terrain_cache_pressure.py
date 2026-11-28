@@ -13,7 +13,10 @@ class CourseTerrainCachePressureTest(unittest.TestCase):
         framework = Path(os.environ.get('SNESRECOMP_ROOT', root / 'local/guarded-framework'))
         source = framework / 'runner/src'
         if compiler is None or not (source / 'snes/ppu.h').is_file():
-            self.skipTest('Requires GCC and the pinned framework headers')
+            reason = 'Requires GCC and the pinned framework headers'
+            if os.environ.get('KDC_REQUIRE_TERRAIN_CACHE_PRESSURE') == '1':
+                self.fail(reason)
+            self.skipTest(reason)
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / 'course_terrain_cache_pressure_test.exe'
             result = subprocess.run([compiler, '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',

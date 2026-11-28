@@ -52,27 +52,13 @@ def git_output(directory, *args):
         ["git", "-C", str(directory), *args], text=True).strip()
 
 
-def build(args):
-    rom = Path(args.rom).resolve(strict=True)
-    with rom.open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != ROM_SHA256:
-            raise ValueError("ROM SHA-256 mismatch. Use the supported headerless USA ROM.")
-    if not re.fullmatch(r"[A-Za-z0-9._+-]+", args.version):
-        raise ValueError("Unsupported build version")
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
-        raise ValueError("Unsupported build name")
-    for command in ("git", "gcc", "g++", "cargo", "ninja", args.cmake):
-        if not shutil.which(command):
-            raise ValueError(f"Missing build tool: {command}")
+def prepare_framework(name, *, android=False, apu_boundary_sync=False):
     local = ROOT / "local"
     local.mkdir(exist_ok=True)
     pristine = local / "snesrecomp"
-    framework = local / f"{args.name}-framework"
-    project = local / args.name
-    output = local / f"{args.name}-build"
-    for directory in (framework, project, output):
-        if directory.exists() and not directory.is_dir():
-            raise ValueError(f"{directory} exists but is not a directory")
+    framework = local / f"{name}-framework"
+    if framework.exists() and not framework.is_dir():
+        raise ValueError(f"{framework} exists but is not a directory")
     if not pristine.exists():
         run("git", "clone", "-c", "core.autocrlf=false", "--no-checkout",
             "https://github.com/RetroPortingToolKit/snesrecomp.git", pristine)
@@ -100,14 +86,34 @@ def build(args):
         run("git", "clone", "-c", "core.autocrlf=false", "--no-hardlinks", "--no-checkout", pristine, framework)
         run("git", "-C", framework, "checkout", "--detach", FRAMEWORK_REV)
     patches = list(PATCHES)
-    if args.android_ndk:
+    if android:
         patches.extend(("android-window", "android-launcher"))
-    if args.apu_boundary_sync:
+    if apu_boundary_sync:
         patches.append("apu-boundary-sync")
-    for name in patches:
-        patch = ROOT / "patches" / f"snesrecomp-{name}.patch"
+    for patch_name in patches:
+        patch = ROOT / "patches" / f"snesrecomp-{patch_name}.patch"
         run("git", "-C", framework, "apply", "--check", patch)
         run("git", "-C", framework, "apply", patch)
+    return framework
+
+
+def build(args):
+    rom = Path(args.rom).resolve(strict=True)
+    with rom.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != ROM_SHA256:
+            raise ValueError("ROM SHA-256 mismatch. Use the supported headerless USA ROM.")
+    if not re.fullmatch(r"[A-Za-z0-9._+-]+", args.version):
+        raise ValueError("Unsupported build version")
+    for command in ("git", "gcc", "g++", "cargo", "ninja", args.cmake):
+        if not shutil.which(command):
+            raise ValueError(f"Missing build tool: {command}")
+    project = ROOT / "local" / args.name
+    output = project.with_name(f"{args.name}-build")
+    for directory in (project, output):
+        if directory.exists() and not directory.is_dir():
+            raise ValueError(f"{directory} exists but is not a directory")
+    framework = prepare_framework(args.name, android=bool(args.android_ndk),
+                                  apu_boundary_sync=args.apu_boundary_sync)
     project.mkdir(parents=True, exist_ok=True)
     config = project / "recomp"
     config.mkdir(parents=True, exist_ok=True)
@@ -171,9 +177,18 @@ def main():
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--release-defaults", action="store_true")
     parser.add_argument("--apu-boundary-sync", action="store_true")
+    parser.add_argument("--framework-only", action="store_true",
+                        help="Prepare the pinned, patched framework without a ROM or build tools")
     args = parser.parse_args()
     try:
-        build(args)
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
+            raise ValueError("Unsupported build name")
+        if args.framework_only:
+            framework = prepare_framework(args.name, android=bool(args.android_ndk),
+                                          apu_boundary_sync=args.apu_boundary_sync)
+            print(f"Prepared {framework}")
+        else:
+            build(args)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
 

@@ -1,0 +1,12 @@
+wait 600
+press a 2
+wait 57
+press a 2
+wait 28
+press a 2
+wait 60
+press a 2
+wait 475
+savestate 0
+wait 8
+loadstate 0

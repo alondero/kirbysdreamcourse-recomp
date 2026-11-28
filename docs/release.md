@@ -94,6 +94,12 @@ limits and the existing first known reference divergence in release notes.
 
 ## Workflow contract
 
+`test.yml` runs the ROM-free suite for pull requests and pushes to `main`
+on Windows and Linux. To prepare the same pinned framework locally, run
+`python tools/setup.py --framework-only`, then
+`python -m unittest discover -s tests -p 'test_*.py' -v`. CI requires the
+terrain cache pressure fixture to run on both platforms.
+
 `.github/workflows/build-release.yml` is manual only. It must be available on
 the default branch before its first normal dispatch.
 

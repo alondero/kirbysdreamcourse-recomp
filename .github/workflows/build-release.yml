@@ -162,6 +162,10 @@ jobs:
               output.write(f'version={version}\nsource_sha={source}\n')
           PY
 
+      - name: Install Android SDK components
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+
       - name: Fetch private build inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, MIT
         with:
@@ -189,10 +193,6 @@ jobs:
           xvfb-run -a env KDC_TEST_LAUNCHER=1 KDC_LAUNCHER_ROM="$GITHUB_WORKSPACE/rom-assets/Kirby's Dream Course (USA).sfc" python3 -m unittest discover -s tests -p 'test_launcher_startup.py' -v
           KDC_TEST_DEV_START=1 KDC_DEV_ROM="$GITHUB_WORKSPACE/rom-assets/Kirby's Dream Course (USA).sfc" python3 -m unittest discover -s tests -p 'test_dev_start.py' -v
           python3 .agents/skills/release/scripts/release.py smoke-linux --archive "local/releases/$BUILD_VERSION/kirbysdreamcourse-recomp-linux-x64.zip" --rom "rom-assets/Kirby's Dream Course (USA).sfc"
-
-      - name: Install Android SDK components
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
 
       - name: Assemble and verify the Android APK
         env:
